@@ -1,6 +1,6 @@
 # 项目架构设计
 
-本稿依据[近期计划](../Plan.md)与[Harness 草案](Harness.md)，重点确定模块接口和扩展方式。参考 [DThinkVLN](../arch/arch3/DThinkVLN.md) 的注册装配、环境／策略分离和训练数据链，以及[历史 NavCraft](../arch/arch3/NavCraft.md) 的共享导航会话；文件与类名为设计建议，当前尚未实现。
+本稿依据[近期计划](../Plan.md)与[Harness 草案](Harness.md)，重点确定模块接口和扩展方式。参考 [DThinkVLN](../../cache/arch/arch3/DThinkVLN.md) 的注册装配、环境／策略分离和训练数据链，以及[历史 NavCraft](../../cache/arch/arch3/NavCraft.md) 的共享导航会话。基础实验框架已实现，实际文件、接口与运行方式以[架构归档](../Architecture.md)为准；本稿仍包含尚未实现的地图、空间记忆与训练目标。
 
 ## 1. 设计主线
 
@@ -35,17 +35,15 @@ NavCraft/
 ├── config/                 # 数据准备、导航实验、采集与训练的 YAML 配置
 ├── tests/                  # 模块行为与接口集成测试
 ├── doc/
-│   ├── Design/             # 当前设计：Harness、项目架构及后续数据设计
-│   └── arch/               # 历史项目的架构分析与参考材料
+│   ├── Architecture.md     # 当前已实现架构及类接口索引
+│   └── Design/             # 当前设计：Harness、项目架构及后续数据设计
 ├── data/                   # 外部存储链接：场景、任务集与整理后的训练数据
 ├── model/                  # 外部存储链接：基座模型与选定的模型权重
 ├── runs/                   # 外部存储链接：每次运行的记录、评估结果与训练 checkpoint
 ├── cache/                  # 可重建的地图／预处理缓存
-├── README.md               # 安装、准备与常用运行方式
-└── AGENTS.md               # 仓库开发约定
 ```
 
-这是目标布局，尚未存在的目录和文件随实现补齐。训练中间 checkpoint 放在对应 `runs/<run-id>/`，选定后再作为模型资产引用；共享数据与基座权重不由运行脚本覆盖。实际观察和教师交互记录属于 `runs/`，不能只存入可清理的 `cache/`。
+这是目标布局，尚未存在的目录和文件随实现补齐。历史架构材料当前位于 `cache/arch/`。训练中间 checkpoint 放在对应 `runs/<run-id>/`，选定后再作为模型资产引用；共享数据与基座权重不由运行脚本覆盖。实际观察和教师交互记录属于 `runs/`，不能只存入可清理的 `cache/`。
 
 ### 2.2 scripts：启动哪些程序
 
@@ -53,38 +51,38 @@ NavCraft/
 
 | 建议脚本 | 调用对象 | 脚本负责的内容 |
 |---|---|---|
-| `run.sh` | `python -m src.bench.run` | 接收配置路径，启动评估或教师采集；两者共用同一入口 |
+| `run.sh` | `python -m src.bench.run` | 顶部变量引用五份配置，通过 Python 命令行参数启动单任务实验 |
+| `smoke.sh` | 同上 | 串行运行四类固定首样本，分别保存结果 |
+| `fake_smoke.sh` | 同上 | 使用 fake 环境与 scripted 模型检查完整链路 |
 | `prepare.sh` | `python -m src.dataset.prepare` | 启动地图准备或训练样本导出，由配置选择准备任务 |
 | `train_sft.sh` | `src.train.sft`，按需经 `torchrun` 启动 | 组织训练进程和 GPU 资源，透传训练配置 |
 | `serve.sh` | 选定的模型推理服务 | 在独立推理环境中启动模型服务，设置设备和端口；接入本地推理时再添加 |
 
-脚本按用途组织，不为每个模型、任务或实验复制一份。默认接收配置文件作为参数，例如下面的拟定调用方式：
+前三个脚本已实现；准备、训练和服务脚本按需补充。Bash 脚本不对外接收命令行参数：在顶部修改大写配置变量，使用已激活的 Conda 环境中的 `python`，不硬编码解释器路径。
 
 ```bash
-bash scripts/run.sh config/bench/objectnav_smoke.yaml
-bash scripts/run.sh config/collect/objectnav_teacher.yaml
-bash scripts/train_sft.sh config/train/trajectory_sft.yaml
+bash scripts/run.sh
+bash scripts/smoke.sh
+bash scripts/fake_smoke.sh
 ```
 
-脚本中的参数转发不应悄悄改变样本范围、动作预算或工具集合。GPU、端口等机器相关参数可通过启动参数或环境变量指定；影响实验行为的最终参数由 Python 入口保存到运行记录。凭据通过环境变量读取，不写入脚本或配置快照。
+脚本通过 `--task-config / --env-config / --model-config / --harness-config / --run-config` 向 Python 显式传参；Python 不从环境变量读取这些配置路径。GPU、服务、模型与预算放在对应 YAML 中，解析后的有效配置保存到运行记录。模型鉴权同样保存在 YAML，并按项目约定正常纳入 Git；运行日志和配置快照脱敏。
 
 ### 2.3 config：定义运行哪个实验
 
-`config/` 保存可版本管理的实验配置，不存放执行逻辑、大型 episode 列表或训练数据本体。建议按使用入口分组：
+`config/` 保存可版本管理的实验配置，不存放执行逻辑、大型 episode 列表或训练数据本体。当前在线实验固定拆为五类：
 
 | 子目录与示例 | 主要配置内容 |
 |---|---|
-| `bench/objectnav_smoke.yaml` | 数据源、split、明确的小样本选择、环境与任务、模型、工具、上下文和运行预算 |
-| `bench/vlnce.yaml`、`bench/goat.yaml` | 对应任务的评估条件；复用相同 Harness 接口 |
-| `collect/objectnav_teacher.yaml` | 教师模型、训练场景／任务选择、交互预算及记录要求；不能混用测试集采集训练数据 |
-| `data/prepare_maps.yaml` | 场景来源、地图生成参数、坐标约定与输出位置 |
-| `data/export_sft.yaml` | 输入运行记录、接收／过滤规则、样本转换方式、数据划分与新输出目录 |
-| `train/trajectory_sft.yaml` | 基座模型、轨迹 Dataset、采样与编码参数、优化参数和 checkpoint 输出 |
-| `train/spatial_sft.yaml` | 空间任务数据及其与轨迹数据的混合方式，保留可与轨迹基线比较的训练设置 |
+| `task/` | `episodes` 与 `task`：数据源、样本选择、任务规则、命名评分协议 |
+| `environment/` | `environment`：传感器、原子动作幅度、Habitat GPU 与 EGL 配置 |
+| `model/` | `model`：服务协议、模型名、鉴权与请求设置 |
+| `harness/` | `harness`：runtime 与工具集合 |
+| `run/` | `run`：输出位置、请求／时间／上下文预算 |
 
-小规模 smoke 可在配置中直接列出 episode ID；正式实验引用单独的数据清单，保留清单版本和原始 ID。`collect/` 与 `bench/` 分组用于表达用途，不意味着建立两套运行实现。
+小规模 smoke 可在配置中直接列出 episode ID；现有配置引用固定清单并取首样本。正式实验保留清单版本和原始 ID。后续采集训练轨迹须另选训练划分，不能将当前验证集 smoke 直接作为训练数据。
 
-第一版每个实验使用一份可独立阅读的 YAML，不先引入复杂的多层配置继承。在线配置采用下文约定的 `episodes / environment / task / agent / tools / context / budgets` 分组；训练与准备入口各自读取所需字段，不强行共用同一配置结构。
+五份 YAML 各有明确字段归属，不按文件顺序覆盖，也不引入多层继承。地图准备、样本导出与训练入口及其配置尚未实现，后续按实际需要补充。
 
 `src/common/config.py` 负责加载与检查，具体装配由各入口完成。每次运行保存解析后的有效配置到 `runs/<run-id>/`，包含实际模型、数据选择和生效参数，使脚本启动与直接调用 Python 入口得到相同的实验条件。
 
@@ -129,7 +127,7 @@ src/
     └── rollout.py          # 后续在线训练接入点，按需要实现
 ```
 
-当前已有 `environment/`、`dataset/`、`harness/agent/`、`bench/`、`train/` 可沿用；建议将 `harness/tool/`、`utils/` 统一命名为 `harness/tools/`、`common/`。上述树表示归属，不要求一次建齐所有文件。
+基础版已采用 `harness/tools/` 与 `common/`，原来的两个空目录已移除。上述树仍表示整体目标归属，不要求一次建齐所有文件；实际文件树见架构归档。
 
 接口类型随所属领域放置，不建立容纳全部业务类型的全局 `types.py`。只有确实修改模型结构时再增加 `src/model/`；模型权重仍在根目录 `model/` 外部存储中。
 
@@ -162,7 +160,7 @@ env = env_registry.create(env_name, config=env_config, task=task)
 
 各领域提供显式的注册加载入口，装配时导入选定实现；Habitat、训练框架等重依赖在构造对应组件时加载，读取训练样本或运行 fake 环境不应顺带启动模拟器。注册表只保存类／工厂，不保存跨 episode 共享的环境、会话或记忆实例。
 
-配置分别描述 `episodes`、`environment`、`task`、`agent.runtime`、`agent.model`、`tools`、`context` 和 `budgets`。`harness/build.py` 解释这些配置并注入依赖；工具内部不再读取整份配置并自行创建模型或环境。
+当前配置分别描述 `episodes / task / environment / model / harness / run`，由五份明确角色的 YAML 提供。`harness/build.py` 注入依赖；工具内部不读取整份配置并自行创建模型或环境。
 
 外部 runtime 自带模型管理时，配置由该适配器消费；不把它强行包装成一次 `ModelBackend.complete()`。装配时检查 runtime 支持的模型接口和记录能力，不能假定所有组合均可用。
 
