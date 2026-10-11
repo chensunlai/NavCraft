@@ -74,15 +74,39 @@ def validate(config: ExperimentConfig) -> None:
         raise ValueError("task.protocol must explicitly identify the evaluation conditions")
     if config.environment.get("name") not in {"fake", "habitat"}:
         raise ValueError("environment.name must be fake or habitat")
+    if "gpu" in config.environment and "gpus" in config.environment:
+        raise ValueError("Set either environment.gpu or environment.gpus, not both")
+    if "gpu" in config.environment:
+        gpu = config.environment["gpu"]
+        if type(gpu) is not int or gpu < 0:
+            raise ValueError("environment.gpu must be a nonnegative integer")
+    if "gpus" in config.environment:
+        gpus = config.environment["gpus"]
+        if (
+            not isinstance(gpus, list)
+            or not gpus
+            or any(type(gpu) is not int or gpu < 0 for gpu in gpus)
+            or len(gpus) != len(set(gpus))
+        ):
+            raise ValueError(
+                "environment.gpus must be a nonempty list of unique nonnegative integers"
+            )
     if config.model.get("name") not in {"responses", "scripted"}:
         raise ValueError("model.name must be responses or scripted")
     if config.harness.get("runtime", "agent") != "agent":
         raise ValueError("Only the agent runtime is implemented")
+    num_workers = config.run.get("num_workers", 1)
+    if type(num_workers) is not int or num_workers < 1:
+        raise ValueError("run.num_workers must be a positive integer")
+    config.run.setdefault("num_workers", 1)
     for name in ("max_requests", "timeout_seconds", "max_context_chars"):
         value = config.run.get(name)
         if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
             raise ValueError(f"run.{name} must be positive")
-    if type(config.run["max_requests"]) is not int or type(config.run["max_context_chars"]) is not int:
+    if (
+        type(config.run["max_requests"]) is not int
+        or type(config.run["max_context_chars"]) is not int
+    ):
         raise ValueError("run.max_requests and max_context_chars must be integers")
     if not config.run.get("output_dir"):
         raise ValueError("run.output_dir is required")

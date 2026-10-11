@@ -28,7 +28,7 @@ bench.run：读取配置／选任务／组织 episode／汇总
        └─ NavigationSession → Tool → Environment → TaskAdapter
 ```
 
-真实 Habitat episode 使用独立 worker，隔离 Habitat 的原生崩溃；fake episode 在主进程运行。父进程汇总结果，worker 拥有当前 episode 的环境、模型连接和观测文件。
+真实 Habitat episode 使用独立 worker，隔离 Habitat 的原生崩溃；fake 在单 worker 时直接运行，并发时也使用独立 worker。父进程调度和汇总结果，每个 worker 独立拥有当前 episode 的环境、模型连接、上下文和观测文件。
 
 ## 2. 目录与代码导航
 
@@ -82,7 +82,7 @@ data/、model/、runs/             # 外部资源／实验产物，可采用符�
 | `AgentRuntime` | [harness/agent/loop.py](../src/harness/agent/loop.py) | `run(initial,tools,trace,limits)` 返回 `AgentResult`；仅管理模型／工具循环 |
 | `TraceWriter`、`TraceReader` | [harness/trace.py](../src/harness/trace.py) | `emit/close` 与 `events/decisions`；决策读取配对实际请求和返回 |
 | `MapAsset` | [harness/map.py](../src/harness/map.py) | 仅保存 scene、资源路径、坐标约定；没有地图构建／查询功能 |
-| episode worker | [bench/worker.py](../src/bench/worker.py) | `run_episode` 运行／记录／关闭；`execute_episode` 对真实环境使用 spawn 并处理退出码和超时 |
+| `EpisodeWorker`、episode 执行入口 | [bench/worker.py](../src/bench/worker.py) | `start/poll/wait/close` 管理独立 spawn 进程；`run_episode` 运行／记录／关闭；`execute_episode` 保留单 episode 阻塞入口 |
 
 注册表名称：`episode_registry`、`env_registry`、`task_registry`、`model_registry`、`runtime_registry`、`tool_registry`。注册时重名报错，无自动目录扫描、无隐式插件发现。
 
@@ -95,7 +95,29 @@ data/、model/、runs/             # 外部资源／实验产物，可采用符�
 5. 工具结果序列化为 `function_call_output`；图片单独追加 user 观测消息。GOAT 新目标与目标图片进入下一轮，位置和前序上下文保留。
 6. 正常结束、预算耗尽或异常后，评估器 `finalize(reason)` 完结评分状态，保存私有状态与结果，关闭环境和连接。主进程持续写入逐条结果与汇总。
 
-真实 worker 的原生退出记为 `worker_error`，超过 worker 预算记为 `worker_timeout`，其日志保存在 episode 的 `worker.log`。`worker.json` 记录进程、GPU 和 EGL 配置；`egl_vendor_file` 在导入 Habitat 前生效。worker 总预算在模型运行预算外加环境启动预算及清理余量。这些失败保留在固定选择清单分母中，不自动重跑。
+worker 的启动失败、原生退出、缺失或损坏的结果记为 `worker_error`，超过 worker 预算记为 `worker_timeout`，其日志保存在 episode 的 `worker.log`。`worker.json` 记录进程、实际分配的 GPU 和 EGL 配置；`egl_vendor_file` 在导入 Habitat 前生效。worker 总预算在模型运行预算外加环境启动预算及清理余量，从实际启动时计时，不包含排队时间。失败时恢复可读取的私有进度，保留在固定选择清单分母中，不自动重跑。
+
+### Episode 并发与多 GPU
+
+`run.num_workers` 控制同时运行的 episode 总数，默认为 `1`。父进程管理固定槽位，任何槽位完成或失败后立即补入下一个 episode。每次运行创建新的 `spawn` 子进程，不复用模拟器；Agent 内部的模型请求、工具调用和移动动作仍然顺序执行。
+
+环境配置可使用单卡 `environment.gpu`，或非空、不重复的多卡列表 `environment.gpus`，两者互斥。GPU 编号沿用 Habitat 的现有解释方式，不改写 `CUDA_VISIBLE_DEVICES`。GPU 固定绑定槽位，按列表循环分配：4 个 worker 配合 `[2, 3]` 使用 `2、3、2、3`。各 episode 获得独立配置副本；fake 可验证分配记录，但不使用 GPU 渲染。
+
+```yaml
+# config/run/*.yaml：在现有 run 配置中添加
+run:
+  num_workers: 4
+```
+
+```yaml
+# config/environment/*.yaml：将现有 gpu 替换为 gpus
+environment:
+  gpus: [2, 3]
+```
+
+以上只展示新增字段，保留原配置中的其余参数。并发数不自动限制每卡资源或 API 请求速率；这两个配置只控制当前实验的调度。
+
+episode 目录按原始选择序号固定，完成顺序不影响 `episodes/0000` 等路径。子进程只写自身产物，父进程在每次完成后更新全局结果与汇总；`results.json` 中已完成结果按选择顺序排列。Ctrl+C 停止派发、回收全部活跃子进程，保存已收集结果并以 `130` 退出；未完成任务不计入 `finished`，`selected` 仍为原清单长度。
 
 ## 5. 必须保持的约束
 
@@ -127,10 +149,10 @@ GT 评分状态独立保存在 `private/state.json`。当前 Harness 不提供�
 | Bash 变量 | YAML 内容 | 控制内容 |
 |---|---|---|
 | `TASK_CONFIG` | `episodes`、`task` | 数据源、选择清单、协议名称、成功距离、动作预算 |
-| `ENV_CONFIG` | `environment` | fake／Habitat、场景、GPU、EGL vendor、启动预算、传感器、动作步长 |
+| `ENV_CONFIG` | `environment` | fake／Habitat、场景、单卡 GPU 或多卡列表、EGL vendor、启动预算、传感器、动作步长 |
 | `MODEL_CONFIG` | `model` | Responses／scripted、服务、模型、鉴权、输出与 HTTP 预算 |
 | `HARNESS_CONFIG` | `harness` | runtime、可用工具 |
-| `RUN_CONFIG` | `run` | 输出目录、请求／时间／上下文预算 |
+| `RUN_CONFIG` | `run` | 输出目录、episode 并发数、请求／时间／上下文预算 |
 
 配置不做任意顺序合并、不隐式继承。Bash 不接受外部参数，顶部定义五个大写变量，再通过 Python 的 `--task-config/--env-config/--model-config/--harness-config/--run-config` 传入；Python 不从环境变量获取这些路径。默认模型 DeepSeek；可切换 Sol／Qwen 配置。
 
@@ -165,3 +187,10 @@ VLN-CE nDTW 仅使用对应 GT 的 `locations`；缺失时返回不可计算，�
 | Sol／ObjectNav | 22 | `terminated` | `20261011T120409Z-smoke-objnav-gpt-6.1-sol-552bde0d` |
 
 以上运行的实际请求／返回配对、图片文件存在性和记录脱敏已检查。`terminated` 表示执行了任务 STOP，不等于成功；`request_budget` 表示按预算结束，成功与否须查看私有评分。首次 DeepSeek／ObjectNav 运行中目录被删除并重建，造成历史帧丢失，失败结果已保留；后续运行未再次发生，不将该次错误归因于模型服务。
+
+## 9. Episode 并发验收（2026-10-11）
+
+- `vln` 环境完整回归：86 项测试通过；`ruff check src tests --select F` 通过。
+- CPU fake 环境与本地 Responses 服务通过同步屏障确认两路 episode 请求同时运行，四个 episode 使用独立子进程、上下文和产物；scripted 串行／并发评分一致。
+- 覆盖并发上限、完成即补位、GPU 槽位配置、乱序汇总、独立超时、启动失败、损坏文件及评分字段、Ctrl+C 回收和已完成结果保存。
+- GPU 分配通过配置与进程记录验证；本次未运行真实 Habitat 多 GPU 渲染，也未使用付费模型 API。

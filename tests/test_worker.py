@@ -118,6 +118,7 @@ def test_native_exit_keeps_progress_and_failed_episode_in_selected_denominator(t
 
 
 def test_watchdog_kills_stuck_worker_and_preserves_last_durable_metrics(tmp_path, monkeypatch):
+    monkeypatch.setattr(worker.time, "monotonic", lambda: 100.0)
     processes = install_process_double(monkeypatch, stuck=True)
     destination = tmp_path / "episode"
     result = worker.execute_episode(config(tmp_path), episode(2), destination)

@@ -1,6 +1,7 @@
 run:
   name: fake-smoke
   output_dir: runs
+  num_workers: 1
   max_requests: 32
   timeout_seconds: 30
   max_context_chars: 1000000
