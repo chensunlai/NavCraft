@@ -1,0 +1,12 @@
+episodes:
+  name: objnav
+  root: data/datasets/objectnav/hm3d/v2
+  split: val
+  selection_file: data/samples/objnav100/selected/objnav100.json
+  limit: 1
+task:
+  name: objectnav
+  protocol: astrabench-objnav100-v1
+  success_distance: 0.1
+  max_steps: 500
+  max_subtask_steps: 500

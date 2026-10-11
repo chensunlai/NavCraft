@@ -1,0 +1,13 @@
+episodes:
+  name: goat
+  root: data/datasets/goat_bench/hm3d/v1
+  split: val_unseen
+  selection_file: data/samples/goat10/selected/goat10.json
+  limit: 1
+  goat_max_description_words: 55
+task:
+  name: goat
+  protocol: astrabench-goat-v1
+  success_distance: 3.0
+  max_steps: 5000
+  max_subtask_steps: 500

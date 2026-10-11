@@ -1,0 +1,7 @@
+harness:
+  runtime: agent
+  tools:
+  - nav_observe
+  - nav_depth
+  - nav_step
+  - nav_finish

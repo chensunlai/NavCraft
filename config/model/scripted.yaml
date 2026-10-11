@@ -1,0 +1,23 @@
+model:
+  name: scripted
+  turns:
+  - output:
+    - type: function_call
+      call_id: fake-0
+      name: nav_observe
+      arguments: '{}'
+  - output:
+    - type: function_call
+      call_id: fake-1
+      name: nav_depth
+      arguments: '{"frame_id": "frame_000000", "points": [[32, 24]]}'
+  - output:
+    - type: function_call
+      call_id: fake-2
+      name: nav_step
+      arguments: '{"actions": ["turn_left", "move_forward"]}'
+  - output:
+    - type: function_call
+      call_id: fake-3
+      name: nav_finish
+      arguments: '{}'

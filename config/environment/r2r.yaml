@@ -1,0 +1,17 @@
+environment:
+  name: habitat
+  scenes: data/nas/scene_datasets
+  gpu: 2
+  depth: true
+  seed: 0
+  forward_step: 0.25
+  width: 512
+  height: 512
+  hfov: 90
+  sensor_height: 1.5
+  agent_height: 1.5
+  agent_radius: 0.1
+  turn_angle: 15
+  allow_sliding: true
+  egl_vendor_file: /usr/share/glvnd/egl_vendor.d/10_nvidia.json
+  startup_timeout_seconds: 120

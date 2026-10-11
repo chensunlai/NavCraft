@@ -1,0 +1,9 @@
+environment:
+  name: fake
+  width: 64
+  height: 48
+  hfov: 90
+  sensor_height: 1.5
+  forward_step: 0.25
+  turn_angle: 30
+  depth: true

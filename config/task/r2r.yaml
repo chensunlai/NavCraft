@@ -1,0 +1,12 @@
+episodes:
+  name: r2r
+  root: data/datasets/r2r
+  split: val_unseen
+  selection_file: data/samples/vlnce100/selected/r2r100.json
+  limit: 1
+task:
+  name: vlnce
+  protocol: astrabench-r2r-v1
+  success_distance: 3.0
+  max_steps: 500
+  max_subtask_steps: 500

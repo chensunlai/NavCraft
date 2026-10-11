@@ -1,0 +1,9 @@
+model:
+  name: responses
+  model: deepseek-v4-flash-vision
+  base_url: http://221-api.undertides.cn/v1
+  api_key: REDACTED_USE_API_KEY_ENV
+  timeout_seconds: 120
+  max_output_tokens: 4096
+  max_retries: 1
+  include_encrypted_reasoning: false

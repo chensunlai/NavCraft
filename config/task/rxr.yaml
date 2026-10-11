@@ -1,0 +1,13 @@
+episodes:
+  name: rxr
+  root: data/datasets/rxr
+  split: val_unseen
+  role: guide
+  selection_file: data/samples/vlnce100/selected/rxr100.json
+  limit: 1
+task:
+  name: vlnce
+  protocol: astrabench-rxr-v1
+  success_distance: 3.0
+  max_steps: 500
+  max_subtask_steps: 500

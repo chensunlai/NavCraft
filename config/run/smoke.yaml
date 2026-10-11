@@ -1,0 +1,6 @@
+run:
+  name: smoke
+  output_dir: runs
+  max_requests: 32
+  timeout_seconds: 1200
+  max_context_chars: 2000000
