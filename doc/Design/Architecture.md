@@ -26,6 +26,70 @@ flowchart LR
 
 ## 2. 目录与代码归属
 
+### 2.1 仓库根目录
+
+```text
+NavCraft/
+├── src/                    # 可复用的业务实现与 Python 入口
+├── scripts/                # 启动脚本：组织命令、进程和运行资源
+├── config/                 # 数据准备、导航实验、采集与训练的 YAML 配置
+├── tests/                  # 模块行为与接口集成测试
+├── doc/
+│   ├── Design/             # 当前设计：Harness、项目架构及后续数据设计
+│   └── arch/               # 历史项目的架构分析与参考材料
+├── data/                   # 外部存储链接：场景、任务集与整理后的训练数据
+├── model/                  # 外部存储链接：基座模型与选定的模型权重
+├── runs/                   # 外部存储链接：每次运行的记录、评估结果与训练 checkpoint
+├── cache/                  # 可重建的地图／预处理缓存
+├── README.md               # 安装、准备与常用运行方式
+└── AGENTS.md               # 仓库开发约定
+```
+
+这是目标布局，尚未存在的目录和文件随实现补齐。训练中间 checkpoint 放在对应 `runs/<run-id>/`，选定后再作为模型资产引用；共享数据与基座权重不由运行脚本覆盖。实际观察和教师交互记录属于 `runs/`，不能只存入可清理的 `cache/`。
+
+### 2.2 scripts：启动哪些程序
+
+`scripts/` 以简短 Shell 脚本为主，负责传配置、设置运行资源和启动进程；导航循环、样本转换和训练算法仍由 `src/` 实现。
+
+| 建议脚本 | 调用对象 | 脚本负责的内容 |
+|---|---|---|
+| `run.sh` | `python -m src.bench.run` | 接收配置路径，启动评估或教师采集；两者共用同一入口 |
+| `prepare.sh` | `python -m src.dataset.prepare` | 启动地图准备或训练样本导出，由配置选择准备任务 |
+| `train_sft.sh` | `src.train.sft`，按需经 `torchrun` 启动 | 组织训练进程和 GPU 资源，透传训练配置 |
+| `serve.sh` | 选定的模型推理服务 | 在独立推理环境中启动模型服务，设置设备和端口；接入本地推理时再添加 |
+
+脚本按用途组织，不为每个模型、任务或实验复制一份。默认接收配置文件作为参数，例如下面的拟定调用方式：
+
+```bash
+bash scripts/run.sh config/bench/objectnav_smoke.yaml
+bash scripts/run.sh config/collect/objectnav_teacher.yaml
+bash scripts/train_sft.sh config/train/trajectory_sft.yaml
+```
+
+脚本中的参数转发不应悄悄改变样本范围、动作预算或工具集合。GPU、端口等机器相关参数可通过启动参数或环境变量指定；影响实验行为的最终参数由 Python 入口保存到运行记录。凭据通过环境变量读取，不写入脚本或配置快照。
+
+### 2.3 config：定义运行哪个实验
+
+`config/` 保存可版本管理的实验配置，不存放执行逻辑、大型 episode 列表或训练数据本体。建议按使用入口分组：
+
+| 子目录与示例 | 主要配置内容 |
+|---|---|
+| `bench/objectnav_smoke.yaml` | 数据源、split、明确的小样本选择、环境与任务、模型、工具、上下文和运行预算 |
+| `bench/vlnce.yaml`、`bench/goat.yaml` | 对应任务的评估条件；复用相同 Harness 接口 |
+| `collect/objectnav_teacher.yaml` | 教师模型、训练场景／任务选择、交互预算及记录要求；不能混用测试集采集训练数据 |
+| `data/prepare_maps.yaml` | 场景来源、地图生成参数、坐标约定与输出位置 |
+| `data/export_sft.yaml` | 输入运行记录、接收／过滤规则、样本转换方式、数据划分与新输出目录 |
+| `train/trajectory_sft.yaml` | 基座模型、轨迹 Dataset、采样与编码参数、优化参数和 checkpoint 输出 |
+| `train/spatial_sft.yaml` | 空间任务数据及其与轨迹数据的混合方式，保留可与轨迹基线比较的训练设置 |
+
+小规模 smoke 可在配置中直接列出 episode ID；正式实验引用单独的数据清单，保留清单版本和原始 ID。`collect/` 与 `bench/` 分组用于表达用途，不意味着建立两套运行实现。
+
+第一版每个实验使用一份可独立阅读的 YAML，不先引入复杂的多层配置继承。在线配置采用下文约定的 `episodes / environment / task / agent / tools / context / budgets` 分组；训练与准备入口各自读取所需字段，不强行共用同一配置结构。
+
+`src/common/config.py` 负责加载与检查，具体装配由各入口完成。每次运行保存解析后的有效配置到 `runs/<run-id>/`，包含实际模型、数据选择和生效参数，使脚本启动与直接调用 Python 入口得到相同的实验条件。
+
+### 2.4 src：模块实现
+
 ```text
 src/
 ├── common/
