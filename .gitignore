@@ -1,0 +1,33 @@
+# Local datasets, model weights, runs and generated artifacts.
+/data
+/model
+/runs
+/cache/
+/outputs/
+/logs/
+/checkpoints/
+
+# Python environments and tool caches.
+__pycache__/
+*.py[cod]
+*.nbc
+*.nbi
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+*.egg-info/
+.coverage
+htmlcov/
+
+# Local credentials and editor state.
+.env
+.env.*
+.vscode/
+.idea/
+.DS_Store
+
+# Pi dependencies and compiled runtime.
+node_modules/
+runtime/pi/dist/
