@@ -53,7 +53,7 @@ def load_config(paths: Mapping[str, str]) -> ExperimentConfig:
             values[section] = raw[section]
         sources[variable] = str(path)
     for section, names in {
-        "episodes": ("root", "selection_file", "gt_path"),
+        "episodes": ("root", "selection_file", "gt_path", "manifest"),
         "environment": ("scenes", "egl_vendor_file"),
         "run": ("output_dir",),
         "harness": ("scene_maps",),
@@ -69,8 +69,18 @@ def load_config(paths: Mapping[str, str]) -> ExperimentConfig:
 def validate(config: ExperimentConfig) -> None:
     benchmark = config.episodes.get("name")
     expected = {"objnav": "objectnav", "r2r": "vlnce", "rxr": "vlnce", "goat": "goat"}
-    if benchmark not in expected or config.task.get("name") != expected[benchmark]:
+    if (
+        benchmark == "manifest"
+        and config.task.get("name") not in set(expected.values())
+    ) or (
+        benchmark != "manifest"
+        and (
+            benchmark not in expected or config.task.get("name") != expected[benchmark]
+        )
+    ):
         raise ValueError("episodes.name and task.name are incompatible")
+    if benchmark == "manifest" and not config.episodes.get("manifest"):
+        raise ValueError("Manifest source requires episodes.manifest")
     if not config.task.get("protocol"):
         raise ValueError("task.protocol must explicitly identify the evaluation conditions")
     if config.environment.get("name") not in {"fake", "habitat"}:

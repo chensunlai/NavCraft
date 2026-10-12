@@ -1,0 +1,11 @@
+episodes:
+  name: manifest
+  root: cache/visual-harness-v1
+  manifest: cache/visual-harness-v1/instruction_dev.json
+  split: dev
+task:
+  name: vlnce
+  protocol: map-rgb-initial-pose-instruction-v1
+  success_distance: 3.0
+  max_steps: 500
+  max_subtask_steps: 500

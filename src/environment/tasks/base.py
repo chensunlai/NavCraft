@@ -124,15 +124,57 @@ class TaskAdapter:
             scores = goat_metrics(self.goals, self.subtasks)
         else:
             scores = vln_metrics(
-                stopped=self.stopped, distance=self.distance,
-                minimum_distance=self.minimum_distance, shortest=self.shortest,
-                trajectory=self.trajectory, reference=self.episode.gt_path,
-                threshold=self.threshold, travelled=self.path_length,
+                stopped=self.stopped,
+                distance=self.distance,
+                minimum_distance=self.minimum_distance,
+                shortest=self.shortest,
+                trajectory=self.trajectory,
+                reference=self.episode.gt_path,
+                threshold=self.threshold,
+                travelled=self.path_length,
             )
-        return {**scores, "protocol": self.protocol, "steps": self.steps,
-                "path_length": self.path_length, "reason": self.reason,
-                "success_distance": self.threshold,
-                "ndtw_reference": "official_gt" if self.episode.gt_path else "unavailable"}
+        checks = getattr(self.episode, "route_checks", [])
+        if checks:
+            cursor = 0
+            completed = []
+            for check in checks:
+                hit = next(
+                    (
+                        index
+                        for index in range(cursor, len(self.trajectory))
+                        if math.dist(self.trajectory[index], check["position"])
+                        <= check.get("radius", 1.5)
+                    ),
+                    None,
+                )
+                completed.append(hit is not None)
+                if hit is not None:
+                    cursor = hit
+                else:
+                    break
+            completed += [False] * (len(checks) - len(completed))
+            scores.update(
+                route_constraint_completion=sum(completed) / len(checks),
+                route_constraints_satisfied=float(all(completed)),
+            )
+        return {
+            **scores,
+            "protocol": self.protocol,
+            "steps": self.steps,
+            "path_length": self.path_length,
+            "reason": self.reason,
+            "success_distance": self.threshold,
+            "ndtw_reference": (
+                (
+                    "official_gt"
+                    if getattr(self.episode, "provenance", "official") == "official"
+                    else "synthetic_path"
+                )
+                if self.episode.gt_path
+                else "unavailable"
+            ),
+            "provenance": getattr(self.episode, "provenance", "official"),
+        }
 
     def private_state(self) -> dict:
         # Include unattempted goals explicitly; aggregate GOAT scores also retain zeros.

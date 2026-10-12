@@ -1,0 +1,13 @@
+# Independent showcase collection; does not change navigation experiment defaults.
+scene_archive: data/scene_maps/hm3d/val/00829-QaLdnwvtxbs
+scene_id: hm3d/val/00829-QaLdnwvtxbs/QaLdnwvtxbs.basis.glb
+environment_config: config/environment/objectnav_visual.yaml
+model_config: config/model/deepseek.yaml
+model_overrides:
+  model: deepseek-v4-flash-vision
+  reasoning_effort: high
+  max_output_tokens: 8192
+  timeout_seconds: 300
+  max_retries: 0
+request_limit: 200
+gpu: 2

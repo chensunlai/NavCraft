@@ -1,0 +1,11 @@
+episodes:
+  name: manifest
+  root: cache/visual-harness-v1
+  manifest: cache/visual-harness-v1/goat_test.json
+  split: test
+task:
+  name: goat
+  protocol: map-rgb-initial-pose-goat-v1
+  success_distance: 1.0
+  max_steps: 5000
+  max_subtask_steps: 500

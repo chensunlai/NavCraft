@@ -24,6 +24,8 @@ class EpisodeSpec:
     reference_path: list = field(default_factory=list)
     gt_path: list = field(default_factory=list)
     skipped_goals: int = 0
+    route_checks: list[dict[str, Any]] = field(default_factory=list)
+    provenance: str = "official"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -48,7 +50,9 @@ def read_selection(path: str | Path) -> list[str]:
 def validate_selection(value: Any) -> list[str]:
     if not isinstance(value, list) or not value:
         raise ValueError("Episode selection must be a nonempty list of canonical IDs")
-    if not all(isinstance(item, str) and item.strip() == item and item for item in value):
+    if not all(
+        isinstance(item, str) and item.strip() == item and item for item in value
+    ):
         raise ValueError("Episode selection requires nonempty canonical string IDs")
     if len(value) != len(set(value)):
         raise ValueError("Episode selection contains duplicate IDs")
@@ -62,7 +66,9 @@ class EpisodeSource(ABC):
         self.config = dict(config)
         self.root = Path(self.config["root"])
         self.name = self.config["name"]
-        self.split = self.config.get("split", "val" if self.name == "objnav" else "val_unseen")
+        self.split = self.config.get(
+            "split", "val" if self.name == "objnav" else "val_unseen"
+        )
 
     def load(self, selection: list[str] | None = None) -> list[EpisodeSpec]:
         requested = selection
@@ -71,7 +77,9 @@ class EpisodeSource(ABC):
             selection_file = self.config.get("selection_file")
             if ids is not None and selection_file is not None:
                 raise ValueError("Set either ids or selection_file, not both")
-            requested = read_selection(selection_file) if selection_file is not None else ids
+            requested = (
+                read_selection(selection_file) if selection_file is not None else ids
+            )
         if requested is not None:
             requested = validate_selection(requested)
         limit = self.config.get("limit")
@@ -88,7 +96,11 @@ class EpisodeSource(ABC):
             selected = []
             for identifier in requested:
                 if identifier not in canonical:
-                    raw_matches = [episode.id for episode in episodes if episode.source_id == identifier]
+                    raw_matches = [
+                        episode.id
+                        for episode in episodes
+                        if episode.source_id == identifier
+                    ]
                     if len(raw_matches) > 1:
                         detail = "ambiguous source ID; use a canonical ID"
                     elif raw_matches:
@@ -119,5 +131,7 @@ class EpisodeSource(ABC):
         prefix = f"{self.name}:{self.split}:"
         if requested and all(identifier.startswith(prefix) for identifier in requested):
             shards = {identifier.split(":")[2] for identifier in requested}
-            paths = [path for path in paths if path.name.removesuffix(".json.gz") in shards]
+            paths = [
+                path for path in paths if path.name.removesuffix(".json.gz") in shards
+            ]
         return paths

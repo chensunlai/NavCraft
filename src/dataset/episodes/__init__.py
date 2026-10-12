@@ -2,6 +2,7 @@
 
 from .base import EpisodeSource, EpisodeSpec, read_selection
 from .readers import GOATEpisodeSource, ObjectNavEpisodeSource, VLNCEEpisodeSource
+from .manifest import ManifestEpisodeSource
 
 _loaded = False
 
@@ -15,10 +16,16 @@ def load_builtin_sources() -> None:
     episode_registry.register("objectnav")(ObjectNavEpisodeSource)
     episode_registry.register("vlnce")(VLNCEEpisodeSource)
     episode_registry.register("goat")(GOATEpisodeSource)
+    episode_registry.register("manifest")(ManifestEpisodeSource)
     _loaded = True
 
 
 __all__ = [
-    "EpisodeSource", "EpisodeSpec", "read_selection", "load_builtin_sources",
-    "ObjectNavEpisodeSource", "VLNCEEpisodeSource", "GOATEpisodeSource",
+    "EpisodeSource",
+    "EpisodeSpec",
+    "read_selection",
+    "load_builtin_sources",
+    "ObjectNavEpisodeSource",
+    "VLNCEEpisodeSource",
+    "GOATEpisodeSource",
 ]
