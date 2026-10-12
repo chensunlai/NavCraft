@@ -56,6 +56,7 @@ def load_config(paths: Mapping[str, str]) -> ExperimentConfig:
         "episodes": ("root", "selection_file", "gt_path"),
         "environment": ("scenes", "egl_vendor_file"),
         "run": ("output_dir",),
+        "harness": ("scene_maps",),
     }.items():
         for name in names:
             if values[section].get(name):

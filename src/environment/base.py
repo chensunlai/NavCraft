@@ -17,9 +17,11 @@ class Observation:
 
     def public_dict(self) -> dict:
         return {
-            "frame_id": self.frame_id, "rgb": str(self.rgb),
+            "frame_id": self.frame_id,
+            "rgb": str(self.rgb),
             "depth": str(self.depth) if self.depth else None,
-            "pose": self.pose, "camera": self.camera,
+            "pose": self.pose,
+            "camera": self.camera,
         }
 
 
@@ -32,7 +34,8 @@ class PublicTask:
 
     def public_dict(self) -> dict:
         return {
-            "goal_id": self.goal_id, "modality": self.modality,
+            "goal_id": self.goal_id,
+            "modality": self.modality,
             "instruction": self.instruction,
             "image": str(self.image) if self.image else None,
         }
@@ -52,8 +55,10 @@ class Transition:
         return {
             "observation": self.observation.public_dict(),
             "task": self.task.public_dict() if self.task else None,
-            "feedback": self.feedback, "goal_changed": self.goal_changed,
-            "terminated": self.terminated, "truncated": self.truncated,
+            "feedback": self.feedback,
+            "goal_changed": self.goal_changed,
+            "terminated": self.terminated,
+            "truncated": self.truncated,
             "reason": self.reason,
         }
 
@@ -65,6 +70,7 @@ class NavigationInputError(ValueError):
 class Environment(Protocol):
     def reset(self, episode) -> Transition: ...
     def observe(self) -> Observation: ...
+    def panorama(self) -> list[Observation]: ...
     def step(self, action: AtomicAction) -> Transition: ...
     def finish_goal(self) -> Transition: ...
     def finalize(self, reason: str) -> None: ...

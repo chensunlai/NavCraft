@@ -64,6 +64,8 @@ class ResponsesModel(ModelBackend):
             for part in content:
                 if not isinstance(part, dict) or part.get("type") != "input_image":
                     continue
+                part.pop("image_role", None)
+                part.pop("_context_exchange", None)
                 # Some compatible servers validate detail as a required field.
                 part.setdefault("detail", "auto")
                 if "image_path" not in part:
@@ -127,7 +129,9 @@ class ResponsesModel(ModelBackend):
         if "output" not in document:
             raise ModelError("Responses service response is missing output")
         items = document["output"]
-        if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+        if not isinstance(items, list) or any(
+            not isinstance(item, dict) for item in items
+        ):
             raise ModelError("Responses output must be a list of protocol items")
         calls = []
         for item in items:
@@ -137,7 +141,9 @@ class ResponsesModel(ModelBackend):
                 raise ModelError("Responses function call is missing call_id or name")
             arguments = item.get("arguments", "{}")
             if not isinstance(arguments, (str, dict)):
-                raise ModelError("Responses function arguments must be JSON text or object")
+                raise ModelError(
+                    "Responses function arguments must be JSON text or object"
+                )
             calls.append(ToolCall(item["call_id"], item["name"], arguments))
         usage = document.get("usage") or {}
         if not isinstance(usage, dict):

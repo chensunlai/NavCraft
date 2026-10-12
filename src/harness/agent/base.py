@@ -36,6 +36,8 @@ class ToolResult:
     images: list[Path] = field(default_factory=list)
     terminated: bool = False
     truncated: bool = False
+    goal_changed: bool = False
+    image_roles: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

@@ -1,0 +1,17 @@
+harness:
+  runtime: agent
+  scene_maps: data/scene_maps
+  tools:
+  - nav_observe
+  - nav_step
+  - nav_finish
+  - read_text
+  - view_images
+  - mark_pose
+  context:
+    image_prune_after: 10
+    image_keep: 10
+    image_max: 10
+    compact_tokens: 100000
+    compact_chars: 400000
+    keep_turns: 5

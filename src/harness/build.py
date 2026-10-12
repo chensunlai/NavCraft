@@ -7,7 +7,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from src.common.config import ExperimentConfig
-from src.common.register import env_registry, model_registry, runtime_registry, task_registry
+from src.common.register import (
+    env_registry,
+    model_registry,
+    runtime_registry,
+    task_registry,
+)
 from src.dataset.episodes.base import EpisodeSpec
 from src.harness.agent.base import AgentLimits
 from src.harness.session import NavigationSession
@@ -41,22 +46,52 @@ class BuiltExperiment:
             self.runtime.close()
 
 
-def build(config: ExperimentConfig, episode: EpisodeSpec, directory: Path, trace: TraceWriter) -> BuiltExperiment:
+def build(
+    config: ExperimentConfig, episode: EpisodeSpec, directory: Path, trace: TraceWriter
+) -> BuiltExperiment:
     load_builtins()
     task = task_registry.create(config.task["name"], config=config.task)
-    environment = env_registry.create(config.environment["name"], config=config.environment,
-                                      task=task, workspace=directory)
+    environment = env_registry.create(
+        config.environment["name"],
+        config=config.environment,
+        task=task,
+        workspace=directory,
+    )
     model = None
     try:
         model = model_registry.create(config.model["name"], config=config.model)
-        runtime = runtime_registry.create(config.harness.get("runtime", "agent"), model=model, config=config.harness)
+        runtime = runtime_registry.create(
+            config.harness.get("runtime", "agent"), model=model, config=config.harness
+        )
         action_parameters = {
             "forward_step_m": config.environment.get("forward_step", 0.25),
-            "turn_angle_degrees": config.environment.get("turn_angle", 30 if config.environment["name"] == "fake" else 15),
-            "allow_sliding": config.environment.get("allow_sliding", config.environment["name"] == "habitat"),
+            "turn_angle_degrees": config.environment.get(
+                "turn_angle", 30 if config.environment["name"] == "fake" else 15
+            ),
+            "allow_sliding": config.environment.get(
+                "allow_sliding", config.environment["name"] == "habitat"
+            ),
         }
-        session = NavigationSession(environment, episode, trace, config.harness["tools"], action_parameters=action_parameters)
-        limits = AgentLimits(config.run["max_requests"], config.run["timeout_seconds"], config.run["max_context_chars"])
+        assets = None
+        if config.harness.get("scene_maps"):
+            from .assets import SceneAssets
+
+            assets = SceneAssets(
+                episode.scene_id, Path(config.harness["scene_maps"]), directory
+            )
+        session = NavigationSession(
+            environment,
+            episode,
+            trace,
+            config.harness["tools"],
+            action_parameters=action_parameters,
+            assets=assets,
+        )
+        limits = AgentLimits(
+            config.run["max_requests"],
+            config.run["timeout_seconds"],
+            config.run["max_context_chars"],
+        )
         return BuiltExperiment(session, runtime, limits)
     except BaseException:
         environment.close()

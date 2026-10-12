@@ -4,7 +4,7 @@ from src.harness.agent.base import ToolCall, ToolResult, ToolSpec
 
 
 def load_builtin_tools() -> None:
-    from . import navigation  # noqa: F401
+    from . import files, navigation  # noqa: F401
 
 
 class ToolSet:
@@ -16,3 +16,8 @@ class ToolSet:
 
     def call(self, call: ToolCall) -> ToolResult:
         return self.session.execute(call)
+
+    def save_summary(self, text: str) -> str | None:
+        if self.session.assets is not None:
+            return self.session.assets.write_summary(text)
+        return None

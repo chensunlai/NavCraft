@@ -12,8 +12,28 @@ You may inspect or move as needed; there is no prescribed planning workflow. No 
 """
 
 
-def observation_message(data: dict, images: list[Path]) -> dict:
-    return {"role": "user", "content": [
-        {"type": "input_text", "text": json.dumps(data, ensure_ascii=False)},
-        *[{"type": "input_image", "image_path": str(path)} for path in images],
-    ]}
+def visual_system_prompt() -> str:
+    return Path(__file__).with_name("navigation_guide.md").read_text(encoding="utf-8")
+
+
+def observation_message(
+    data: dict, images: list[Path], roles: dict[str, str] | None = None
+) -> dict:
+    return {
+        "role": "user",
+        "content": [
+            {"type": "input_text", "text": json.dumps(data, ensure_ascii=False)},
+            *[
+                {
+                    "type": "input_image",
+                    "image_path": str(path),
+                    **(
+                        {"image_role": roles[str(path)]}
+                        if roles and str(path) in roles
+                        else {}
+                    ),
+                }
+                for path in images
+            ],
+        ],
+    }
