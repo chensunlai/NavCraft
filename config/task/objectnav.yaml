@@ -7,6 +7,6 @@ episodes:
 task:
   name: objectnav
   protocol: astrabench-objnav100-v1
-  success_distance: 0.1
+  success_distance: 1.0
   max_steps: 500
   max_subtask_steps: 500

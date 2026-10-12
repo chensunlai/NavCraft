@@ -1,0 +1,8 @@
+run:
+  name: visual-map-v1
+  output_dir: runs
+  num_workers: 4
+  max_requests: 160
+  timeout_seconds: 1800
+  max_context_chars: 2000000
+  budget_per_goal: true

@@ -1,0 +1,11 @@
+model:
+  name: responses
+  model: Qwen3.8-27B
+  base_url: http://221-api.undertides.cn/v1
+  api_key_env: OMNI_API_KEY
+  api_key_file: config/model/qwen.yaml
+  timeout_seconds: 300
+  max_output_tokens: 8192
+  reasoning_effort: low
+  max_retries: 1
+  include_encrypted_reasoning: false

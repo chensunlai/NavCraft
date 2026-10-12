@@ -16,37 +16,56 @@ from src.harness.build import build
 from src.harness.trace import TraceWriter
 
 
-def run_episode(config: ExperimentConfig, episode: EpisodeSpec, directory: Path) -> dict:
+def run_episode(
+    config: ExperimentConfig, episode: EpisodeSpec, directory: Path
+) -> dict:
     secrets = (config.model.get("api_key", ""),)
     trace = TraceWriter(directory, episode.id, secrets)
     experiment = None
     started = time.monotonic()
-    result = {"episode_id": episode.id, "benchmark": episode.benchmark, "status": "setup_error",
-              "protocol": config.task["protocol"], "metrics": {}}
+    result = {
+        "episode_id": episode.id,
+        "benchmark": episode.benchmark,
+        "status": "setup_error",
+        "protocol": config.task["protocol"],
+        "metrics": {},
+        "planned_goals": len(episode.goals),
+        "provenance": getattr(episode, "provenance", "official"),
+    }
     phase = "setup"
     try:
         experiment = build(config, episode, directory, trace)
         initial = experiment.session.start()
         phase = "runtime"
-        agent_result = experiment.runtime.run(initial, experiment.session.toolset, trace, experiment.limits)
+        agent_result = experiment.runtime.run(
+            initial, experiment.session.toolset, trace, experiment.limits
+        )
         result.update(status=agent_result.reason, agent=asdict(agent_result))
         phase = "evaluation"
-        result["metrics"] = evaluate(experiment.session.environment, agent_result.reason)
+        result["metrics"] = evaluate(
+            experiment.session.environment, agent_result.reason
+        )
     except Exception as error:
         result["status"] = f"{phase}_error"
         result["error"] = redact(f"{type(error).__name__}: {error}", secrets)
         trace.emit("episode_error", error=result["error"])
         if experiment is not None:
             try:
-                result["metrics"] = evaluate(experiment.session.environment, result["status"])
+                result["metrics"] = evaluate(
+                    experiment.session.environment, result["status"]
+                )
             except Exception as scoring_error:
-                result["scoring_error"] = redact(f"{type(scoring_error).__name__}: {scoring_error}", secrets)
+                result["scoring_error"] = redact(
+                    f"{type(scoring_error).__name__}: {scoring_error}", secrets
+                )
     finally:
         try:
             if experiment is not None:
                 experiment.close()
         except Exception as close_error:
-            result["close_error"] = redact(f"{type(close_error).__name__}: {close_error}", secrets)
+            result["close_error"] = redact(
+                f"{type(close_error).__name__}: {close_error}", secrets
+            )
             result["status"] = "cleanup_error"
         result["elapsed_seconds"] = time.monotonic() - started
         result = redact(result, secrets)
@@ -65,10 +84,15 @@ def _child(config: ExperimentConfig, episode: EpisodeSpec, directory: Path) -> N
         if not Path(vendor).is_file():
             raise FileNotFoundError(f"EGL vendor file does not exist: {vendor}")
         os.environ["__EGL_VENDOR_LIBRARY_FILENAMES"] = str(vendor)
-    write_json(directory / "worker.json", {
-        "pid": os.getpid(), "gpu": config.environment.get("gpu"), "egl_vendor_file": vendor,
-        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
-    })
+    write_json(
+        directory / "worker.json",
+        {
+            "pid": os.getpid(),
+            "gpu": config.environment.get("gpu"),
+            "egl_vendor_file": vendor,
+            "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+        },
+    )
     with (directory / "worker.log").open("w") as log:
         os.dup2(log.fileno(), 1)
         os.dup2(log.fileno(), 2)
@@ -176,6 +200,8 @@ class EpisodeWorker:
             result = {
                 "episode_id": self.episode.id,
                 "benchmark": self.episode.benchmark,
+                "planned_goals": len(self.episode.goals),
+                "provenance": getattr(self.episode, "provenance", "official"),
                 "status": "worker_timeout" if timed_out else "worker_error",
                 "protocol": self.config.task["protocol"],
                 "metrics": metrics,

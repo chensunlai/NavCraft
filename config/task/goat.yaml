@@ -8,6 +8,6 @@ episodes:
 task:
   name: goat
   protocol: astrabench-goat-v1
-  success_distance: 3.0
+  success_distance: 1.0
   max_steps: 5000
   max_subtask_steps: 500

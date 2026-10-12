@@ -17,9 +17,16 @@ from src.common.register import episode_registry
 from src.harness.build import load_builtins
 
 
-def _slot_config(config: ExperimentConfig, slot: int) -> ExperimentConfig:
+def _slot_config(config: ExperimentConfig, slot: int, episode=None) -> ExperimentConfig:
     """Resolve a slot's GPU without sharing mutable runtime configuration."""
     assigned = copy.deepcopy(config)
+    if (
+        episode is not None
+        and episode.benchmark == "goat"
+        and assigned.run.get("budget_per_goal", False)
+    ):
+        assigned.run["max_requests"] *= len(episode.goals)
+        assigned.run["timeout_seconds"] *= len(episode.goals)
     if config.environment["name"] == "habitat" or any(
         name in config.environment for name in ("gpu", "gpus")
     ):
@@ -39,7 +46,7 @@ def _run_concurrent(config, episodes, directory, record) -> None:
                 if slot not in active and next_index < len(episodes):
                     index = next_index
                     worker = EpisodeWorker(
-                        _slot_config(config, slot),
+                        _slot_config(config, slot, episodes[index]),
                         episodes[index],
                         directory / "episodes" / f"{index:04d}",
                     )
@@ -72,7 +79,10 @@ def _run_concurrent(config, episodes, directory, record) -> None:
 def run_experiment(config: ExperimentConfig) -> tuple[Path, dict]:
     validate(config)
     load_builtins()
-    source = episode_registry.create(config.task["name"], config=config.episodes)
+    source = episode_registry.create(
+        "manifest" if config.episodes["name"] == "manifest" else config.task["name"],
+        config=config.episodes,
+    )
     episodes = source.load()
     label = re.sub(
         r"[^A-Za-z0-9_.-]+",
@@ -88,7 +98,12 @@ def run_experiment(config: ExperimentConfig) -> tuple[Path, dict]:
 
     def persist() -> dict:
         results = [completed[index] for index in sorted(completed)]
-        summary = summarize(results, len(episodes))
+        planned_goals = (
+            sum(len(episode.goals) for episode in episodes)
+            if episodes[0].benchmark == "goat"
+            else None
+        )
+        summary = summarize(results, len(episodes), planned_goals)
         write_json(directory / "results.json", results)
         write_json(directory / "summary.json", summary)
         return summary
@@ -109,7 +124,9 @@ def run_experiment(config: ExperimentConfig) -> tuple[Path, dict]:
                 episode_dir = directory / "episodes" / f"{index:04d}"
                 record(
                     index,
-                    execute_episode(_slot_config(config, 0), episode, episode_dir),
+                    execute_episode(
+                        _slot_config(config, 0, episode), episode, episode_dir
+                    ),
                 )
         else:
             _run_concurrent(config, episodes, directory, record)

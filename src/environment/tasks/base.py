@@ -25,11 +25,15 @@ class TaskAdapter:
 
     def __init__(self, config: dict):
         self.config = config
-        self.threshold = float(config.get("success_distance", self.default_success_distance))
+        self.threshold = float(
+            config.get("success_distance", self.default_success_distance)
+        )
         self.max_steps = int(config.get("max_steps", self.default_max_steps))
         self.max_subtask_steps = int(config.get("max_subtask_steps", 500))
         if self.threshold <= 0 or self.max_steps < 1 or self.max_subtask_steps < 1:
-            raise ValueError("Task success distance and action budgets must be positive")
+            raise ValueError(
+                "Task success distance and action budgets must be positive"
+            )
         self.protocol = config.get("protocol", f"astrabench-{self.family}-v1")
         self.episode = None
 
@@ -37,7 +41,9 @@ class TaskAdapter:
         self.episode = episode
         self.goals = episode.goals
         if not self.goals or (self.family != "goat" and len(self.goals) != 1):
-            raise ValueError(f"{self.family} needs {'one or more' if self.family == 'goat' else 'exactly one'} goals")
+            raise ValueError(
+                f"{self.family} needs {'one or more' if self.family == 'goat' else 'exactly one'} goals"
+            )
         self.goal_index = self.steps = self.goal_steps = 0
         self.path_length = self.goal_path_length = 0.0
         self.trajectory = [list(point)]
@@ -57,7 +63,11 @@ class TaskAdapter:
     @property
     def movement_actions(self) -> tuple[str, ...]:
         actions = ("move_forward", "turn_left", "turn_right")
-        return actions if self.episode.benchmark == "r2r" else actions + ("look_up", "look_down")
+        return (
+            actions
+            if self.episode.benchmark == "r2r"
+            else actions + ("look_up", "look_down")
+        )
 
     def set_goal_distance(self, distance: float) -> None:
         self.shortest = self.distance = self.minimum_distance = distance
@@ -89,13 +99,19 @@ class TaskAdapter:
 
     def _record_goal(self, *, stopped: bool, reason: str) -> None:
         success = stopped and self.distance < self.threshold
-        self.subtasks.append({
-            "index": self.goal_index, "modality": self.goal["modality"],
-            "success": float(success), "spl": spl(success, self.shortest, self.goal_path_length),
-            "distance": self.distance, "shortest_path": self.shortest,
-            "path_length": self.goal_path_length, "steps": self.goal_steps,
-            "reason": reason,
-        })
+        self.subtasks.append(
+            {
+                "index": self.goal_index,
+                "modality": self.goal["modality"],
+                "success": float(success),
+                "spl": spl(success, self.shortest, self.goal_path_length),
+                "distance": self.distance,
+                "shortest_path": self.shortest,
+                "path_length": self.goal_path_length,
+                "steps": self.goal_steps,
+                "reason": reason,
+            }
+        )
 
     def _advance(self, *, stopped: bool, reason: str) -> TaskUpdate:
         self._record_goal(stopped=stopped, reason=reason)
@@ -182,18 +198,29 @@ class TaskAdapter:
         completed = {result["index"] for result in results}
         for index, goal in enumerate(self.goals):
             if index not in completed:
-                results.append({"index": index, "modality": goal["modality"],
-                                "success": 0.0, "spl": 0.0,
-                                "reason": self.reason or "incomplete"})
-        return {"metrics": self.metrics(), "subtasks": results,
-                "trajectory": self.trajectory, "goal_index": self.goal_index,
-                "terminated": self.terminated, "truncated": self.truncated}
+                results.append(
+                    {
+                        "index": index,
+                        "modality": goal["modality"],
+                        "success": 0.0,
+                        "spl": 0.0,
+                        "reason": self.reason or "incomplete",
+                    }
+                )
+        return {
+            "metrics": self.metrics(),
+            "subtasks": results,
+            "trajectory": self.trajectory,
+            "goal_index": self.goal_index,
+            "terminated": self.terminated,
+            "truncated": self.truncated,
+        }
 
 
 @task_registry.register("objectnav")
 class ObjectNavTask(TaskAdapter):
     family = "objectnav"
-    default_success_distance = 0.1
+    default_success_distance = 1.0
 
 
 @task_registry.register("vlnce")
@@ -204,4 +231,5 @@ class VLNCETask(TaskAdapter):
 @task_registry.register("goat")
 class GOATTask(TaskAdapter):
     family = "goat"
+    default_success_distance = 1.0
     default_max_steps = 5000

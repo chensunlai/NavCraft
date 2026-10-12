@@ -1,0 +1,20 @@
+flowchart TD
+    Runtime["AgentRuntime：模型与工具循环"]
+    Model["ModelBackend：模型服务"]
+    Context["AgentContext：历史、图片剪枝、摘要"]
+    Tools["ToolSet：工具接口"]
+    Runtime <--> Model
+    Runtime <--> Context
+    Runtime --> Tools
+    Tools --> Query["资料查询<br/>read_text · view_images"]
+    Tools --> Observe["观察与位置标记<br/>nav_observe · mark_pose"]
+    Tools --> Action["动作执行与任务结束<br/>nav_step · nav_finish"]
+    Query --> Session["NavigationSession：资源访问与导航交互"]
+    Observe --> Session
+    Action --> Session
+    Session <--> Assets["SceneAssets：空间资料与运行记忆<br/>俯视图、场景描述、证据帧<br/>历史观察、位置标记、摘要"]
+    Session <--> Env["Habitat 环境<br/>获取 RGB、执行原子动作<br/>返回碰撞与任务状态"]
+    Session -->|文字、图片与资源引用| Runtime
+    Session --> Trace["TraceWriter：完整交互记录"]
+    Future["后续扩展：在线地图构建与更新<br/>物体、房间、空间关系与证据关联"]
+    Future -.-> Assets

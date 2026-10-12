@@ -33,18 +33,21 @@ def test_stop_is_counted_and_strict_objectnav_score(tmp_path):
     assert transition.feedback["steps"] == 2
     assert env.metrics()["success"] == 1
     assert env.metrics()["spl"] == 1
-    assert env.metrics()["success_distance"] == 0.1
+    assert env.metrics()["success_distance"] == 1.0
     with pytest.raises(NavigationInputError):
         env.step("move_forward")
     env.close()
 
 
-def test_objectnav_threshold_is_not_vlnce_threshold(tmp_path):
-    task = ObjectNavTask({})
+@pytest.mark.parametrize("task_type,benchmark", [(ObjectNavTask, "objnav"), (GOATTask, "goat")])
+@pytest.mark.parametrize("distance,success", [(0.99, 1), (1.0, 0), (1.01, 0)])
+def test_objectnav_and_goat_strict_one_metre_boundary(tmp_path, task_type, benchmark, distance, success):
+    task = task_type({})
     env = FakeEnvironment({}, task, tmp_path)
-    env.reset(episode(goals=[{"modality": "object", "instruction": "chair", "positions": [[0, 0, -1]]}]))
+    env.reset(episode(goals=[{"modality": "object", "instruction": "chair", "positions": [[0, 0, -distance]]}], benchmark=benchmark))
     env.finish_goal()
-    assert env.metrics()["success"] == 0
+    assert env.metrics()["success_distance"] == 1.0
+    assert env.metrics()["success" if benchmark == "objnav" else "partial_success"] == success
 
 
 def test_public_transition_never_contains_annotation_positions_or_metrics(tmp_path):
@@ -85,14 +88,14 @@ def test_goat_three_modalities_advance_at_same_pose(tmp_path):
 
 
 def test_goat_subtask_limit_switches_without_reset(tmp_path):
-    goals = [{"modality": "object", "instruction": "chair", "positions": [[0, 0, -2]]}] * 2
+    goals = [{"modality": "object", "instruction": "chair", "positions": [[0, 0, -0.75]]}] * 2
     env = FakeEnvironment({}, GOATTask({"max_subtask_steps": 1}), tmp_path)
     env.reset(episode(goals, "goat"))
     transition = env.step("move_forward")
     assert transition.goal_changed and transition.task.goal_id == 1
     assert transition.observation.pose["position"] == [0, 0, -0.25]
     assert env.task.goal_steps == 0
-    assert env.task.shortest == 1.75
+    assert env.task.shortest == 0.5
     assert env.metrics()["subtask_success"] == [0, 0]
     env.finish_goal()
     assert env.metrics()["subtask_success"] == [0, 1]

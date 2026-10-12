@@ -7,3 +7,4 @@ model:
   max_output_tokens: 4096
   max_retries: 1
   include_encrypted_reasoning: false
+  reasoning_effort: low

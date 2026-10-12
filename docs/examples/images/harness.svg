@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1120" viewBox="0 0 1600 1120">
+<defs><marker id="a" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto-start-reverse"><path d="M0 0 L9 4.5 L0 9" fill="#9ba8b8"/></marker></defs>
+<style>text{font-family:"Noto Sans CJK SC","Microsoft YaHei",sans-serif;fill:#8ecaff;text-anchor:middle;font-size:23px}.sub{font-size:19px;fill:#c4d5e7}.line{stroke:#9ba8b8;stroke-width:2;fill:none;marker-end:url(#a)}</style>
+<rect width="1600" height="1120" fill="#1f1f1f"/>
+<rect x="560" y="35" width="480" height="100" rx="22" fill="#102b40" stroke="#3e5263" stroke-width="2"/>
+<text x="800.0" y="71">AgentRuntime：模型与工具循环</text>
+<text x="800.0" y="100" class="sub">自主选择查询、观察、定位和行动</text>
+<rect x="90" y="220" width="400" height="90" rx="22" fill="#102b40" stroke="#3e5263" stroke-width="2"/>
+<text x="290.0" y="256">ModelBackend：模型服务</text>
+<rect x="600" y="220" width="400" height="90" rx="22" fill="#102b40" stroke="#3e5263" stroke-width="2"/>
+<text x="800.0" y="256">AgentContext：上下文管理</text>
+<text x="800.0" y="285" class="sub">交互历史、图片剪枝、摘要</text>
+<rect x="1110" y="220" width="400" height="90" rx="22" fill="#102b40" stroke="#3e5263" stroke-width="2"/>
+<text x="1310.0" y="256">ToolSet：工具接口</text>
+<path d="M650 135 V170 H290 V220" class="line" marker-start="url(#a)"/>
+<path d="M800 135 V220" class="line" marker-start="url(#a)"/>
+<path d="M950 135 V170 H1310 V220" class="line"/>
+<rect x="90" y="410" width="400" height="100" rx="22" fill="#102b40" stroke="#3e5263" stroke-width="2"/>
+<text x="290.0" y="446">资料查询</text>
+<text x="290.0" y="475" class="sub">read_text · view_images</text>
+<rect x="600" y="410" width="400" height="100" rx="22" fill="#102b40" stroke="#3e5263" stroke-width="2"/>
+<text x="800.0" y="446">观察与位置标记</text>
+<text x="800.0" y="475" class="sub">nav_observe · mark_pose</text>
+<rect x="1110" y="410" width="400" height="100" rx="22" fill="#102b40" stroke="#3e5263" stroke-width="2"/>
+<text x="1310.0" y="446">动作执行与任务结束</text>
+<text x="1310.0" y="475" class="sub">nav_step · nav_finish</text>
+<path d="M1310 310 V355 H290 V410" class="line"/>
+<path d="M1310 355 H800 V410" class="line"/>
+<path d="M1310 355 V410" class="line"/>
+<rect x="560" y="595" width="480" height="115" rx="22" fill="#102b40" stroke="#3e5263" stroke-width="2"/>
+<text x="800.0" y="631">NavigationSession</text>
+<text x="800.0" y="660" class="sub">资源访问与导航交互</text>
+<text x="800.0" y="689" class="sub">返回文字、图片与资源引用</text>
+<path d="M290 510 V552 H670 V595" class="line"/>
+<path d="M800 510 V595" class="line"/>
+<path d="M1310 510 V552 H930 V595" class="line"/>
+<rect x="90" y="825" width="400" height="145" rx="22" fill="#102b40" stroke="#3e5263" stroke-width="2"/>
+<text x="290.0" y="861">SceneAssets：空间资料与记忆</text>
+<text x="290.0" y="890" class="sub">地图、场景描述、证据帧</text>
+<text x="290.0" y="919" class="sub">历史观察、位置标记、摘要</text>
+<rect x="600" y="825" width="400" height="145" rx="22" fill="#102b40" stroke="#3e5263" stroke-width="2"/>
+<text x="800.0" y="861">Habitat 环境</text>
+<text x="800.0" y="890" class="sub">RGB 观察、原子动作执行</text>
+<text x="800.0" y="919" class="sub">碰撞与任务状态反馈</text>
+<rect x="1110" y="825" width="400" height="145" rx="22" fill="#102b40" stroke="#3e5263" stroke-width="2"/>
+<text x="1310.0" y="861">TraceWriter：交互记录</text>
+<text x="1310.0" y="890" class="sub">模型输入输出、工具调用</text>
+<text x="1310.0" y="919" class="sub">观察、动作与压缩记录</text>
+<path d="M670 710 V765 H290 V825" class="line" marker-start="url(#a)"/>
+<path d="M800 710 V825" class="line" marker-start="url(#a)"/>
+<path d="M930 710 V765 H1310 V825" class="line"/>
+<path d="M560 650 H40 V85 H560" class="line"/>
+<text x="59" y="650" class="sub" transform="rotate(-90 59 650)">工具反馈返回模型，继续下一轮决策</text>
+<rect x="90" y="1020" width="910" height="75" rx="22" fill="#102b40" stroke="#3e5263" stroke-width="2" stroke-dasharray="8 6"/>
+<text x="545.0" y="1056">后续扩展：在线构建／更新物体、房间、关系与证据关联</text>
+<path d="M290 1020 V970" class="line" stroke-dasharray="7 5"/>
+</svg>

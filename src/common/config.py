@@ -2,6 +2,7 @@
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
+import os
 from typing import Any, Mapping
 
 import yaml
@@ -34,7 +35,9 @@ class ExperimentConfig:
 
 def resolve_path(value: str) -> str:
     path = Path(value).expanduser()
-    return str((ROOT / path).resolve()) if not path.is_absolute() else str(path.resolve())
+    return (
+        str((ROOT / path).resolve()) if not path.is_absolute() else str(path.resolve())
+    )
 
 
 def load_config(paths: Mapping[str, str]) -> ExperimentConfig:
@@ -46,7 +49,9 @@ def load_config(paths: Mapping[str, str]) -> ExperimentConfig:
         path = Path(resolve_path(paths[variable]))
         raw = yaml.safe_load(path.read_text())
         if not isinstance(raw, dict) or set(raw) != sections:
-            raise ValueError(f"{path}: expected exactly these sections: {sorted(sections)}")
+            raise ValueError(
+                f"{path}: expected exactly these sections: {sorted(sections)}"
+            )
         for section in sections:
             if not isinstance(raw[section], dict):
                 raise ValueError(f"{path}: {section} must be a mapping")
@@ -62,6 +67,14 @@ def load_config(paths: Mapping[str, str]) -> ExperimentConfig:
             if values[section].get(name):
                 values[section][name] = resolve_path(values[section][name])
     config = ExperimentConfig(**values, sources=sources)
+    if config.model.get("name") == "responses" and not config.model.get("api_key"):
+        key = os.environ.get(config.model.get("api_key_env", "OMNI_API_KEY"), "")
+        if not key and config.model.get("api_key_file"):
+            credentials = yaml.safe_load(
+                Path(resolve_path(config.model["api_key_file"])).read_text()
+            )
+            key = credentials.get("model", credentials).get("api_key", "")
+        config.model["api_key"] = key
     validate(config)
     return config
 
@@ -82,7 +95,9 @@ def validate(config: ExperimentConfig) -> None:
     if benchmark == "manifest" and not config.episodes.get("manifest"):
         raise ValueError("Manifest source requires episodes.manifest")
     if not config.task.get("protocol"):
-        raise ValueError("task.protocol must explicitly identify the evaluation conditions")
+        raise ValueError(
+            "task.protocol must explicitly identify the evaluation conditions"
+        )
     if config.environment.get("name") not in {"fake", "habitat"}:
         raise ValueError("environment.name must be fake or habitat")
     if "gpu" in config.environment and "gpus" in config.environment:
