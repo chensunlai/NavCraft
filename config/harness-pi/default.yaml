@@ -1,0 +1,9 @@
+python: /home2/chen/.local/anaconda3/envs/vln/bin/python
+credentials: .env.harness-test
+api: openai-responses
+# Canonical service ID; gpt6.1sol returned model_not_found.
+model: gpt-6.1-sol
+budget_file: cache/harness-pi/implementation-20261014-budget.json
+max_total_requests: 200
+scene_archive: data/scene_maps/hm3d/val/00829-QaLdnwvtxbs
+output_dir: runs/harness-pi
