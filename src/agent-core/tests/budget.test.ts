@@ -46,7 +46,7 @@ test('an unlimited global ledger persists attempts while each run has its own ha
   let sent = 0; globalThis.fetch = async () => { sent++; return new Response('{}'); };
   try {
     const file = join(dir, 'budget.json');
-    const first = new RequestBudget(file, 1, new Trace(join(dir, 'first'), dir), null);
+    const first = new RequestBudget(file, 1, new Trace(join(dir, 'first'), dir));
     await first.fetch('http://invalid.local');
     await assert.rejects(first.fetch('http://invalid.local'), /BUDGET/);
     const second = new RequestBudget(file, 2, new Trace(join(dir, 'second'), dir), null);

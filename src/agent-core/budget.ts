@@ -5,7 +5,7 @@ import type { Trace } from './trace.js';
 export class RequestBudget {
   readonly start: number;
   exhausted = false;
-  constructor(readonly file: string, readonly caseLimit: number, readonly trace: Trace, readonly totalLimit: number | null = 200) {
+  constructor(readonly file: string, readonly caseLimit: number, readonly trace: Trace, readonly totalLimit: number | null = null) {
     mkdirSync(dirname(file), { recursive: true });
     if (!existsSync(file)) writeFileSync(file, JSON.stringify({ limit: totalLimit, attempts: [] }, null, 2));
     const state = this.state();
