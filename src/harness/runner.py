@@ -18,7 +18,7 @@ from .session import NavigationSession, _write
 from . import memory
 from src.bench import harness_verify as verify
 from .tools import ToolSet
-from .config import core_options, credentials
+from .config import context_options, core_options, credentials
 from .trace import TraceWriter
 from src.bench.harness_cases import case_config
 
@@ -70,6 +70,7 @@ def finish_reason(state, settled, error=None):
 def run_case(repo, config, name, max_requests=None, seconds=None, directory=None, cancel_event=None):
     repo = Path(repo).resolve()
     job = case_config(repo, name)
+    context = context_options(config)
     started = time.monotonic()
     seconds = seconds or job["seconds"]
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
@@ -95,9 +96,9 @@ def run_case(repo, config, name, max_requests=None, seconds=None, directory=None
         event = message.get("event", {})
         if event.get("type") == "turn_start":
             toolset.turn_start()
-        if event.get("type") == "compaction_end" and (event.get("data") or {}).get("result"):
-            client.request("configure", {"compaction": {"enabled": True, "reserveTokens": 16384,
-                                                        "keepRecentTokens": 20000}})
+        if (name == "compaction" and event.get("type") == "compaction_end"
+                and (event.get("data") or {}).get("result")):
+            client.request("configure", {"compaction": {"enabled": True, **context["compaction"]}})
 
     try:
         trace.redact_with(credentials(config, repo)["apiKey"])
@@ -165,7 +166,8 @@ def run_case(repo, config, name, max_requests=None, seconds=None, directory=None
         if (name == "compaction" and not state.get("done") and not cancel_event.is_set()
                 and remaining() > 0.1 and settled.get("requests", 0) < (max_requests or job["requests"])
                 and settled.get("reason") == "model_finished"):
-            client.request("configure", {"compaction": {"enabled": True, "reserveTokens": 65000,
+            # Lower only this diagnostic's trigger to 512 tokens, regardless of model capacity.
+            client.request("configure", {"compaction": {"enabled": True, "reserveTokens": context["contextWindow"] - 512,
                                                         "keepRecentTokens": 1200}})
             settled = client.run_prompt("Continue after compression: reopen your note and its evidence image, call nav_observe(single), update the note distinguishing old estimates from the new frame, then give a brief answer. Do not claim tentative spatial correspondence is confirmed without evidence.",
                                          [], toolset.call, remaining(), on_event, cancel_event)

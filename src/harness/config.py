@@ -36,9 +36,20 @@ def credentials(config, repo=REPO):
     return auth
 
 
+def context_options(config):
+    window = config.get("context_window", 128000)
+    threshold = config.get("compaction_threshold", 100000)
+    recent = config.get("keep_recent_tokens", 20000)
+    if (any(type(value) is not int for value in (window, threshold, recent))
+            or not 0 < recent < threshold <= window - 8192):
+        raise ValueError("Context settings require 0 < recent < threshold and at least 8192 reserved tokens")
+    return {"contextWindow": window,
+            "compaction": {"reserveTokens": window - threshold, "keepRecentTokens": recent}}
+
+
 def core_options(config, repo, directory, workspace, prompt, tools, max_requests,
                  checkpoint=None, compact=True):
-    return {"workspace": str(workspace), "directory": str(directory),
+    return {**context_options(config), "workspace": str(workspace), "directory": str(directory),
             "budgetFile": str(Path(directory) / "private/requests.json"), "totalLimit": None,
             "maxRequests": max_requests, "auth": credentials(config, repo),
             "modelId": config["model"], "api": config["api"], "python": config["python"],

@@ -21,6 +21,7 @@ export interface RuntimeOptions {
   auth: { baseUrl: string; model: string; apiKey: string };
   modelId?: string; api?: 'openai-responses' | 'openai-completions'; python?: string; systemPrompt: string; tools?: ToolDefinition[];
   coding?: boolean; timeoutSeconds?: number; extensions?: ExtensionFactory[]; compact?: boolean;
+  contextWindow?: number; compaction?: { reserveTokens: number; keepRecentTokens: number };
   checkpoint?: () => PublicCheckpoint | undefined | Promise<PublicCheckpoint | undefined>;
   executionPolicy?: ExecutionPolicy; tracePersist?: boolean;
   totalLimit?: number | null; onEvent?: (event: { timestamp: string; type: string; data: unknown }) => void;
@@ -31,15 +32,22 @@ export async function runtime(options: RuntimeOptions) {
   const requestedModel = auth.model;
   if (options.modelId) auth.model = options.modelId;
   if (options.coding !== false && !options.python) throw new Error('Coding tools require an explicit Python executable');
+  const contextWindow = options.contextWindow ?? 128000;
+  const compaction = { enabled: options.compact ?? false, reserveTokens: contextWindow - 100000, keepRecentTokens: 20000, ...options.compaction };
+  if (![contextWindow, compaction.reserveTokens, compaction.keepRecentTokens].every(Number.isInteger)
+      || compaction.reserveTokens < 8192 || compaction.keepRecentTokens <= 0
+      || compaction.keepRecentTokens >= contextWindow - compaction.reserveTokens) {
+    throw new Error('Invalid context window or compaction settings');
+  }
   const trace = new Trace(join(options.directory, 'private'), options.workspace, [auth.apiKey], options.onEvent, options.tracePersist !== false, options.executionPolicy?.readWrite);
   const budget = new RequestBudget(options.budgetFile, options.maxRequests, trace, options.totalLimit);
   const agentDir = join(options.directory, 'private', 'pi'); mkdirSync(agentDir, { recursive: true });
   const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, 'auth.json'), modelsPath: null, allowModelNetwork: false });
   const api = options.api ?? 'openai-responses';
-  modelRuntime.registerProvider('navcraft', { baseUrl: auth.baseUrl.endsWith('/v1') ? auth.baseUrl : auth.baseUrl + '/v1', api, apiKey: auth.apiKey, models: [{ id: auth.model, name: auth.model, reasoning: true, input: ['text', 'image'], contextWindow: 65536, maxTokens: 8192, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] });
+  modelRuntime.registerProvider('navcraft', { baseUrl: auth.baseUrl.endsWith('/v1') ? auth.baseUrl : auth.baseUrl + '/v1', api, apiKey: auth.apiKey, models: [{ id: auth.model, name: auth.model, reasoning: true, input: ['text', 'image'], contextWindow, maxTokens: 8192, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] });
   await modelRuntime.setRuntimeApiKey('navcraft', auth.apiKey);
   const tools = [...(options.coding === false ? [] : createCodingTools(options.workspace, options.python!, options.executionPolicy)), ...(options.tools ?? [])];
-  const settingsManager = SettingsManager.inMemory({ compaction: { enabled: options.compact ?? false, reserveTokens: 16384, keepRecentTokens: 20000 }, retry: { enabled: false }, cacheWarming: 'off' });
+  const settingsManager = SettingsManager.inMemory({ compaction, retry: { enabled: false }, cacheWarming: 'off' });
   let controlledStream!: StreamFn;
   const factories = [...(options.extensions ?? []), ...(options.checkpoint ? [createCheckpointCompaction((...args) => controlledStream(...args), options.checkpoint, trace, options.executionPolicy)] : [])];
   let resourceLoader: ResourceLoader = explicitLoader(options.systemPrompt);
@@ -63,7 +71,7 @@ export async function runtime(options: RuntimeOptions) {
     if (event.type === 'tool_execution_end') trace.snapshot(`after_tool:${event.toolName}`);
   });
   trace.snapshot('initial');
-  trace.emit('runtime_started', { pi: '1.2.0', requestedModel, model: auth.model, api, baseUrl: auth.baseUrl, thinking: 'high', maxTokens: 8192, contextWindow: 65536, tools: tools.map(t => t.name) });
+  trace.emit('runtime_started', { pi: '1.2.0', requestedModel, model: auth.model, api, baseUrl: auth.baseUrl, thinking: 'high', maxTokens: 8192, contextWindow, compaction, tools: tools.map(t => t.name) });
   writeFileSync(join(options.directory, 'config.json'), JSON.stringify({ ...options, auth: options.auth ? '[PRIVATE]' : undefined, tools: tools.map(t => t.name), extensions: undefined, baseUrl: auth.baseUrl, model: auth.model }, null, 2));
   return { session, trace, budget, settingsManager, modelRuntime };
 }

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sys
 import weakref
+from unittest.mock import Mock
 
 from PIL import Image
 import pytest
@@ -106,6 +107,59 @@ def test_model_configuration_is_sent_only_to_core_not_public_workspace(app, tmp_
     public = b"\n".join(path.read_bytes() for path in (directory / "workspace").rglob("*") if path.is_file())
     for private_value in (app[2], app[1]["model"], "private-model-service.invalid", "credentials.env"):
         assert private_value.encode() not in public
+
+
+@pytest.mark.parametrize("kind", ["query", "compaction"])
+def test_compaction_diagnostic_restores_custom_budget_without_resetting_regular_cases(
+        app, tmp_path, monkeypatch, kind):
+    repo, config, _ = app
+    config.update(context_window=131072, compaction_threshold=98000,
+                  keep_recent_tokens=18000, scene_archive="unused-scene")
+    core = Mock()
+    monkeypatch.setattr(runner, "CoreClient", Mock(return_value=core))
+    monkeypatch.setattr(runner, "case_config", lambda *_: {"sample": "sample", "requests": 4, "seconds": 2})
+    if kind == "compaction":
+        (repo / "src/harness").mkdir(parents=True)
+        (repo / "src/harness/navigation_prompt.md").write_text("Fixture navigation task")
+        monkeypatch.setattr(runner.memory, "prepare", lambda _, workspace, **kwargs:
+                            (Path(workspace) / "memory/state.json").write_text("{}"))
+        monkeypatch.setattr(runner.memory, "render", lambda *_: {"images": ["scene/map.png"], "data": {}})
+        session = Mock()
+        session.init.return_value = {"task": {"goal_id": 0}, "initial_hint": {"map_id": "L1"}, "images": []}
+        session.finalize.return_value = {"truncated": True}
+        monkeypatch.setattr(runner, "NavigationSession", Mock(return_value=session))
+
+    phases = []
+
+    def prompt(text, images, execute, seconds, on_event, cancel_event):
+        phases.append(text)
+        initial = core.request.call_args_list[0].args[1]
+        assert initial["contextWindow"] - initial["compaction"]["reserveTokens"] == 98000
+        assert initial["compaction"]["keepRecentTokens"] == 18000
+        if kind == "query" or len(phases) == 2:
+            before = core.request.call_count
+            if kind == "compaction":
+                forced = core.request.call_args.args[1]["compaction"]
+                assert initial["contextWindow"] - forced["reserveTokens"] < 2000, \
+                    "The short diagnostic must trigger even with a 128k context window"
+            on_event({"type": "event", "event": {"type": "compaction_end",
+                      "data": {"result": {"summary": "fixture summary"}}}})
+            if kind == "query":
+                assert core.request.call_count == before, "Normal compaction must not override runtime settings"
+            else:
+                assert core.request.call_args.args == ("configure", {
+                    "compaction": {"enabled": True, **initial["compaction"]}})
+        return {"reason": "model_finished", "answer": "continued", "requests": len(phases),
+                "last": {"stopReason": "stop"}}
+
+    core.run_prompt.side_effect = prompt
+    directory = tmp_path / kind
+    runner.run_case(repo, config, kind, directory=directory)
+    result = json.loads((directory / "result.json").read_text())
+    assert result["error"] is None
+    assert len(phases) == (2 if kind == "compaction" else 1)
+    if kind == "compaction":
+        assert result["compaction"] == {"compacted": True, "count": 1}
 
 
 @pytest.mark.parametrize("kind", ["query", "coding"])

@@ -19,7 +19,7 @@ python -m src.harness --config config/harness-pi/default.yaml run --case query
 python -m src.harness run --case objnav --max-requests 32 --seconds 1800
 ```
 
-沿用现有 `config/harness-pi` 配置。模型服务凭据由 Python 从本地私有配置读取，显式传入 Core；不写入公开 workspace。默认 high reasoning、8192 输出 token、300 秒请求超时。64k 是运行上下文预算，未据此验证服务容量。
+沿用现有 `config/harness-pi` 配置。模型服务凭据由 Python 从本地私有配置读取，显式传入 Core；不写入公开 workspace。默认 high reasoning、8192 输出 token、300 秒请求超时。按用户提供的服务能力配置 128000 token 窗口，估算上下文超过 100000 token 时触发 Pi 压缩，近期交互预算为 20000 token；三项均可在配置中调整。压缩专项临时降低触发阈值，完成后恢复正常配置。历史真实测试使用 65536 窗口，不作为新阈值的实测证据。
 
 ## 代码入口
 

@@ -82,6 +82,17 @@ test("generic tools callback to Python while prompt is pending, then preserve sk
   } finally { await f.close(); }
 });
 
+test("a truncated answer is reported as output_limit rather than completed", async () => {
+  const f = await setup([message([{ type: "text", text: "unfinished answer" }], "length")]);
+  try {
+    await f.initialize();
+    f.send("prompt", "prompt", { text: "Answer briefly" });
+    const settled = await f.wait((record) => record.type === "settled");
+    assert.equal(settled.reason, "output_limit");
+    assert.equal(settled.answer, "unfinished answer");
+  } finally { await f.close(); }
+});
+
 test("host completion stops at the tool boundary, without another model request", async () => {
   const f = await setup([message([{ type: "toolCall", id: "event", name: "inspect_local", arguments: { label: "event" } }, { type: "toolCall", id: "extra", name: "inspect_local", arguments: { label: "extra" } }], "toolUse")]);
   try {

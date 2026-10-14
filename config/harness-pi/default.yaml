@@ -3,6 +3,9 @@ credentials: .env.harness-test
 api: openai-responses
 # Canonical service ID; gpt6.1sol returned model_not_found.
 model: gpt-6.1-sol
+context_window: 128000
+compaction_threshold: 100000
+keep_recent_tokens: 20000
 # Actual requests are counted per episode, including compaction and failures.
 # The previous implementation-20261014-budget.json remains an immutable record.
 max_total_requests: null

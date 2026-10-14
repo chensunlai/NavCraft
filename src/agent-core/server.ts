@@ -187,7 +187,7 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
         catch (cause) { error = String(cause); }
         finally { clearTimeout(timer); }
         const last = current.session.messages.at(-1) as any;
-        const reason = failureReason ?? (current.budget.exhausted ? "request_budget" : endRun ? "host_end" : last?.stopReason === "aborted" ? "aborted" : last?.stopReason === "error" ? "model_error" : error ? "runtime_error" : "model_finished");
+        const reason = failureReason ?? (current.budget.exhausted ? "request_budget" : endRun ? "host_end" : last?.stopReason === "aborted" ? "aborted" : last?.stopReason === "error" ? "model_error" : last?.stopReason === "length" ? "output_limit" : error ? "runtime_error" : "model_finished");
         current.trace.snapshot("prompt_settled");
         // Receiving settled is the host's permission to send its next prompt.
         running = undefined;
