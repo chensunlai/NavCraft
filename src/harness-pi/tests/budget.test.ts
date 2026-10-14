@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Trace } from '../trace.js';
@@ -17,5 +17,23 @@ test('HTTP attempts include failed requests and restart-safe global/case limits'
     await assert.rejects(restarted.fetch('http://invalid.local'), /fixture/);
     await assert.rejects(restarted.fetch('http://invalid.local'), /BUDGET/);
     assert.equal(sent, 2); assert.equal(restarted.totalUsed, 2);
+  } finally { globalThis.fetch = old; rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+test('separate runs share the global ceiling and an occupied ledger lock fails closed', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'navcraft-budget-lock-')); const old = globalThis.fetch;
+  let sent = 0; globalThis.fetch = async () => { sent++; return new Response('{}'); };
+  try {
+    const file = join(dir, 'budget.json');
+    const a = new RequestBudget(file, 2, new Trace(join(dir, 'a'), dir), 2);
+    const b = new RequestBudget(file, 2, new Trace(join(dir, 'b'), dir), 2);
+    writeFileSync(file + '.lock', 'fixture');
+    await assert.rejects(a.fetch('http://invalid.local'), /locked/);
+    assert.equal(sent, 0); unlinkSync(file + '.lock');
+    await a.fetch('http://invalid.local'); await b.fetch('http://invalid.local');
+    assert.equal(a.used, 1); assert.equal(b.used, 1);
+    await assert.rejects(a.fetch('http://invalid.local'), /BUDGET/);
+    assert.equal(sent, 2);
   } finally { globalThis.fetch = old; rmSync(dir, { recursive: true, force: true }); }
 });
