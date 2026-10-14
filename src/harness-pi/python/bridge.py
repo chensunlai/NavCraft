@@ -92,7 +92,7 @@ class AtomicTaskAdapter(TaskAdapter):
 
 
 class Bridge:
-    def __init__(self):
+    def __init__(self, cancel_event=None):
         self.env = None
         self.cache = {}
         self.closed = False
@@ -100,6 +100,7 @@ class Bridge:
         self.published = {}
         self.config = {}
         self.mode = "navigation"
+        self.cancel_event = cancel_event
 
     def dispatch(self, request):
         """Idempotent requests: even failed calls are retained; changed retries fail."""
@@ -349,6 +350,9 @@ class Bridge:
         executed = []
         interruption = None
         for action in actions:
+            if self.cancel_event is not None and self.cancel_event.is_set():
+                interruption = "cancelled"
+                break
             if self.mode in {"atomic_ia", "mapping"} and action == "move_forward":
                 if self.env.task.path_length + self.config.get("forward_step", .25) > 4.0001:
                     self.env.finalize("travel_budget")
@@ -376,8 +380,10 @@ class Bridge:
         if not executed:
             from src.environment.base import Transition
 
-            result = self._transition(Transition(self.env.observe(), None, {},
-                                                truncated=True, reason="travel_budget"))
+            result = self._transition(Transition(
+                self.env.observe(), None if self.env.task.done else self.env.public_task, {},
+                terminated=self.env.task.terminated, truncated=self.env.task.truncated,
+                reason=self.env.task.reason))
         result.update(requested_actions=actions, executed_actions=executed, interruption=interruption,
                       terminated=self.env.task.terminated, truncated=self.env.task.truncated,
                       reason=self.env.task.reason)
