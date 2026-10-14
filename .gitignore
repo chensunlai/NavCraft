@@ -7,6 +7,9 @@
 /logs/
 /checkpoints/
 
+# Local agent identities and cross-conversation handoffs.
+/docs/Agents/
+
 # Python environments and tool caches.
 __pycache__/
 *.py[cod]
