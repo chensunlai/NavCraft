@@ -1,0 +1,29 @@
+{
+  "name": "navcraft",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "src/harness-pi/pi/coding-agent"
+  ],
+  "scripts": {
+    "build:pi": "npm run build --workspace @earendil-works/pi-coding-agent",
+    "build": "npm run build:pi && tsc -p src/harness-pi/tsconfig.json",
+    "test:pi": "node --import tsx --test src/harness-pi/tests/*.test.ts",
+    "harness": "tsx src/harness-pi/cli.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "1.2.0",
+    "@earendil-works/pi-ai": "1.2.0",
+    "@earendil-works/pi-agent-core": "1.2.0",
+    "@sinclair/typebox": "0.34.41",
+    "yaml": "2.9.0"
+  },
+  "devDependencies": {
+    "typescript": "6.0.2",
+    "tsx": "4.21.0",
+    "@types/node": "22.19.19"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

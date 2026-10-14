@@ -28,6 +28,9 @@ htmlcov/
 .idea/
 .DS_Store
 
-# Pi dependencies and compiled runtime.
+# Node dependencies at any directory depth.
 node_modules/
-runtime/pi/dist/
+
+# Compiled Pi runtime.
+src/harness-pi/dist/
+src/harness-pi/pi/coding-agent/dist/
