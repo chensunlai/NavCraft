@@ -14,6 +14,8 @@ python -m src.harness smoke
 
 `doctor` 默认离线；`doctor --online` 运行 Coding 测试。快速 smoke 顺序运行 Coding、局部 IA、压缩续接；`smoke --suite full` 增加查询 QA、ObjectNav、指令、GOAT 和局部构图。
 
+运动中压缩单独运行 `python -m src.harness run --case moving_compaction`（24 请求／10 分钟）。使用预建地图，在同一环境与同一会话中先真实短移、记录带帧引用的判断；目标未完成时将触发点临时降至 512 token，压缩后恢复正常配置并继续完成局部事件。私有轨迹、图片、实际工具消息、配置回执和正常关闭共同核验。它不代表自然达到 100k 的实测。
+
 ```bash
 python -m src.harness --config config/harness-pi/default.yaml run --case query
 python -m src.harness run --case objnav --max-requests 32 --seconds 1800
