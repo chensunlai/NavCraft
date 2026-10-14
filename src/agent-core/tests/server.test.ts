@@ -124,6 +124,63 @@ test("successive task prompts retain one session and host-ended tool history", a
   } finally { await f.close(); }
 });
 
+test("a host-ended prompt cannot return the preceding prompt's answer", async () => {
+  const f = await setup([
+    message([{ type: "text", text: "answer from the first prompt" }], "stop"),
+    message([{ type: "toolCall", id: "second_finish", name: "inspect_local", arguments: { label: "second" } }], "toolUse"),
+    message([{ type: "text", text: "third prompt continues the same conversation" }], "stop"),
+  ]);
+  try {
+    await f.initialize();
+    f.send("first", "prompt", { text: "Answer the first question" });
+    const first = await f.wait(record => record.type === "settled" && record.prompt_id === "first");
+    assert.equal(first.answer, "answer from the first prompt");
+    f.send("second", "prompt", { text: "Perform a local event" });
+    const call = await f.wait(record => record.type === "tool_request" && record.prompt_id === "second");
+    f.send("reply", "tool_reply", { call_id: call.call_id,
+      result: { content: [{ type: "text", text: "the local event completed" }] }, control: { end_run: true } });
+    const second = await f.wait(record => record.type === "settled" && record.prompt_id === "second");
+    assert.equal(second.reason, "host_end");
+    assert.equal(second.answer, "");
+    assert.equal(second.last.role, "toolResult");
+    assert.equal(second.message_start, first.message_end);
+    assert.equal(second.session_entry_start, first.session_entry_end);
+    assert.equal(second.prompt_requests, second.requests - second.request_start);
+    f.send("third", "prompt", { text: "Discuss that event" });
+    const third = await f.wait(record => record.type === "settled" && record.prompt_id === "third");
+    assert.equal(third.answer, "third prompt continues the same conversation");
+    assert.equal(third.message_start, second.message_end);
+    assert.equal(f.records.filter(record => record.event?.type === "runtime_started").length, 1);
+    assert.match(JSON.stringify(f.inputs[2].messages), /answer from the first prompt/);
+    assert.ok(f.inputs[2].messages.some((m: any) => m.role === "toolResult" && m.toolCallId === "second_finish"));
+    const starts = f.records.filter(record => record.event?.type === "prompt_started");
+    const ends = f.records.filter(record => record.event?.type === "prompt_settled");
+    assert.deepEqual(starts.map(record => record.prompt_id), ["first", "second", "third"]);
+    assert.deepEqual(ends.map(record => record.prompt_id), ["first", "second", "third"]);
+  } finally { await f.close(); }
+});
+
+test("an empty aborted response is scoped to this prompt instead of the previous answer", async () => {
+  const f = await setup([
+    message([{ type: "text", text: "previous answer must not be reused" }], "stop"),
+    message([], "aborted"),
+    message([{ type: "text", text: "a later prompt still runs" }], "stop"),
+  ]);
+  try {
+    await f.initialize();
+    f.send("first", "prompt", { text: "First question" });
+    await f.wait(record => record.type === "settled" && record.prompt_id === "first");
+    f.send("aborted", "prompt", { text: "Cancelled question" });
+    const aborted = await f.wait(record => record.type === "settled" && record.prompt_id === "aborted");
+    assert.equal(aborted.reason, "aborted");
+    assert.equal(aborted.answer, "");
+    assert.equal(aborted.last.stopReason, "aborted");
+    f.send("third", "prompt", { text: "Continue the discussion" });
+    const third = await f.wait(record => record.type === "settled" && record.prompt_id === "third");
+    assert.equal(third.answer, "a later prompt still runs");
+  } finally { await f.close(); }
+});
+
 test("host completion stops at the tool boundary, without another model request", async () => {
   const f = await setup([message([{ type: "toolCall", id: "event", name: "inspect_local", arguments: { label: "event" } }, { type: "toolCall", id: "extra", name: "inspect_local", arguments: { label: "extra" } }], "toolUse")]);
   try {
@@ -157,16 +214,32 @@ test("duplicate commands do not execute tools twice and an invalid reply fails e
   } finally { await f.close(); }
 });
 
-test("abort is accepted during an outstanding callback, with no tool retry", async () => {
-  const f = await setup([message([{ type: "toolCall", id: "slow", name: "inspect_local", arguments: { label: "slow" } }], "toolUse")]);
+test("busy prompts are rejected and abort pairs the whole batch before a subsequent prompt", async () => {
+  const f = await setup([
+    message([{ type: "toolCall", id: "slow", name: "inspect_local", arguments: { label: "slow" } },
+      { type: "toolCall", id: "skipped", name: "inspect_local", arguments: { label: "skipped" } }], "toolUse"),
+    message([{ type: "text", text: "continued after cancellation" }], "stop"),
+  ]);
   try {
     await f.initialize(); f.send("prompt", "prompt", { text: "Inspect slowly" });
     await f.wait((record) => record.type === "tool_request");
+    f.send("busy", "prompt", { text: "Do not queue this question" });
+    const busy = await f.wait(record => record.id === "busy");
+    assert.equal(busy.ok, false); assert.match(busy.error, /already running/);
     f.send("abort", "abort");
     assert.equal((await f.wait((record) => record.id === "abort")).ok, true);
-    await f.wait((record) => record.type === "settled");
+    const aborted = await f.wait((record) => record.type === "settled");
+    assert.equal(aborted.reason, "aborted"); assert.equal(aborted.answer, "");
     assert.equal(f.produced(), 1);
     assert.equal(f.records.filter((record) => record.type === "tool_request").length, 1);
+    const paired = f.records.filter(record => record.event?.type === "message_end" && record.event.data.message.role === "toolResult");
+    assert.deepEqual(paired.map(record => record.event.data.message.toolCallId), ["slow", "skipped"]);
+    assert.ok(paired.every(record => record.event.data.message.isError));
+    f.send("next", "prompt", { text: "Continue after cancellation" });
+    const next = await f.wait(record => record.type === "settled" && record.prompt_id === "next");
+    assert.equal(next.reason, "model_finished"); assert.equal(next.answer, "continued after cancellation");
+    assert.equal(f.produced(), 2);
+    assert.ok(!JSON.stringify(f.inputs[1].messages).includes("Do not queue this question"));
   } finally { await f.close(); }
 });
 

@@ -19,17 +19,24 @@ class TraceWriter:
     def redact_with(self, *secrets):
         self._secrets += tuple(secret for secret in secrets if secret)
 
+    @property
+    def position(self):
+        """Byte offset used to delimit one prompt in the shared audit stream."""
+        return self._stream.tell()
+
     def sanitize(self, value):
         line = json.dumps(value, ensure_ascii=False)
         for secret in self._secrets:
             line = line.replace(secret, "[REDACTED]")
         return json.loads(line)
 
-    def emit(self, kind, data=None, timestamp=None, seq=None):
+    def emit(self, kind, data=None, timestamp=None, seq=None, prompt_id=None):
         value = {"timestamp": timestamp or datetime.now(timezone.utc).isoformat(),
                  "type": kind, "data": {} if data is None else data}
         if seq is not None:
             value["core_seq"] = seq
+        if prompt_id is not None:
+            value["prompt_id"] = prompt_id
         line = json.dumps(value, ensure_ascii=False)
         for secret in self._secrets:
             line = line.replace(secret, "[REDACTED]")
@@ -44,7 +51,8 @@ class TraceWriter:
     def accept(self, message):
         if message.get("type") == "event":
             event = message["event"]
-            self.emit(event["type"], event.get("data"), event.get("timestamp"), message.get("seq"))
+            self.emit(event["type"], event.get("data"), event.get("timestamp"), message.get("seq"),
+                      message.get("prompt_id"))
         elif message.get("type") == "tool_request":
             # Pi's tool_execution_start already records the actual call.
             return

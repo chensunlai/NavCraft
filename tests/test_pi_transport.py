@@ -12,7 +12,7 @@ import time
 import pytest
 
 from src.harness import core_client as transport
-from src.harness import runner, worker
+from src.harness import runner, runtime, worker
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,13 +49,14 @@ for line in sys.stdin:
     op = request["op"]
     emit({"id": request["id"], "ok": True, "data": {"accepted": True}})
     if op == "prompt":
+        prompt_id = request["id"]
         emit({"type": "event", "event": {"type": "turn_start", "data": {}}})
-        emit({"type": "tool_request", "call_id": "actual-call", "name": "nav_step",
+        emit({"type": "tool_request", "prompt_id": prompt_id, "call_id": "actual-call", "name": "nav_step",
               "args": {"actions": ["turn_left"]}})
     elif op == "tool_reply":
         assert request["args"]["call_id"] == "actual-call"
         assert request["args"]["result"]["content"][0]["text"] == "actual feedback"
-        emit({"type": "settled", "reason": "host_end", "answer": "completed", "requests": 1})
+        emit({"type": "settled", "prompt_id": prompt_id, "reason": "host_end", "answer": "completed", "requests": 1})
     elif op == "close":
         break
 '''
@@ -100,6 +101,85 @@ def test_tool_callback_failure_is_returned_to_core_instead_of_deadlocking(tmp_pa
         client.close()
 
 
+def test_successive_prompts_ignore_a_stale_settled_from_another_call(tmp_path):
+    script = r'''
+import json, sys
+previous = None
+for line in sys.stdin:
+    request = json.loads(line)
+    print(json.dumps({"id": request["id"], "ok": True, "data": {}}), flush=True)
+    if request["op"] == "prompt":
+        if previous:
+            print(json.dumps({"type": "settled", "prompt_id": previous,
+                              "answer": "OLD ANSWER", "reason": "model_finished"}), flush=True)
+        previous = request["id"]
+        print(json.dumps({"type": "settled", "prompt_id": previous,
+                          "answer": request["args"]["text"],
+                          "reason": "model_finished", "requests": 1}), flush=True)
+    elif request["op"] == "close":
+        break
+'''
+    client = transport.CoreClient(ROOT, tmp_path, command=[sys.executable, "-u", "-c", script])
+    pid = client.process.pid
+    events = []
+    try:
+        first = client.run_prompt("first answer", [], lambda *_: {}, seconds=2)
+        second = client.run_prompt("second answer", [], lambda *_: {}, seconds=2,
+                                   on_event=events.append)
+        assert first["answer"] == "first answer"
+        assert second["answer"] == "second answer"
+        assert first["prompt_id"] != second["prompt_id"]
+        assert client.process.pid == pid and client.process.poll() is None
+        assert len(events) == 1 and events[0]["prompt_id"] == second["prompt_id"]
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("wrong_id", ["previous-prompt", None])
+def test_tool_request_outside_the_active_prompt_never_executes(tmp_path, wrong_id):
+    script = FAKE_CORE.replace('"prompt_id": prompt_id, "call_id": "actual-call"',
+                               '"prompt_id": ' + repr(wrong_id) + ', "call_id": "actual-call"')
+    client = transport.CoreClient(ROOT, tmp_path, command=[sys.executable, "-u", "-c", script])
+    calls = []
+    try:
+        with pytest.raises(transport.CoreError, match="does not belong to the active prompt"):
+            client.run_prompt("go", [], lambda *args: calls.append(args), seconds=2)
+        assert calls == []
+    finally:
+        client.close()
+
+
+def test_late_events_cannot_enter_the_next_prompt_callback(tmp_path):
+    script = r'''
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    print(json.dumps({"id": request["id"], "ok": True, "data": {}}), flush=True)
+    if request["op"] == "prompt":
+        for event_type in ["turn_start", "compaction_end"]:
+            print(json.dumps({"type": "event", "prompt_id": "previous-prompt",
+                              "event": {"type": event_type, "data": {}}}), flush=True)
+        print(json.dumps({"type": "event", "event": {"type": "runtime_configured", "data": {}}}), flush=True)
+        print(json.dumps({"type": "event", "prompt_id": request["id"],
+                          "event": {"type": "turn_start", "data": {}}}), flush=True)
+        print(json.dumps({"type": "settled", "prompt_id": request["id"],
+                          "reason": "model_finished", "answer": "current answer"}), flush=True)
+    elif request["op"] == "close":
+        break
+'''
+    client = transport.CoreClient(ROOT, tmp_path, command=[sys.executable, "-u", "-c", script])
+    events = []
+    try:
+        result = client.run_prompt("Current question", [], lambda *_: {}, seconds=2,
+                                   on_event=events.append, prompt_id="current-prompt")
+        assert result["answer"] == "current answer"
+        assert [event.get("prompt_id") for event in events] == [None, "current-prompt", "current-prompt"]
+        assert [event["event"]["type"] for event in events if event["type"] == "event"] == [
+            "runtime_configured", "turn_start"]
+    finally:
+        client.close()
+
+
 def test_core_native_exit_during_prompt_reports_transport_failure(tmp_path):
     script = r'''
 import json, os, sys
@@ -121,8 +201,8 @@ for line in sys.stdin:
 
 def test_cancellation_receives_settled_after_actual_tool_feedback(tmp_path):
     script = FAKE_CORE.replace(
-        'emit({"type": "settled", "reason": "host_end", "answer": "completed", "requests": 1})',
-        'pass\n    elif op == "abort":\n        emit({"type": "settled", "reason": "aborted", "requests": 1})')
+        'emit({"type": "settled", "prompt_id": prompt_id, "reason": "host_end", "answer": "completed", "requests": 1})',
+        'pass\n    elif op == "abort":\n        emit({"type": "settled", "prompt_id": prompt_id, "reason": "aborted", "requests": 1})')
     client = transport.CoreClient(ROOT, tmp_path, command=[sys.executable, "-u", "-c", script])
     cancel, calls = threading.Event(), []
 
@@ -156,7 +236,7 @@ def test_runner_archives_even_when_core_close_and_scoring_fail(tmp_path, monkeyp
             (directory / "environment/result.json").write_text("{interrupted")
 
         def request(self, *args, **kwargs):
-            return {"accepted": True}
+            return {"accepted": True, "session_id": "fixture-session"}
 
         def run_prompt(self, *args, **kwargs):
             return {"reason": "model_finished", "answer": "partial answer", "requests": 1}
@@ -167,7 +247,7 @@ def test_runner_archives_even_when_core_close_and_scoring_fail(tmp_path, monkeyp
     def score(**kwargs):
         raise ValueError("fixture scoring failure")
 
-    monkeypatch.setattr(runner, "CoreClient", Core)
+    monkeypatch.setattr(runtime, "CoreClient", Core)
     monkeypatch.setattr(runner.verify, "qa", score)
     directory = tmp_path / "run"
     runner.run_case(repo, {"output_dir": "runs", "model": "fixture", "api": "fixture",

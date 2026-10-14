@@ -11,7 +11,7 @@ from unittest.mock import Mock
 from PIL import Image
 import pytest
 
-from src.harness import coding, runner
+from src.harness import coding, runner, runtime
 from src.harness.trace import TraceWriter
 
 
@@ -60,8 +60,7 @@ def test_missing_credentials_archive_failure_without_starting_core(app, tmp_path
         starts.append((args, kwargs))
         raise AssertionError("Core must not start without credentials")
 
-    monkeypatch.setattr(runner, "CoreClient", forbidden_core)
-    monkeypatch.setattr(coding, "CoreClient", forbidden_core)
+    monkeypatch.setattr(runtime, "CoreClient", forbidden_core)
     directory = tmp_path / kind
     result = run_app(kind, app, directory)
     assert starts == []
@@ -77,12 +76,14 @@ def test_model_configuration_is_sent_only_to_core_not_public_workspace(app, tmp_
     requests = []
 
     class Core:
+        close_status = {"acknowledged": True}
+
         def __init__(self, *_):
             pass
 
         def request(self, op, args):
             requests.append((op, copy.deepcopy(args)))
-            return {"accepted": True}
+            return {"accepted": True, "session_id": "fixture-session"}
 
         def run_prompt(self, *args, **kwargs):
             return {"reason": "model_finished", "answer": "fixture answer", "requests": 1,
@@ -94,11 +95,10 @@ def test_model_configuration_is_sent_only_to_core_not_public_workspace(app, tmp_
         def drain_events(self, _):
             pass
 
-    monkeypatch.setattr(runner, "CoreClient", Core)
-    monkeypatch.setattr(coding, "CoreClient", Core)
+    monkeypatch.setattr(runtime, "CoreClient", Core)
     directory = tmp_path / kind
     run_app(kind, app, directory)
-    assert len(requests) == 1 and requests[0][0] == "init"
+    assert [op for op, _ in requests] == ["init", "configure", "set_checkpoint"]
     options = requests[0][1]
     assert options["auth"]["apiKey"] == app[2]
     assert options["maxRequests"] == 2
@@ -116,7 +116,8 @@ def test_compaction_diagnostic_restores_custom_budget_without_resetting_regular_
     config.update(context_window=131072, compaction_threshold=98000,
                   keep_recent_tokens=18000, scene_archive="unused-scene")
     core = Mock()
-    monkeypatch.setattr(runner, "CoreClient", Mock(return_value=core))
+    core.request.return_value = {"session_id": "fixture-session"}
+    monkeypatch.setattr(runtime, "CoreClient", Mock(return_value=core))
     monkeypatch.setattr(runner, "case_config", lambda *_: {"sample": "sample", "requests": 4, "seconds": 2})
     if kind == "compaction":
         (repo / "src/harness").mkdir(parents=True)
@@ -131,7 +132,7 @@ def test_compaction_diagnostic_restores_custom_budget_without_resetting_regular_
 
     phases = []
 
-    def prompt(text, images, execute, seconds, on_event, cancel_event):
+    def prompt(text, images, execute, seconds, on_event, cancel_event, prompt_id=None):
         phases.append(text)
         initial = core.request.call_args_list[0].args[1]
         assert initial["contextWindow"] - initial["compaction"]["reserveTokens"] == 98000
@@ -139,7 +140,8 @@ def test_compaction_diagnostic_restores_custom_budget_without_resetting_regular_
         if kind == "query" or len(phases) == 2:
             before = core.request.call_count
             if kind == "compaction":
-                forced = core.request.call_args.args[1]["compaction"]
+                forced = [call.args[1]["compaction"] for call in core.request.call_args_list
+                          if call.args[0] == "configure" and "compaction" in call.args[1]][-1]
                 assert initial["contextWindow"] - forced["reserveTokens"] < 2000, \
                     "The short diagnostic must trigger even with a 128k context window"
             on_event({"type": "event", "event": {"type": "compaction_end",
@@ -165,6 +167,8 @@ def test_compaction_diagnostic_restores_custom_budget_without_resetting_regular_
 @pytest.mark.parametrize("kind", ["query", "coding"])
 def test_provider_failure_cannot_publish_credentials_in_result_archive(app, tmp_path, monkeypatch, kind):
     class FailingCore:
+        close_status = {"acknowledged": True}
+
         def __init__(self, *_):
             pass
 
@@ -177,8 +181,7 @@ def test_provider_failure_cannot_publish_credentials_in_result_archive(app, tmp_
         def drain_events(self, _):
             pass
 
-    monkeypatch.setattr(runner, "CoreClient", FailingCore)
-    monkeypatch.setattr(coding, "CoreClient", FailingCore)
+    monkeypatch.setattr(runtime, "CoreClient", FailingCore)
     directory = tmp_path / kind
     result = run_app(kind, app, directory)
     assert "Provider rejected supplied token" in result["error"]

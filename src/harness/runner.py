@@ -14,13 +14,13 @@ sys.path.insert(0, str(REPO))
 
 import yaml
 
-from .core_client import CoreClient
 from .session import NavigationSession, _write
 from . import memory
 from . import moving_compaction
 from src.bench import harness_verify as verify
 from .tools import ToolSet
-from .config import context_options, core_options, credentials
+from .config import context_options, credentials
+from .runtime import PromptLimits, open_session
 from .trace import TraceWriter
 from src.bench.harness_cases import case_config
 
@@ -83,7 +83,7 @@ def run_case(repo, config, name, max_requests=None, seconds=None, directory=None
     private.mkdir(parents=True, exist_ok=True)
     print(json.dumps({"directory": str(directory), "case": name, "phase": "initializing"}), flush=True)
     bridge = None
-    client = None
+    session = None
     settled = {}
     state = {"done": False, "goal_changed": False}
     trace = TraceWriter(private)
@@ -97,13 +97,10 @@ def run_case(repo, config, name, max_requests=None, seconds=None, directory=None
     cancel_event = cancel_event or threading.Event()
 
     def on_event(message):
-        trace.accept(message)
         event = message.get("event", {})
-        if event.get("type") == "turn_start":
-            toolset.turn_start()
         if (name in {"compaction", "moving_compaction"} and event.get("type") == "compaction_end"
                 and (event.get("data") or {}).get("result")):
-            receipt = client.request("configure", {"compaction": {"enabled": True, **context["compaction"]}})
+            receipt = session.client.request("configure", {"compaction": {"enabled": True, **context["compaction"]}})
             if diagnostic is not None and "restored_config" not in diagnostic:
                 diagnostic["restored_config"] = deepcopy(context)
                 diagnostic["restored_receipt"] = receipt
@@ -176,12 +173,14 @@ def run_case(repo, config, name, max_requests=None, seconds=None, directory=None
                           allow_finish=bool(job.get("task_config")), cancel_event=cancel_event)
         system_prompt = ("Answer the spatial question using the fixed public resource bank. Use read or view_images. Preserve the answer anchor."
                          if name == "query" else (repo / "src/harness/navigation_prompt.md").read_text())
-        client = CoreClient(repo, private)
-        client.request("init", core_options(config, repo, directory, workspace, system_prompt,
-                       toolset.specs(), max_requests or job["requests"], toolset.checkpoint()))
+        session = open_session(repo, config, directory, workspace, system_prompt, toolset,
+                               max_requests=max_requests or job["requests"], trace=trace,
+                               on_event=on_event, cancel_event=cancel_event)
         def remaining():
             return max(0.01, seconds - (time.monotonic() - started))
-        settled = client.run_prompt(prompt, images, toolset.call, remaining(), on_event, cancel_event)
+        def prompt_limits():
+            return PromptLimits(max(1, (max_requests or job["requests"]) - session.requests), remaining())
+        settled = session.prompt(prompt, images, prompt_limits()).to_dict()
         if diagnostic is not None:
             diagnostic["phase1"] = moving_compaction.snapshot(bridge, workspace, toolset.checkpoint())
             diagnostic["phase1_settled"] = settled
@@ -193,28 +192,29 @@ def run_case(repo, config, name, max_requests=None, seconds=None, directory=None
                 forced = {"enabled": True, "reserveTokens": context["contextWindow"] - 512,
                           "keepRecentTokens": 1200}
                 diagnostic["forced_config"] = {"contextWindow": context["contextWindow"], "compaction": forced}
-                diagnostic["forced_receipt"] = client.request("configure", {"compaction": forced})
+                diagnostic["forced_receipt"] = session.client.request("configure", {"compaction": forced})
                 trace.emit("moving_compaction_boundary", {"phase1_gate": diagnostic["phase1_gate"],
                            "steps": diagnostic["phase1"]["state"]["metrics"]["steps"],
                            "forced_config": diagnostic["forced_config"]})
                 moving_compaction.save(private, diagnostic)
-                settled = client.run_prompt(
+                settled = session.prompt(
                     "Resume the SAME D01/T local goal after the diagnostic pause and compression. "
                     f"Reopen {moving_compaction.NOTE} and its real evidence; distinguish old position estimates "
                     "from current evidence. Decide how to observe and move, then actually cross D01 and reach T. "
                     "The local-event detector will end the task; a verbal completion claim is insufficient.",
-                    [], toolset.call, remaining(), on_event, cancel_event)
+                    [], prompt_limits()).to_dict()
         if (name == "compaction" and not state.get("done") and not cancel_event.is_set()
                 and remaining() > 0.1 and settled.get("requests", 0) < (max_requests or job["requests"])
                 and settled.get("reason") == "model_finished"):
             # Lower only this diagnostic's trigger to 512 tokens, regardless of model capacity.
-            client.request("configure", {"compaction": {"enabled": True, "reserveTokens": context["contextWindow"] - 512,
+            session.client.request("configure", {"compaction": {"enabled": True, "reserveTokens": context["contextWindow"] - 512,
                                                         "keepRecentTokens": 1200}})
-            settled = client.run_prompt("Continue after compression: reopen your note and its evidence image, call nav_observe(single), update the note distinguishing old estimates from the new frame, then give a brief answer. Do not claim tentative spatial correspondence is confirmed without evidence.",
-                                         [], toolset.call, remaining(), on_event, cancel_event)
+            settled = session.prompt("Continue after compression: reopen your note and its evidence image, call nav_observe(single), update the note distinguishing old estimates from the new frame, then give a brief answer. Do not claim tentative spatial correspondence is confirmed without evidence.",
+                                     [], prompt_limits()).to_dict()
     except Exception as failure:
         error = f"{type(failure).__name__}: {failure}"
     finally:
+        error = error or settled.get("error")
         reason = "cancelled" if cancel_event.is_set() and not state.get("done") else finish_reason(state, settled, error)
         if bridge:
             try:
@@ -222,15 +222,17 @@ def run_case(repo, config, name, max_requests=None, seconds=None, directory=None
                 state["done"] = bool(state["current"].get("terminated") or state["current"].get("truncated"))
             except Exception as failure:
                 error = error or f"finalize: {failure}"
+            if session is None:
+                try:
+                    bridge.close()
+                except Exception as failure:
+                    error = error or f"close: {failure}"
+        if session:
             try:
-                bridge.close()
-            except Exception as failure:
-                error = error or f"close: {failure}"
-        if client:
-            try:
-                client.close()
-                client.drain_events(trace.accept)
-                close_status = getattr(client, "close_status", None)
+                session.close()
+                if session.cleanup_error:
+                    result["cleanup_error"] = session.cleanup_error
+                close_status = session.close_status
                 result["core_close"] = close_status if isinstance(close_status, dict) else None
             except Exception as failure:
                 result["cleanup_error"] = f"Core close: {failure}"

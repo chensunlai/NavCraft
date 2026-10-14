@@ -100,6 +100,9 @@ class NavigationSession:
         self.config = {}
         self.mode = "navigation"
         self.cancel_event = cancel_event
+        # Private lifecycle guard: no further prompt may trust state after an
+        # action ran but its public/private receipt could not be completed.
+        self.execution_uncertain = False
 
     def dispatch(self, request):
         """Idempotent requests: even failed calls are retained; changed retries fail."""
@@ -358,6 +361,7 @@ class NavigationSession:
                     interruption = "travel_budget"
                     break
             before = self.env.observe().frame_id
+            self.execution_uncertain = True
             transition = self.env.step(action)
             self._save_private_frame(transition.observation)
             result = self._transition(transition)
@@ -389,6 +393,7 @@ class NavigationSession:
         if self.mode == "atomic_ia":
             result["local_event_complete"] = self.env.task.reason == "local_event_complete"
         self._save_result()
+        self.execution_uncertain = False
         return result
 
     def finish(self, goal_id):
@@ -398,6 +403,7 @@ class NavigationSession:
         if type(goal_id) is not int or goal_id != self.env.task.goal_index:
             raise NavigationInputError("goal_id does not match the current target")
         before = self.env.observe().frame_id
+        self.execution_uncertain = True
         transition = self.env.finish_goal()
         self._save_private_frame(transition.observation)
         result = self._transition(transition)
@@ -406,6 +412,7 @@ class NavigationSession:
             "before_frame": before, "after_frame": result["observation"]["id"],
             "goal_changed": transition.goal_changed})
         self._save_result()
+        self.execution_uncertain = False
         return result
 
     def _save_result(self):

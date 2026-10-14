@@ -258,17 +258,19 @@ def test_runner_uses_one_core_and_forces_compression_only_after_real_movement_ga
     core = Mock()
     core.close_status = {'acknowledged': True, 'forced': False, 'exit_code': 0, 'readers_stopped': True}
     constructor = Mock(return_value=core)
-    monkeypatch.setattr(runner, 'CoreClient', constructor)
+    monkeypatch.setattr('src.harness.runtime.CoreClient', constructor)
     core.request.side_effect = lambda op, options: ({'configured': True, 'compaction': options['compaction']}
-                                                   if op == 'configure' else {'initialized': True})
+                                                   if op == 'configure' and 'compaction' in options
+                                                   else {'initialized': True, 'session_id': 'fixture-session'})
     phases = []
 
-    def prompt(text, images, execute, seconds, on_event, cancel_event):
+    def prompt(text, images, execute, seconds, on_event, cancel_event, prompt_id=None):
         phases.append(text)
         initial = core.request.call_args_list[0].args[1]
         assert initial['contextWindow'] - initial['compaction']['reserveTokens'] == 100000
         if len(phases) == 2:
-            forced = core.request.call_args.args[1]['compaction']
+            forced = next(call.args[1]['compaction'] for call in reversed(core.request.call_args_list)
+                          if call.args[0] == 'configure' and 'compaction' in call.args[1])
             assert initial['contextWindow'] - forced['reserveTokens'] == 512
             on_event({'type': 'event', 'event': {'type': 'compaction_end',
                       'data': {'result': {'summary': 'fixture summary'}}}})

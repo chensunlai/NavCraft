@@ -27,6 +27,7 @@ python -m src.harness run --case objnav --max-requests 32 --seconds 1800
 
 - `__main__.py`：doctor、单案例、快速／完整 smoke。
 - `runner.py`：初始化与运行，连接 Core、任务和评分，保存结果。
+- `runtime.py`：正式持久会话接口；一次初始化，连续接收 prompt，显式关闭。
 - `session.py`：直接持有 Habitat；观察、运动、提交、公开过滤与关闭在同一线程执行。
 - `tools/`：五个扩展工具的名称、参数和执行函数。
 - `memory.py`：文件化地图、卡片、图片的初始化／检查／绘制。
@@ -40,9 +41,32 @@ python -m src.harness run --case objnav --max-requests 32 --seconds 1800
 
 旧 Python Harness、旧数据生成和旧评测保留在 `src/legacy/harness`，旧入口维持原行为。新应用不依赖旧 Agent 循环。
 
-## 连续多轮任务
+## 持久会话接口
 
-`sequence` 是正式多轮入口，不拆成多个独立 episode。`sequence.py` 持有一个环境与一个 Core，会话历史、文件记忆和图片引用跨轮保留；每轮独立设置当前指令、动作／请求／时间预算及评分。`nav_finish` 仅结束当前轮，未执行的同批调用仍得到配对回执；下一轮才下发新目标。普通切换继承实际结束位姿，指定传送只修改环境位姿并提供新 RGB，历史判断保留原时刻。
+外部 bench 和未来交互终端共用 `open_session`。调用方准备现有工作空间、工具和任务；同一会话可以反复追问或继续行动，不需要每次重新打开 Core：
+
+```python
+from src.harness import PromptLimits, open_session
+
+with open_session(repo, config, directory, workspace, system_prompt, tools,
+                  max_requests=8) as session:
+    first = session.prompt("熟悉当前环境", images=initial_images)
+    second = session.prompt("根据刚才的观察，说明主要出入口")
+    third = session.prompt("继续观察，核实不确定的地方",
+                           limits=PromptLimits(max_requests=6, seconds=300))
+```
+
+`prompt(text, images=(), limits=None, on_event=None)` 返回 `PromptResult`，包含本次 `prompt_id`、回答、结束原因、本次及累计实际请求数、用时和记录位置。默认使用打开时的每次请求额度与 600 秒限制；调用方可逐次指定限额。摘要与失败请求也计数，账本不清零。实际请求、响应和文件变化保存在共同 trace，每次调用另外保存 `private/prompts/<prompt_id>.json` 与 trace 字节范围。
+
+一次 prompt 返回、导航目标完成和整个会话关闭分别处理。普通追问保留原任务、实际位置、工具实例、Pi 历史及模型记忆；`nav_finish` 沿用原语义，普通文字不代替提交。bench 显式准备下一任务并更新工具公开状态后，可调用 `session.update_checkpoint()` 再发送下一条消息。传送也由 bench 决定。每次消息不触发额外压缩，继续沿用 Pi 阈值。
+
+执行期间再次 prompt 或 close 会报 `SessionBusyError`；跨线程可调用 `abort()` 请求取消，等待原 prompt 收齐回执返回后再继续或关闭。导航工具仍在 prompt 调用线程执行，初始化、导航调用与环境关闭应使用同一线程。工具执行状态不明或通信未完整结束时，禁止继续使用会话。`close()` 幂等并释放 Core 与工具持有的环境；外部传入的 trace 仍由调用方关闭。
+
+2026-10-14 验证：Python 全量 349 项、Core 47 项测试和构建通过。真实 Astra 在一个 Pi 会话中完成 3 次 prompt，使用原生文件／Python 工具和 `view_images`，总计 12 次实际请求；第 3 次调用触发一次强制压缩，之后继续读取文件、查看图片并回答，8 个工具调用全部配对，Core 正常关闭。[真实记录](../../runs/harness-pi/20261014T132745Z-persistent-coding/result.json)仅验证 Coding／图片工具和压缩续接；导航同目标追问、提交后追问、显式换任务、传送与环境保留由本地 fixture 回归验证，不将此前启动的旧序列运行计为新接口的真实导航验收。
+
+## 连续任务案例
+
+`sequence` 是调用上述接口的批量案例入口，不拆成多个独立 episode，也不维护第二套 Core 生命周期。案例准备一个环境与工作空间，多次调用同一 `session.prompt()`，逐任务设置指令、预算及评分。`nav_finish` 仅结束当前轮，未执行的同批调用仍得到配对回执；下一轮才下发新目标。普通切换继承实际结束位姿，指定传送只修改环境位姿并提供新 RGB，历史判断保留原时刻。
 
 私有 sequence JSON 定义起点、环境、`rounds` 和核验资料；每轮含 `id`、`kind`、`instruction`、预算、私有目标视点、可选 `teleport` 与 `route_events`。模型只收到当前任务，全部后续任务、目标坐标、门坐标和评分都留在 `private/`。当前多轮条件为无地图：初始记忆为空，提供原生 Coding 工具、`view_images` 和三个导航工具，允许自行写记忆和绘图；不调用预建地图转换或自动定位。
 

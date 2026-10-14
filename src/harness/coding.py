@@ -6,8 +6,8 @@ from pathlib import Path
 
 from PIL import Image
 
-from .config import core_options, credentials
-from .core_client import CoreClient
+from .config import credentials
+from .runtime import PromptLimits, open_session
 from .session import _write
 from .tools import ToolSet
 from .trace import TraceWriter
@@ -30,26 +30,26 @@ def run_coding(repo, config, name="coding", max_requests=8, seconds=300,
         'Read back the JSON and finish with a brief factual answer.')
     trace = TraceWriter(private)
     tools = ToolSet(repo, workspace, cancel_event=cancel_event)
-    client = None
+    session = None
     settled = {}
     error = None
     try:
         trace.redact_with(credentials(config, repo)["apiKey"])
-        client = CoreClient(repo, private)
-        client.request("init", core_options(config, repo, directory, workspace,
+        tools.tools.pop("render_map")
+        session = open_session(repo, config, directory, workspace,
                        "You are an autonomous agent in a restricted public workspace. Use native coding tools and the Python-owned image tool to complete and verify the task.",
-                       [spec for spec in tools.specs() if spec["name"] == "view_images"], max_requests,
-                       compact=False))
-        settled = client.run_prompt("Read scene/instructions.md and complete the task.", [],
-                                    tools.call, seconds, on_event=trace.accept,
-                                    cancel_event=cancel_event)
+                       tools, max_requests=max_requests, trace=trace,
+                       compact=False, cancel_event=cancel_event)
+        settled = session.prompt("Read scene/instructions.md and complete the task.", [],
+                                 PromptLimits(max_requests, seconds)).to_dict()
     except Exception as failure:
         error = f"{type(failure).__name__}: {failure}"
     finally:
-        if client:
+        error = error or settled.get("error")
+        if session:
             try:
-                client.close()
-                client.drain_events(trace.accept)
+                session.close()
+                error = error or session.cleanup_error
             except Exception as failure:
                 error = error or f"Core cleanup: {failure}"
         saved = workspace / "memory/result.json"

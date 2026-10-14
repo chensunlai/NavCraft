@@ -17,8 +17,8 @@ from src.bench.sequence import inside, score_route
 from src.dataset.episodes.base import EpisodeSpec
 from src.environment.habitat import HabitatEnvironment
 from src.environment.tasks.base import ObjectNavTask
-from .config import load_config, credentials, core_options
-from .core_client import CoreClient
+from .config import load_config
+from .runtime import PromptLimits, open_session
 from .session import NavigationSession, _write
 from .tools import ToolSet
 from .trace import TraceWriter
@@ -167,8 +167,7 @@ def run_sequence(config, scenario, directory, cancelled):
     scenario = deepcopy(scenario)
     _write(private / 'scenario.json', scenario)
     (workspace / 'scene/index.md').write_text('# Public workspace\n\nOnly actual observations and the current instruction are supplied. No prebuilt map, entity cards or evidence bank.\n\nscene/ and observations/ are read-only; memory/ and scratch/ are writable. Start with empty memory; organize your notes yourself. No exact pose or depth is available.\n')
-    trace, client, bridge = TraceWriter(private), None, None
-    trace.redact_with(credentials(config, REPO)['apiKey'])
+    trace, session, bridge = TraceWriter(private), None, None
     result = {'model': config['model'], 'protocol': scenario['protocol'], 'rounds': [], 'error': None,
               'input_setting': 'RGB + action feedback; no map/prior memory/true pose/depth', 'case': 'sequence'}
     state, started = {}, time.monotonic()
@@ -191,64 +190,78 @@ def run_sequence(config, scenario, directory, cancelled):
         state.update(current=initial, done=False, goal_changed=False)
         tools = ToolSet(REPO, workspace, bridge, state, cancel_event=cancelled)
         tools.tools.pop('render_map')  # No base map or calibrated memory exists in this condition.
-        client = CoreClient(REPO, private)
-        receipt = client.request('init', core_options(config, REPO, directory, workspace, PROMPT,
-                                 tools.specs(), scenario['rounds'][0]['max_requests'], tools.checkpoint()))
-        result['session_id'] = receipt['session_id']
-        def on_event(message):
-            trace.accept(message)
-            if message.get('event', {}).get('type') == 'turn_start':
-                tools.turn_start()
+        session = open_session(REPO, config, directory, workspace, PROMPT, tools,
+                               max_requests=scenario['rounds'][0]['max_requests'],
+                               trace=trace, cancel_event=cancelled)
+        result['session_id'] = session.session_id
         for index, spec in enumerate(scenario['rounds']):
             if cancelled.is_set():
                 break
-            if index:
-                initial = bridge.begin(index)
-                state.update(current=initial, done=False, goal_changed=False)
-                state['revision'] += 1
-                client.request('set_checkpoint', {'checkpoint': tools.checkpoint()})
-            before = request_count(private)
-            client.request('configure', {'maxRequests': before + spec['max_requests']})
-            checkpoint = memory_versions(workspace)
-            trace.emit('sequence_round_start', {'round': index + 1, 'id': spec['id'],
-                       'public': initial, 'requests_before': before, 'request_limit': spec['max_requests'],
-                       'memory_versions': checkpoint, 'session_id': result['session_id']})
-            print(json.dumps({'round': index + 1, 'id': spec['id'], 'phase': 'running'}), flush=True)
-            prompt = (('You have been relocated; previous memories remain but your former pose is stale.\n'
-                       if spec.get('teleport') else '') + spec['instruction'] + '\nCurrent public state: '
-                       + json.dumps(initial, ensure_ascii=False))
-            t0 = time.monotonic()
-            settled = client.run_prompt(prompt, initial['images'], tools.call, spec['seconds'], on_event, cancelled)
-            reason = state.get('current', {}).get('reason') if state.get('done') else settled.get('reason')
+            before, t0 = session.requests, time.monotonic()
             entry = {'round': index + 1, 'id': spec['id'], 'instruction': spec['instruction'],
-                     'reason': reason, 'answer': settled.get('answer'), 'error': settled.get('error'),
-                     'last_error': (settled.get('last') or {}).get('errorMessage'),
-                     'requests': request_count(private) - before, 'seconds': time.monotonic() - t0,
-                     'result': bridge.score(reason), 'memory_before': checkpoint,
-                     'memory_after': memory_versions(workspace)}
-            _write(private / f'round_{index + 1:02d}.json', entry)
-            result['rounds'].append(entry)
-            trace.emit('sequence_round_end', entry)
-            _write(directory / 'result.json', result)
-            print(json.dumps({k:entry[k] for k in ('round', 'id', 'reason', 'requests', 'seconds')},ensure_ascii=False),flush=True)
+                     'reason': None, 'answer': None, 'error': None, 'last_error': None,
+                     'result': None, 'memory_before': memory_versions(workspace)}
+            round_started = index == 0
+            settled = {}
+            try:
+                if index:
+                    initial = bridge.begin(index)
+                    round_started = True
+                    state.update(current=initial, done=False, goal_changed=False)
+                    state['revision'] += 1
+                    session.update_checkpoint()
+                trace.emit('sequence_round_start', {'round': index + 1, 'id': spec['id'],
+                           'public': initial, 'requests_before': before, 'request_limit': spec['max_requests'],
+                           'memory_versions': entry['memory_before'], 'session_id': result['session_id']})
+                print(json.dumps({'round': index + 1, 'id': spec['id'], 'phase': 'running'}), flush=True)
+                prompt = (('You have been relocated; previous memories remain but your former pose is stale.\n'
+                           if spec.get('teleport') else '') + spec['instruction'] + '\nCurrent public state: '
+                           + json.dumps(initial, ensure_ascii=False))
+                settled = session.prompt(prompt, initial['images'],
+                                         limits=PromptLimits(max_requests=spec['max_requests'], seconds=spec['seconds'])).to_dict()
+                reason = state.get('current', {}).get('reason') if state.get('done') else settled.get('reason')
+                entry.update(reason=reason, answer=settled.get('answer'), error=settled.get('error'),
+                             last_error=(settled.get('last') or {}).get('errorMessage'),
+                             prompt_id=settled.get('prompt_id'))
+                entry['result'] = bridge.score(reason)
+            except Exception as error:
+                entry.update(reason='runtime_error', error=f'{type(error).__name__}: {error}')
+                if round_started and entry['result'] is None:
+                    try:
+                        entry['result'] = bridge.score('runtime_error')
+                    except Exception as score_error:
+                        entry['score_error'] = f'{type(score_error).__name__}: {score_error}'
+                raise
+            finally:
+                entry.update(requests=session.requests - before, seconds=time.monotonic() - t0,
+                             memory_after=memory_versions(workspace))
+                _write(private / f'round_{index + 1:02d}.json', entry)
+                result['rounds'].append(entry)
+                trace.emit('sequence_round_end', entry)
+                _write(directory / 'result.json', result)
+                print(json.dumps({k:entry[k] for k in ('round', 'id', 'reason', 'requests', 'seconds')},ensure_ascii=False),flush=True)
             if cancelled.is_set() or settled.get('reason') in {'model_error', 'runtime_error', 'tool_timeout', 'tool_result_invalid', 'output_limit'}:
                 result['error'] = 'Sequence interrupted by ' + str(settled.get('reason'))
                 break
     except Exception as error:
         result['error'] = f'{type(error).__name__}: {error}'
     finally:
-        if bridge:
+        if session:
+            try:
+                session.close()
+            except Exception as error:
+                result['cleanup_error'] = str(error)
+            if session.cleanup_error:
+                result['cleanup_error'] = session.cleanup_error
+            result['core_close'] = session.close_status
+        elif bridge:
             try:
                 bridge.close()
             except Exception as error:
                 result['cleanup_error'] = str(error)
-        if client:
-            client.close()
-            client.drain_events(trace.accept)
-            result['core_close'] = client.close_status
-        result.update(requests=request_count(private), elapsed_seconds=time.monotonic() - started,
+        result.update(requests=session.requests if session else request_count(private), elapsed_seconds=time.monotonic() - started,
                       completed_rounds=len(result['rounds']), compactions=len(trace.compactions),
-                      finish_reason='sequence_complete' if len(result['rounds']) == len(scenario['rounds']) else 'sequence_incomplete')
+                      finish_reason='sequence_complete' if len(result['rounds']) == len(scenario['rounds']) and not result['error'] else 'sequence_incomplete')
         trace.emit('sequence_finished', result)
         trace.close()
         _write(directory / 'result.json', result)

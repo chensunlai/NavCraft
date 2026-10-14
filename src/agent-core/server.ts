@@ -3,7 +3,8 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Readable, Writable } from "node:stream";
-import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
+import type { AssistantMessage, ImageContent, TextContent, ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { runtime, type RuntimeOptions } from "./session.js";
 import { publicPath, type ExecutionPolicy } from "./sandbox.js";
@@ -36,6 +37,17 @@ interface PendingTool {
   cleanup: () => void;
   replying: boolean;
 }
+interface PromptRun {
+  id: string;
+  messageStart: number;
+  sessionEntryStart: string | null;
+  requestStart: number;
+  globalRequestStart: number;
+  unansweredCalls: Map<string, ToolCall>;
+  startedCalls: Set<string>;
+  lastMessage?: AgentMessage;
+  lastAssistant?: AssistantMessage;
+}
 
 async function images(workspace: string, refs: string[] = [], policy?: ExecutionPolicy): Promise<ImageContent[]> {
   return Promise.all(refs.map(async (ref) => {
@@ -51,6 +63,7 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
   let executionPolicy: ExecutionPolicy | undefined;
   let checkpoint: PublicCheckpoint | undefined;
   let running: Promise<void> | undefined;
+  let currentPrompt: PromptRun | undefined;
   let promptStarting = false;
   let initializing = false;
   let closed = false;
@@ -63,7 +76,7 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
   const responses = new Map<string, { request: string; promise: Promise<unknown> }>();
   const reader = createInterface({ input, crlfDelay: Infinity });
   const send = (message: unknown) => { if (!output.destroyed) output.write(JSON.stringify(message) + "\n"); };
-  const emit = (event: { type: string; data: unknown; timestamp?: string }) => send({ type: "event", seq: ++seq, event });
+  const emit = (event: { type: string; data: unknown; timestamp?: string }) => send({ type: "event", seq: ++seq, ...(currentPrompt ? { prompt_id: currentPrompt.id } : {}), event });
 
   async function shutdown() {
     if (closed) return;
@@ -102,7 +115,7 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
             pending.set(call_id, { accept, reject, cleanup: remove, replying: false });
             signal?.addEventListener("abort", aborted, { once: true });
             if (signal?.aborted) { aborted(); return; }
-            send({ type: "tool_request", call_id, tool_call_id: call_id, name: definition.name, args });
+            send({ type: "tool_request", prompt_id: currentPrompt?.id, call_id, tool_call_id: call_id, name: definition.name, args });
           });
         },
       };
@@ -132,7 +145,18 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
           const decision = await previousFinish?.(context, signal);
           return endRun ? { action: "end" } : decision || undefined;
         };
-        active.session.subscribe((event) => { if (event.type === "turn_start") stopRemainingTools = false; });
+        active.session.subscribe((event) => {
+          if (event.type === "turn_start") stopRemainingTools = false;
+          if (event.type === "message_end" && currentPrompt) {
+            currentPrompt.lastMessage = event.message;
+            if (event.message.role === "assistant") {
+              currentPrompt.lastAssistant = event.message;
+              for (const block of event.message.content) if (block.type === "toolCall") currentPrompt.unansweredCalls.set(block.id, block);
+            }
+            if (event.message.role === "toolResult") currentPrompt.unansweredCalls.delete(event.message.toolCallId);
+          }
+          if (event.type === "tool_execution_start" && currentPrompt) currentPrompt.startedCalls.add(event.toolCallId);
+        });
         return { initialized: true, tools: active.session.getActiveToolNames(), session_id: active.session.sessionManager.getSessionId() };
       } finally { initializing = false; }
     }
@@ -188,6 +212,52 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
       if (closed) throw new Error("Core closed before prompt start");
       endRun = false; stopRemainingTools = false; failureReason = undefined;
       const current = active!;
+      const prompt: PromptRun = {
+        id: request.id, messageStart: current.session.messages.length,
+        sessionEntryStart: current.session.sessionManager.getLeafId(),
+        requestStart: current.budget.used, globalRequestStart: current.budget.totalUsed,
+        unansweredCalls: new Map(), startedCalls: new Set(),
+      };
+      currentPrompt = prompt;
+      current.trace.emit("prompt_started", {
+        prompt_id: prompt.id, message_start: prompt.messageStart,
+        session_entry_start: prompt.sessionEntryStart,
+        request_start: prompt.requestStart, global_request_start: prompt.globalRequestStart,
+      });
+      const settle = (reason: string, error?: string) => {
+        // Pi abort can stop a batch before all calls receive a result. Close those
+        // outstanding pairs without executing or retrying anything before reuse.
+        for (const call of prompt.unansweredCalls.values()) {
+          const receipt: ToolResultMessage = {
+            role: "toolResult", toolCallId: call.id, toolName: call.name,
+            content: [{ type: "text", text: prompt.startedCalls.has(call.id)
+              ? "Interrupted before a result was received; execution may have occurred. It was not retried."
+              : "Not executed: the prompt ended before this tool call ran." }],
+            isError: true, timestamp: Date.now(),
+          };
+          current.session.agent.state.messages = [...current.session.messages, receipt];
+          current.session.sessionManager.appendMessage(receipt);
+          prompt.lastMessage = receipt;
+          current.trace.emit("tool_call_cancelled", { prompt_id: prompt.id, call_id: call.id, reason });
+          current.trace.emit("message_end", { type: "message_end", message: receipt });
+        }
+        prompt.unansweredCalls.clear();
+        const result = {
+          type: "settled", prompt_id: prompt.id, reason,
+          answer: prompt.lastAssistant?.content.filter((block) => block.type === "text").map((block) => block.text).join("") ?? "",
+          last: prompt.lastMessage, requests: current.budget.used, global_requests: current.budget.totalUsed,
+          prompt_requests: current.budget.used - prompt.requestStart,
+          request_start: prompt.requestStart, global_request_start: prompt.globalRequestStart,
+          message_start: prompt.messageStart, message_end: current.session.messages.length,
+          session_entry_start: prompt.sessionEntryStart, session_entry_end: current.session.sessionManager.getLeafId(),
+          ...(error ? { error } : {}),
+        };
+        current.trace.emit("prompt_settled", result);
+        // Receiving settled permits another prompt; all Pi tool events are already paired.
+        currentPrompt = undefined;
+        running = undefined;
+        send(result);
+      };
       // Return immediately. stdin continues receiving tool replies and cancellation.
       running = (async () => {
         let error: string | undefined;
@@ -198,17 +268,14 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
         try { await current.session.prompt(text, { images: visual }); }
         catch (cause) { error = String(cause); }
         finally { clearTimeout(timer); }
-        const last = current.session.messages.at(-1) as any;
+        const last = prompt.lastMessage as any;
         const reason = failureReason ?? (current.budget.exhausted ? "request_budget" : endRun ? "host_end" : last?.stopReason === "aborted" ? "aborted" : last?.stopReason === "error" ? "model_error" : last?.stopReason === "length" ? "output_limit" : error ? "runtime_error" : "model_finished");
         current.trace.snapshot("prompt_settled");
-        // Receiving settled is the host's permission to send its next prompt.
-        running = undefined;
-        send({ type: "settled", prompt_id: request.id, reason, answer: current.session.getLastAssistantText(), last, requests: current.budget.used, global_requests: current.budget.totalUsed, ...(error ? { error } : {}) });
+        settle(reason, error);
       })().catch((error) => {
-        running = undefined;
-        send({ type: "settled", prompt_id: request.id, reason: "runtime_error", error: String(error), requests: current.budget.used, global_requests: current.budget.totalUsed });
+        settle("runtime_error", String(error));
       });
-      return { accepted: true };
+      return { accepted: true, prompt_id: prompt.id };
     }
     if (request.op === "abort") {
       endRun = true; stopRemainingTools = true; failureReason = "aborted";

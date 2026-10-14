@@ -95,13 +95,57 @@ def test_entire_batch_prevalidated_and_id_retries_do_not_move(initialized):
     bridge, _, _ = initialized
     bad = bridge.dispatch({"id": "bad", "op": "step", "args": {"actions": ["move_forward", "teleport"]}})
     assert not bad["ok"] and bridge.env.task.steps == 0
+    assert bridge.execution_uncertain is False
     request = {"id": "step", "op": "step", "args": {"actions": ["move_forward", "move_forward"]}}
     first = bridge.dispatch(request)
     assert first["ok"] and bridge.env.task.steps == 2
+    assert bridge.execution_uncertain is False
     assert bridge.dispatch(request) == first
     changed = bridge.dispatch({**request, "args": {"actions": ["turn_left"]}})
     assert not changed["ok"] and bridge.env.task.steps == 2
     assert bridge.env.sim.position() == [0, 0, -.5]
+
+
+@pytest.mark.parametrize("failure_point", ["_save_private_frame", "_publish", "_save_result"])
+def test_action_receipt_failure_marks_execution_uncertain_without_retry(initialized, monkeypatch, failure_point):
+    bridge, _, _ = initialized
+    request = {"id": "failed-movement", "op": "step", "args": {"actions": ["move_forward"]}}
+
+    def fail_receipt(*_, **__):
+        raise OSError("movement receipt unavailable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(bridge, failure_point, fail_receipt)
+        failed = bridge.dispatch(request)
+        assert not failed["ok"] and "receipt unavailable" in failed["error"]
+        assert bridge.env.sim.position() == [0, 0, -.25]
+        assert bridge.env.task.steps == 1
+        assert bridge.execution_uncertain is True
+        assert bridge.dispatch(request) == failed
+        assert bridge.env.task.steps == 1
+        assert "execution_uncertain" not in json.dumps(failed)
+    # Removing the fault does not turn an incomplete receipt into success.
+    assert bridge.execution_uncertain is True
+
+
+def test_finish_precheck_and_failed_publication_keep_correct_uncertainty(initialized, monkeypatch):
+    bridge, _, _ = initialized
+    invalid = bridge.dispatch({"id": "invalid-finish", "op": "finish", "args": {"goal_id": 99}})
+    assert not invalid["ok"] and bridge.env.task.steps == 0
+    assert bridge.execution_uncertain is False
+
+    def fail_receipt(*_, **__):
+        raise OSError("completion receipt unavailable")
+
+    request = {"id": "failed-finish", "op": "finish", "args": {"goal_id": 0}}
+    with monkeypatch.context() as patch:
+        patch.setattr(bridge, "_publish", fail_receipt)
+        failed = bridge.dispatch(request)
+        assert not failed["ok"] and "receipt unavailable" in failed["error"]
+        assert bridge.env.task.done
+        assert bridge.execution_uncertain is True
+        assert bridge.dispatch(request) == failed
+        assert "execution_uncertain" not in json.dumps(failed)
 
 
 def test_collision_interrupts_batch_and_records_actual_actions(initialized, monkeypatch):

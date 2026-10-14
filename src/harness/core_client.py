@@ -58,8 +58,8 @@ class CoreClient:
             with self._condition:
                 self._condition.notify_all()
 
-    def request(self, op, args=None, timeout=30):
-        request_id = uuid.uuid4().hex
+    def request(self, op, args=None, timeout=30, request_id=None):
+        request_id = request_id or uuid.uuid4().hex
         message = {"id": request_id, "op": op, "args": args or {}}
         if op == "init":
             secret = (message["args"].get("auth") or {}).get("apiKey")
@@ -88,9 +88,11 @@ class CoreClient:
         return response.get("data")
 
     def run_prompt(self, text, images, tool_handler, seconds, on_event=None,
-                   cancel_event=None):
+                   cancel_event=None, prompt_id=None):
         """Pump callbacks while Pi runs; never wait for settled before handling tools."""
-        self.request("prompt", {"text": text, "images": images, "seconds": seconds})
+        prompt_id = prompt_id or uuid.uuid4().hex
+        self.request("prompt", {"text": text, "images": images, "seconds": seconds},
+                     request_id=prompt_id)
         deadline = time.monotonic() + seconds + 5
         abort_sent = False
         while True:
@@ -106,6 +108,13 @@ class CoreClient:
                 message = self._events.get(timeout=min(remaining, 0.2))
             except queue.Empty:
                 continue
+            if message["type"] == "settled" and message.get("prompt_id") != prompt_id:
+                continue
+            if (message["type"] == "event" and message.get("prompt_id") is not None
+                    and message["prompt_id"] != prompt_id):
+                continue
+            if message["type"] == "tool_request" and message.get("prompt_id") != prompt_id:
+                raise CoreError("Tool request does not belong to the active prompt; it was not executed")
             if on_event:
                 on_event(message)
             if message["type"] == "tool_request":
@@ -116,7 +125,8 @@ class CoreClient:
                              f"{type(error).__name__}: {error}"}], "isError": True}}
                 self.request("tool_reply", {"call_id": message["call_id"], **reply})
             elif message["type"] == "settled":
-                return message
+                if message.get("prompt_id") == prompt_id:
+                    return message
             elif message["type"] in {"transport_error", "transport_eof"}:
                 raise CoreError(message.get("error", "Core transport closed before settled"))
 
