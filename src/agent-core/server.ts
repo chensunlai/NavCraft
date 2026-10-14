@@ -161,7 +161,9 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
     if (request.op === "set_checkpoint") { checkpoint = args.checkpoint; return { updated: true, revision: checkpoint?.revision }; }
     if (request.op === "configure") {
       if (args.compaction) active!.settingsManager.applyOverrides({ compaction: args.compaction });
-      return { configured: true };
+      const applied = { configured: true, compaction: active!.settingsManager.getCompactionSettings(active!.session.model) };
+      active!.trace.emit("runtime_configured", applied);
+      return applied;
     }
     if (request.op === "prompt") {
       if (running || promptStarting || closed) throw new Error("A prompt is already running or the Core is closed");

@@ -36,3 +36,7 @@ cases:
     purpose: mapping
     requests: 16
     seconds: 600
+  moving_compaction:
+    sample: data/atomic_spatial/demo-20261012-v1/samples/A04-interactive_ia-S
+    requests: 24
+    seconds: 600

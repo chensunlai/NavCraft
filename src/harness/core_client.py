@@ -27,6 +27,7 @@ class CoreClient:
         self._condition = threading.Condition()
         self._write_lock = threading.Lock()
         self._closed = False
+        self.close_status = None
         self._secrets = ()
         self._reader = threading.Thread(target=self._read, daemon=True)
         self._stderr_reader = threading.Thread(target=self._read_stderr, daemon=True)
@@ -123,11 +124,15 @@ class CoreClient:
         if self._closed:
             return
         self._closed = True
+        forced = False
+        acknowledged = False
         try:
             if self.process.poll() is None:
                 try:
                     self.request("close", timeout=5)
+                    acknowledged = True
                 except Exception:
+                    forced = True
                     self.process.terminate()
                 try:
                     self.process.stdin.close()
@@ -136,6 +141,7 @@ class CoreClient:
                 try:
                     self.process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
+                    forced = True
                     self.process.kill()
                     self.process.wait(timeout=5)
         finally:
@@ -144,6 +150,9 @@ class CoreClient:
             self.process.stdout.close()
             self.process.stderr.close()
             self._stderr.close()
+            self.close_status = {"acknowledged": acknowledged, "forced": forced,
+                                 "exit_code": self.process.poll(),
+                                 "readers_stopped": not self._reader.is_alive() and not self._stderr_reader.is_alive()}
 
     def drain_events(self, on_event):
         """Archive final snapshots emitted during close without running new tools."""

@@ -1,6 +1,7 @@
 """Python-owned episode runner, initially beside the existing Pi implementation."""
 
 from datetime import datetime, timezone
+from copy import deepcopy
 import json
 from pathlib import Path
 import shutil
@@ -16,6 +17,7 @@ import yaml
 from .core_client import CoreClient
 from .session import NavigationSession, _write
 from . import memory
+from . import moving_compaction
 from src.bench import harness_verify as verify
 from .tools import ToolSet
 from .config import context_options, core_options, credentials
@@ -85,6 +87,9 @@ def run_case(repo, config, name, max_requests=None, seconds=None, directory=None
     settled = {}
     state = {"done": False, "goal_changed": False}
     trace = TraceWriter(private)
+    diagnostic = ({"kind": "forced_moving_compaction; not a natural 100k trigger",
+                   "normal_config": deepcopy(context), "case": name}
+                  if name == "moving_compaction" else None)
     error = None
     result = {"case": name, "sample": job.get("sample"), "episode_id": job.get("episode_id"),
               "goal_limit": job.get("goal_limit"), "model": config["model"], "api": config["api"],
@@ -96,9 +101,15 @@ def run_case(repo, config, name, max_requests=None, seconds=None, directory=None
         event = message.get("event", {})
         if event.get("type") == "turn_start":
             toolset.turn_start()
-        if (name == "compaction" and event.get("type") == "compaction_end"
+        if (name in {"compaction", "moving_compaction"} and event.get("type") == "compaction_end"
                 and (event.get("data") or {}).get("result")):
-            client.request("configure", {"compaction": {"enabled": True, **context["compaction"]}})
+            receipt = client.request("configure", {"compaction": {"enabled": True, **context["compaction"]}})
+            if diagnostic is not None and "restored_config" not in diagnostic:
+                diagnostic["restored_config"] = deepcopy(context)
+                diagnostic["restored_receipt"] = receipt
+                diagnostic["at_compaction"] = moving_compaction.snapshot(bridge, workspace, toolset.checkpoint())
+                trace.emit("moving_compaction_config_restored", diagnostic["restored_config"])
+                moving_compaction.save(private, diagnostic)
 
     try:
         trace.redact_with(credentials(config, repo)["apiKey"])
@@ -137,11 +148,11 @@ def run_case(repo, config, name, max_requests=None, seconds=None, directory=None
             rendered = memory.render(str(workspace), initial["initial_hint"]["map_id"])
             state.update(latest_map=rendered["images"][0], latest_map_metadata=rendered["data"])
             images = initial["images"] + rendered["images"]
-            if name == "local":
+            if name in {"local", "moving_compaction"}:
                 _copy(repo / job["sample"] / "task_map.png", workspace / "scene/task/task_map.png")
                 images.append("scene/task/task_map.png")
             prompt = json.dumps(initial, ensure_ascii=False) + "\nMemory entry: scene/index.md. Attached images include initial RGB and the initialization map."
-            if name == "local":
+            if name in {"local", "moving_compaction"}:
                 prompt += "\nThe attached scene/task/task_map.png shows the requested T point."
             if partial:
                 prompt += ('\nUse actual observations to identify one doorway between supplied regions. Create a portal and '
@@ -152,6 +163,14 @@ def run_case(repo, config, name, max_requests=None, seconds=None, directory=None
                            'Do not invent evidence or claim metric precision. Report remaining uncertainty.')
             if name == "compaction":
                 prompt += "\nInspect nearby map/card evidence. Save a tentative observation-to-map judgment with real frame references and uncertainty to memory/notes.md, read it back, and answer briefly. At most two movement actions; no goal submission."
+            if name == "moving_compaction":
+                prompt += ("\nThis is the FIRST phase of a same-session diagnostic. Keep the original D01/T local goal pending. "
+                           "Choose observations and actions yourself: adjust direction as needed, then make a small real "
+                           "translation to obtain a new viewpoint (about one forward step; issue one atomic action per call). "
+                           "Pause well before completing the crossing/arrival event. Save a tentative spatial judgment to "
+                           f"{moving_compaction.NOTE}, citing the actual latest frame ID and step, the unchanged goal, "
+                           "your uncertainty and what remains to do. Read the note back, then answer briefly and pause. "
+                           "Do not claim the navigation task is complete; the next user message will resume this same goal.")
         state["current"] = initial
         toolset = ToolSet(repo, workspace, bridge=bridge, state=state,
                           allow_finish=bool(job.get("task_config")), cancel_event=cancel_event)
@@ -163,6 +182,28 @@ def run_case(repo, config, name, max_requests=None, seconds=None, directory=None
         def remaining():
             return max(0.01, seconds - (time.monotonic() - started))
         settled = client.run_prompt(prompt, images, toolset.call, remaining(), on_event, cancel_event)
+        if diagnostic is not None:
+            diagnostic["phase1"] = moving_compaction.snapshot(bridge, workspace, toolset.checkpoint())
+            diagnostic["phase1_settled"] = settled
+            diagnostic["phase1_gate"] = moving_compaction.ready(diagnostic["phase1"])
+            moving_compaction.save(private, diagnostic)
+            if (diagnostic["phase1_gate"]["passed"] and not cancel_event.is_set() and remaining() > .1
+                    and settled.get("requests", 0) < (max_requests or job["requests"])
+                    and settled.get("reason") == "model_finished"):
+                forced = {"enabled": True, "reserveTokens": context["contextWindow"] - 512,
+                          "keepRecentTokens": 1200}
+                diagnostic["forced_config"] = {"contextWindow": context["contextWindow"], "compaction": forced}
+                diagnostic["forced_receipt"] = client.request("configure", {"compaction": forced})
+                trace.emit("moving_compaction_boundary", {"phase1_gate": diagnostic["phase1_gate"],
+                           "steps": diagnostic["phase1"]["state"]["metrics"]["steps"],
+                           "forced_config": diagnostic["forced_config"]})
+                moving_compaction.save(private, diagnostic)
+                settled = client.run_prompt(
+                    "Resume the SAME D01/T local goal after the diagnostic pause and compression. "
+                    f"Reopen {moving_compaction.NOTE} and its real evidence; distinguish old position estimates "
+                    "from current evidence. Decide how to observe and move, then actually cross D01 and reach T. "
+                    "The local-event detector will end the task; a verbal completion claim is insufficient.",
+                    [], toolset.call, remaining(), on_event, cancel_event)
         if (name == "compaction" and not state.get("done") and not cancel_event.is_set()
                 and remaining() > 0.1 and settled.get("requests", 0) < (max_requests or job["requests"])
                 and settled.get("reason") == "model_finished"):
@@ -189,6 +230,8 @@ def run_case(repo, config, name, max_requests=None, seconds=None, directory=None
             try:
                 client.close()
                 client.drain_events(trace.accept)
+                close_status = getattr(client, "close_status", None)
+                result["core_close"] = close_status if isinstance(close_status, dict) else None
             except Exception as failure:
                 result["cleanup_error"] = f"Core close: {failure}"
         result.update(answer=settled.get("answer", ""), requests=settled.get("requests", 0),
@@ -211,8 +254,19 @@ def run_case(repo, config, name, max_requests=None, seconds=None, directory=None
                                             trace_dir=private, environment_private_dir=private / "environment")
         except Exception as failure:
             result["scoring_error"] = str(failure)
-        if name == "compaction":
+        if name in {"compaction", "moving_compaction"}:
             result["compaction"] = {"compacted": bool(trace.compactions), "count": len(trace.compactions)}
+        if diagnostic is not None:
+            diagnostic["final_settled"] = settled
+            moving_compaction.save(private, diagnostic)
+            try:
+                result["verification"] = verify.verify_moving_compaction(
+                    workspace=workspace, sample_dir=repo / job["sample"], trace_dir=private,
+                    environment_private_dir=private / "environment", diagnostic=diagnostic,
+                    finish_reason=reason, cleanup_error=result.get("cleanup_error"), runtime_error=error,
+                    core_close=result.get("core_close"))
+            except Exception as failure:
+                result["scoring_error"] = str(failure)
         ledger = private / "requests.json"
         if ledger.exists():
             try:

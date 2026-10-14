@@ -8,6 +8,7 @@ RGB or occlusion verdict, which remains an explicit visual-review requirement.
 from __future__ import annotations
 
 from copy import deepcopy
+import base64
 import hashlib
 import json
 import math
@@ -272,6 +273,198 @@ def mapping(*, workspace, scene_dir, trace_dir, environment_private_dir=None,
                            "angle_degrees": angle_tolerance_degrees, "length_ratio": [.4, 1.8]},
             "visual_review_required": True,
             "limitation": "Authentic RGB and camera geometry do not establish semantic visibility or rule out occlusion; inspect the actual cited images."}
+
+
+def _tool_messages_paired(messages):
+    """Check actual Pi message order, including calls skipped at an end boundary."""
+    calls, results, pending = {}, set(), {}
+    for message in messages:
+        if message.get("role") == "assistant":
+            content = message.get("content", [])
+            for block in content if isinstance(content, list) else []:
+                if block.get("type") != "toolCall":
+                    continue
+                identifier, name = block.get("id"), block.get("name")
+                if not identifier or not name or identifier in calls:
+                    return False, calls
+                calls[identifier] = pending[identifier] = name
+        elif message.get("role") == "toolResult":
+            identifier = message.get("toolCallId")
+            if identifier not in pending or message.get("toolName") != pending[identifier]:
+                return False, calls
+            results.add(identifier)
+            pending.pop(identifier)
+    return not pending and calls.keys() == results, calls
+
+
+def verify_moving_compaction(*, workspace, sample_dir, trace_dir, environment_private_dir,
+                             diagnostic=None, finish_reason=None, cleanup_error=None,
+                             runtime_error=None, core_close=None, **unused):
+    """Offline acceptance using actual trace, authentic RGB and private replay positions.
+
+    This checks continuation after a forced short-context diagnostic, not navigation
+    accuracy under a naturally exhausted 100k context. Spatial judgment semantics
+    and whether uncertainty was preserved still require reading the cited evidence.
+    """
+    from src.dataset.atomic.geometry import local_event
+
+    workspace, sample_dir, trace_dir, environment_private_dir = map(
+        Path, (workspace, sample_dir, trace_dir, environment_private_dir))
+    diagnostic = diagnostic if diagnostic is not None else _json(trace_dir / "moving_compaction.json")
+    events = _lines(trace_dir / "trace.jsonl")
+    phase = diagnostic.get("phase1", {})
+    gate = diagnostic.get("phase1_gate", {})
+    checks = {"phase1_gate": bool(gate.get("passed")), "runtime_ok": not runtime_error and not cleanup_error}
+    boundaries = [i for i, row in enumerate(events) if row["type"] == "moving_compaction_boundary"]
+    compressions = [i for i, row in enumerate(events) if row["type"] == "compaction_end"
+                    and row.get("data", {}).get("result")]
+    checks["compression_after_pause"] = bool(boundaries and any(i > boundaries[0] for i in compressions))
+    compaction = next((i for i in compressions if boundaries and i > boundaries[0]), len(events))
+    normal, forced = diagnostic.get("normal_config", {}), diagnostic.get("forced_config", {})
+    runtimes = [row["data"] for row in events if row["type"] == "runtime_started"]
+    checks["single_runtime"] = len(runtimes) == 1
+    checks["initial_config_matches"] = bool(runtimes and runtimes[0].get("contextWindow") == normal.get("contextWindow")
+                                             and all(runtimes[0].get("compaction", {}).get(k) == v
+                                                     for k, v in normal.get("compaction", {}).items()))
+    checks["temporary_trigger"] = bool(forced and forced.get("contextWindow", 0)
+                                        - forced.get("compaction", {}).get("reserveTokens", 0) == 512)
+    forced_receipt = diagnostic.get("forced_receipt", {})
+    restored_receipt = diagnostic.get("restored_receipt", {})
+    normal_settings = {"enabled": True, **normal.get("compaction", {})}
+    checks["temporary_trigger_applied"] = bool(forced_receipt.get("configured")
+        and forced_receipt.get("compaction") == forced.get("compaction")
+        and any(row["type"] == "runtime_configured" and i < compaction
+                and row.get("data", {}).get("compaction") == forced.get("compaction")
+                for i, row in enumerate(events)))
+    checks["normal_config_restored"] = bool(normal and diagnostic.get("restored_config") == normal
+        and restored_receipt.get("configured") and restored_receipt.get("compaction") == normal_settings
+        and any(row["type"] == "runtime_configured" and i > compaction
+                and row.get("data", {}).get("compaction") == normal_settings for i, row in enumerate(events))
+        and any(row["type"] == "moving_compaction_config_restored" and i > compaction
+                and row.get("data") == normal for i, row in enumerate(events)))
+    checks["core_closed_cleanly"] = bool(core_close and core_close.get("acknowledged")
+        and not core_close.get("forced") and core_close.get("exit_code") == 0
+        and core_close.get("readers_stopped"))
+
+    labels = _json(sample_dir / "private/labels.json")
+    final = _json(environment_private_dir / "result.json")
+    trajectory = final.get("trajectory", [])
+    history = lambda points: [{"pose": {"position": point}} for point in points]
+    event = local_event(labels, history(trajectory))
+    prefix = phase.get("state", {}).get("trajectory", [])
+    checks["prefix_matches_final_replay"] = bool(prefix and trajectory[:len(prefix)] == prefix)
+    checks["goal_pending_before_compression"] = bool(prefix and not local_event(labels, history(prefix))["passed"]
+                                                   and not phase["state"].get("terminated"))
+    checks["local_event_complete"] = bool(event["passed"] and final.get("terminated")
+                                         and final.get("metrics", {}).get("reason") == "local_event_complete")
+    checks["normal_event_exit"] = finish_reason == "local_event_complete"
+
+    frames = {row["id"]: row for row in _lines(environment_private_dir / "frames.jsonl")}
+    public = {row["id"]: row for row in _lines(workspace / "observations/index.jsonl")}
+    actions = _lines(workspace / "observations/actions.jsonl") if (workspace / "observations/actions.jsonl").is_file() else []
+    starts, ends, action_events = {}, {}, {}
+    duplicate_tool_events = False
+    for index, row in enumerate(events):
+        data = row.get("data", {})
+        identifier = data.get("toolCallId")
+        if row["type"] == "tool_execution_start":
+            duplicate_tool_events |= not identifier or identifier in starts
+            starts[identifier] = index
+        if row["type"] == "tool_execution_end":
+            duplicate_tool_events |= not identifier or identifier in ends
+            ends[identifier] = index
+            if data.get("toolName") == "nav_step" and _successful(row):
+                for content in data.get("result", {}).get("content", []):
+                    if content.get("type") != "text":
+                        continue
+                    try:
+                        value = json.loads(content["text"])
+                    except (ValueError, KeyError):
+                        continue
+                    for action in value.get("executed_actions", []):
+                        action_events[(action["step"], action["after_frame"])] = index
+    checks["tool_calls_paired"] = bool(starts and not duplicate_tool_events and starts.keys() == ends.keys()
+                                       and all(starts[identifier] < ends[identifier] for identifier in starts))
+    messages = [row.get("data", {}).get("message", {}) for row in events if row["type"] == "message_end"]
+    paired, actual_calls = _tool_messages_paired(messages)
+    checks["actual_model_tool_messages_paired"] = bool(actual_calls and paired)
+    checks["execution_ids_from_actual_calls"] = bool(starts and all(
+        actual_calls.get(identifier) == events[index]["data"].get("toolName") for identifier, index in starts.items()))
+    checks["model_inputs_tool_messages_paired"] = all(
+        _tool_messages_paired(row.get("data", {}).get("context", {}).get("messages", []))[0]
+        for row in events if row["type"] == "model_input")
+
+    movement = []
+    authentic = True
+    for action in actions:
+        before, after = frames.get(action["before_frame"]), frames.get(action["after_frame"])
+        index = action_events.get((action["step"], action["after_frame"]))
+        if not before or not after or index is None:
+            authentic = False
+            continue
+        actual = math.dist(before["pose"]["position"], after["pose"]["position"])
+        frame_id = action["after_frame"]
+        ref = public.get(frame_id, {}).get("path")
+        original = environment_private_dir / "environment/observations" / f"rgb_{frame_id.removeprefix('frame_')}.png"
+        rgb = workspace / ref if ref else workspace / "missing"
+        replay_matches = (0 < action["step"] < len(trajectory)
+                          and before.get("step") == action["step"] - 1
+                          and after.get("step") == action["step"]
+                          and trajectory[action["step"] - 1] == before["pose"]["position"]
+                          and trajectory[action["step"]] == after["pose"]["position"])
+        rgb_ok = bool(rgb.is_file() and original.is_file() and rgb.read_bytes() == original.read_bytes())
+        authentic &= rgb_ok and replay_matches
+        movement.append({"step": action["step"], "action": action["action"], "frame": frame_id,
+                         "trace_index": index, "displacement_m": actual, "rgb_authentic": rgb_ok,
+                         "phase": "after" if index > compaction else "before"})
+    checks["motion_records_authentic"] = bool(movement and authentic
+        and [action["step"] for action in actions] == list(range(1, len(trajectory))))
+    travel_before = sum(item["displacement_m"] for item in movement if item["phase"] == "before")
+    travel_after = sum(item["displacement_m"] for item in movement if item["phase"] == "after")
+    checks["translation_before_and_after"] = travel_before > .05 and travel_after > .05
+    checks["compression_at_pending_goal"] = bool(diagnostic.get("at_compaction")
+        and not diagnostic["at_compaction"]["state"].get("terminated")
+        and not local_event(labels, history(diagnostic["at_compaction"]["state"]["trajectory"]))["passed"])
+
+    note, note_hash = phase.get("note", ""), phase.get("note_sha256")
+    latest_frame = gate.get("current_frame")
+    checks["judgment_grounded_at_pause"] = bool(latest_frame and latest_frame in note
+        and hashlib.sha256(note.encode()).hexdigest() == note_hash
+        and any(row["type"] == "workspace_changes" and i < compaction
+                and any(change.get("path") == "memory/moving_compaction.md" and change.get("after") == note_hash
+                        for change in row.get("data", {}).get("changes", []))
+                for i, row in enumerate(events)))
+    expected_hashes = set(phase.get("image_hashes", {}).values())
+
+    def image_hashes(value):
+        found = set()
+        if isinstance(value, dict):
+            if value.get("type") == "image" and isinstance(value.get("data"), str):
+                try:
+                    found.add(hashlib.sha256(base64.b64decode(value["data"], validate=True)).hexdigest())
+                except ValueError:
+                    pass
+            for child in value.values():
+                if isinstance(child, (dict, list)):
+                    found.update(image_hashes(child))
+        elif isinstance(value, list):
+            for child in value:
+                found.update(image_hashes(child))
+        return found
+
+    first_model = next((row["data"] for i, row in enumerate(events)
+                        if i > compaction and row["type"] == "model_input"), {})
+    checks["latest_public_images_in_resumed_input"] = bool(expected_hashes and
+                                                            expected_hashes <= image_hashes(first_model.get("context", {})))
+    checks["latest_frame_reference_in_resumed_input"] = bool(latest_frame and
+                                                              latest_frame in json.dumps(first_model.get("context", {})))
+    return {"passed": all(checks.values()), "checks": checks, "local_event": event,
+            "actual_travel_before_m": travel_before, "actual_travel_after_m": travel_after,
+            "movement": movement, "compaction_count": len(compressions), "latest_pause_frame": latest_frame,
+            "summary": events[compaction]["data"]["result"].get("summary") if compaction < len(events) else None,
+            "normal_config": normal, "forced_config": forced,
+            "visual_review_required": True,
+            "limitation": "A forced 512-token trigger tests same-session continuation, not natural 100k compaction. Read judgment/summary and cited RGB to assess spatial correctness and uncertainty; no live pose was supplied."}
 
 
 def image_goal(*, private_dir, env_config="config/environment/goat_visual.yaml",

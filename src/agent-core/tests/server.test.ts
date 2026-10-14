@@ -144,7 +144,11 @@ test("Core accepts explicit auth, configurable compaction and stream-only record
   try {
     await f.initialize({ tracePersist: false, checkpoint: { content: "public state", revision: "r1" } });
     f.send("configure", "configure", { compaction: { enabled: true, reserveTokens: 65000, keepRecentTokens: 1200 } });
-    assert.equal((await f.wait((record) => record.id === "configure")).ok, true);
+    const configured = await f.wait((record) => record.id === "configure");
+    assert.equal(configured.ok, true);
+    assert.deepEqual(configured.data.compaction, { enabled: true, reserveTokens: 65000, keepRecentTokens: 1200 });
+    assert.ok(f.records.some((record) => record.type === "event" && record.event.type === "runtime_configured"
+      && record.event.data.compaction.reserveTokens === 65000));
     assert.equal(f.server.checkpoint?.revision, "r1");
     const saved = await readFile(join(f.dir, "config.json"), "utf8");
     assert.ok(!saved.includes("fixture-only-secret"));
