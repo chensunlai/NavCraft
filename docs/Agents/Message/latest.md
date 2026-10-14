@@ -1,11 +1,11 @@
-# 当前交接：基于 Pi 完整重构 Harness 与真实测试
+# 当前交接：Python 主导的 Pi Harness（已完成）
 
 - 发送方：Main
 - 接收方：HarnessAgent
 - 日期：2026-10-14
 - 状态：**实现与本轮验证已完成。** 用户于 2026-10-14 授权分步实施，预算账本最终 191/200；[回传](20261014-Harness-to-Main-Pi实施回传.md)及[实施记录](../HarnessImplementation.md)列出实际提交、结果和未通过项。GOAT 第二目标未完成；最后压缩复测的退出归档错误已修复并独立保留，不将全部案例标成成功。下文保留原始交接要求供追溯。
 
-**后续用户修正（2026-10-14）：** 目标调整为 Python 主导＋独立 TS Core；压缩提示直接维护在本地 Pi Core 源码，不通过外围注入。提示归属已经修改，Python 主程序迁移尚未实施，见 [Architecture](../../Architecture.md#framework) 和[实施记录](../HarnessImplementation.md)。本段优先于下文原始实现方式与压缩提示接入建议。
+**后续用户要求及完成状态（2026-10-14）：** Python 主导迁移已完成；现行源码为 `src/harness/`＋`src/agent-core/`，旧实现位于 `src/legacy/harness/`。导航摘要提示直接维护在本地 Pi Core 源码。真实 Coding、局部 IA、查询 QA、压缩续接已有记录，Python 290 项／Core 41 项测试通过。本轮用户澄清不设全局请求总上限，仅限制每个 episode；原 191/200 账本保留，新运行独立计数。详见 [最新迁移回传](20261014-Harness-to-Main-Python主导迁移回传.md)、[Architecture](../../Architecture.md#framework) 和[实施记录](../HarnessImplementation.md)。本段优先于下文保留的初版重构要求。
 
 ## 目标与依据
 

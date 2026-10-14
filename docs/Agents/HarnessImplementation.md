@@ -1,8 +1,10 @@
 # Pi Harness 实施记录
 
+**现行版本：Python 主程序＋独立 TS Core 已迁移完成。** 最新命令、提交与真实验证见 [Python 主导迁移回传](Message/20261014-Harness-to-Main-Python主导迁移回传.md)。下文旧 TS 主导实现保留为历史记录，原 191/200 账本与旧运行结果不改写。
+
 依据 [当前交接](Message/latest.md)、[Architecture](../Architecture.md) 和 [SpatialMemory](../SpatialMemory.md)。2026-10-14 用户授权实现，并确认先提交相关设计，再逐阶段 commit；论文及其他对话的既有改动不混入。
 
-## 固定条件
+## 初版固定条件（历史）
 
 Pi v1.2.0 完整 coding-agent 本地源码、根 npm workspaces；Node 内嵌 SDK，常驻 Python Habitat 通过 JSONL 通信。全部工具串行。Coding 使用 bwrap 和已有 vln Python，scene/observations 只读，memory/scratch 可写。默认 high reasoning、8192 输出 token、300 秒请求超时。
 
@@ -23,7 +25,7 @@ Pi v1.2.0 完整 coding-agent 本地源码、根 npm workspaces；Node 内嵌 SD
 
 每阶段通过检查再提交；已提交功能修复另作 fix commit。普通功能使用已有地图，构图仅做独立局部专项；历史地图、manifest 和运行产物不覆盖。
 
-## 真实测试预算
+## 初版真实测试预算（历史）
 
 接口/Coding 12、A03 查询 QA 8、A04 局部 IA 12、ObjectNav 32、指令 32、GOAT 两目标 52、局部构图 16、压缩 12、定向复测 24，共 200。未用额度可转后续阶段；总额不突破。软件失败、模型判断错误、预算结束分开报告。
 
@@ -79,10 +81,20 @@ GOAT 首次运行的 `last_error:"Connection error."` 是 SDK 包装后的预算
 - 地图检查器核验格式与引用，不能代替空间正确性。当前局部构图的准确落点得益于已知墙层、区域和初始箭头，不代表从零重建。
 - 原生压缩暂只做导航提示适配及公开检查点补充；文字无法完整保存视觉细节。摘要明确“最新”只限被压缩段，更晚尾部/检查点优先；补回地图携带原版本及 `pose_at_frame`，不伪装实时定位。
 - 实际上下文与 HTTP trace 内嵌图片，长交互产物较大；后续可做内容寻址去重，当前优先保证输入可核查。
-- 运行产物、依赖目录和密钥均不提交。其他对话的论文及文档改动保留在工作区。入口和使用方法见 [Harness README](../../src/harness-pi/README.md)。
+- 运行产物、依赖目录和密钥均不提交。其他对话的论文及文档改动保留在工作区。入口和使用方法见 [Harness README](../../src/harness/README.md)。
 
 ## 后续源码边界修正（2026-10-14）
 
 用户确认 Python 主导、保留独立 TS Core，并明确要求压缩提示直接修改本地 Pi 源码。已将导航摘要要求从外围扩展移到 `pi/coding-agent/src/core/compaction/compaction.ts` 的共享摘要请求构造入口，覆盖首次摘要、已有摘要更新和 split-turn 前缀；外围不再追加提示，仍负责统一预算、审计、失败取消和公开图片/状态恢复。原生切点、格式、文件跟踪与保存机制保留；分支切换摘要未改。
 
 这次只调整提示归属和相关设计说明；Python 启动并主导 TS Core 的控制方向尚未迁移。先前真实运行结果保留原版本含义，不作为本次源码变更后的实测。本地 Pi 构建、Harness TypeScript 检查和 36 项 Node 测试通过，其中 5 项直接调用 Core 验证首次、更新、两路 split、prefix-only 和额外指令；每个请求只含一份导航要求。未增加模型请求，预算账本仍为 191/200。
+
+## Python 主导迁移（2026-10-14，现行版本）
+
+按用户批准的计划先测试再迁目录：`90945db` 贯通 Python 工具回调并实际测试；`56d9052` 直接运行 Habitat 局部 IA；`5fde029` 将 Python 主程序统一到 `src/harness`、完整 TS Core 移至 `src/agent-core`、旧实现放 `src/legacy/harness`；`a7cb9e5` 补齐收尾与运行配置回归，`8667207` 将 Core 默认总次数限制改为无上限，单 episode 限制保留。
+
+导航工具的名称、JSON Schema、执行函数均在 Python；Core 仅通过通用回调执行。Habitat 在 Python worker 主线程初始化、运动和关闭。原生 Coding 工具、会话历史、模型协议与压缩留在 Core；`private/trace.jsonl` 由 Python 唯一写入，保存实际输入输出、回执、图片及文件版本。
+
+本轮不设全局模型请求总上限；每个 episode 独立计数，摘要与失败尝试共同计入。原预算账本仍为 191/200。本轮 6 个真实运行合计 41 次请求，详细路径及核验见 [回传](Message/20261014-Harness-to-Main-Python主导迁移回传.md)。最终入口 Coding 6 次、局部 IA 5 次、压缩 14 次、查询 QA 3 次均通过对应验收；压缩诊断不是目标导航成功。
+
+Python 全量 290 项、Core 41 项回归通过，本地 Pi 与 Core 构建成功。ObjectNav／指令／GOAT／构图入口迁移，未重跑这些完整模型案例；旧结果不能直接作为新架构的成绩。另一对话的论文改动未混入本轮提交。

@@ -2,7 +2,7 @@
 
 更新：2026-10-14。本文定义 **目标 Harness、工具、工作空间、Coding 环境与上下文管理**，围绕导航中的信息使用与自主行动设计。空间记忆的具体形式、字段与样例单独维护在 [SpatialMemory.md](SpatialMemory.md)；论文主线见 [Paper](Paper.md)，数据设计见 [Tasks](Tasks.md)，评测见 [Experiments](Experiments.md)。
 
-本文只讨论目标设计；导航效果和训练收益由实验验证。
+本文同时说明现行实现边界与目标规范；软件验收见 [Harness 实施记录](Agents/HarnessImplementation.md)，导航效果和训练收益由独立实验验证。
 
 <a id="harness"></a>
 
@@ -35,11 +35,32 @@ flowchart LR
 
 ### 开发基座：优先复用完整 Pi Coding Agent
 
-**基座采用本地维护的 Pi `pi-coding-agent`，目标边界是 Python 主程序＋独立 TS Core。** Python 主导任务、空间记忆、导航工具、环境、评分与实验组织；TS Core 保留 Pi 的自主循环、模型协议、原生 Coding 工具、会话与压缩。导航工具通过通用接口接入，不把导航任务判断写入 Core。当前实现仍由 TS 启动 Python，控制方向的迁移尚未实施。[本地 Pi SDK 文档](../src/harness-pi/pi/coding-agent/docs/sdk.md)
+**基座采用本地维护的 Pi `pi-coding-agent`，目标边界是 Python 主程序＋独立 TS Core。** Python 主导任务、空间记忆、导航工具、环境、评分与实验组织；TS Core 保留 Pi 的自主循环、模型协议、原生 Coding 工具、会话与压缩。导航工具通过通用接口接入，不把导航任务判断写入 Core。当前已实现 Python 启动并管理独立 Node Core；导航工具定义、环境和实验编排位于 Python。[本地 Pi SDK 文档](../src/agent-core/pi/coding-agent/docs/sdk.md)
 
-Pi SDK 在独立 Node 进程内运行，通过双向 JSONL 与 Python 主程序通信；模型选择导航工具时回调 Python，Python 返回实际结果与公开状态。Pi 持有唯一模型会话，Python 保存审计记录，不另维护第二套对话。现有版本的 SDK 与任务入口仍在同一 Node 进程中，这部分需要后续迁移。本地维护的 Pi 核心源码、外部安装依赖和模型任务工作空间分别放置；源码在新 Harness 内，深层依赖在其目录外。
+Pi SDK 在独立 Node 进程内运行，通过双向 JSONL 与 Python 主程序通信；模型选择导航工具时回调 Python，Python 返回实际结果与公开状态。Pi 持有唯一模型会话，Python 保存审计记录，不另维护第二套对话。Python 的 episode worker 直接持有 Habitat，工具回调在初始化环境的同一线程执行；不再增加 Python 环境桥进程。本地维护的 Pi 核心源码、外部安装依赖和模型任务工作空间分别放置；Pi 源码位于独立 Core 中，普通依赖在仓库根目录。
 
-需修改的 Pi 包保存在 `src/harness-pi/pi/`，通过 npm workspaces 链接使用；普通依赖由仓库根目录统一安装，`node_modules/` 不纳入版本控制。修改 TypeScript 后编译再运行，可用 watch 自动编译；Node 复用现有 nvm，包配置与 lockfile 随项目保存。
+需修改的 Pi 包保存在 `src/agent-core/pi/`，通过 npm workspaces 链接使用；普通依赖由仓库根目录统一安装，`node_modules/` 不纳入版本控制。修改 TypeScript 后编译再运行，可用 watch 自动编译；Node 复用现有 nvm，包配置与 lockfile 随项目保存。
+
+### 现行代码边界与运行入口
+
+```text
+src/harness/             Python 任务入口、空间记忆、导航工具、环境会话、实验记录
+src/agent-core/          独立 TS Core、原生 Coding、模型协议、会话与压缩
+src/agent-core/pi/       本地维护的完整 Pi coding-agent 源码
+src/legacy/harness/      旧 Python 实现，旧数据生成／评测保持原行为
+src/common/map.py        新旧共享的地图校准，仅用于可信初始化和私有核验
+src/bench/              固定案例和私有评分
+```
+
+运行入口为 `python -m src.harness doctor/run/smoke`，npm 负责安装、构建和 Core 测试。`smoke` 默认顺序运行 Coding、局部 IA、压缩续接；完整案例使用 `smoke --suite full`。沿用 `config/harness-pi` 配置目录。
+
+Python 注册工具名称、说明、JSON Schema 和执行函数；Core 只创建通用代理。原生文件／命令工具留在 Core，Python 提供读写目录与 Python 可执行路径。初始化、工具回执、实际模型事件通过双向 JSONL 交互；等待模型执行期间持续接收工具请求。
+
+任务完成或目标切换后，先记录当前结果，再为本批剩余调用产生未执行回执；正常结束在工具批次边界生效。GOAT 切换后由下一轮模型重新决定，Core 不解释目标语义。异常取消与正常完成分别记录。
+
+Pi 持有唯一模型历史；Python 写唯一 `private/trace.jsonl`，保存 Core 实际事件、工具回执与文件版本引用。压缩后公开内容由 Python 提供，Core 原样恢复，不自动定位或改写记忆。每个 episode 使用独立请求账本，普通推理、摘要与失败请求共同计数；本轮不设全局请求总上限，旧 191/200 账本保留。
+
+CLI 监督独立 episode worker；worker 直接运行 Habitat 并启动 Core。超时先正常取消，超过宽限时间回收整个 episode 进程组。Coding 隔离仍使用 bwrap，不回退宿主执行。
 
 | 候选 | 与本项目的关系 |
 |---|---|
@@ -51,7 +72,7 @@ Pi 的 [agent-core](https://github.com/earendil-works/pi/blob/main/packages/agen
 
 实施时固定一个核验过的发布版本；当前官方包名为 `@earendil-works/pi-coding-agent`。保留基座原生工具参数和调用／反馈结构，追加导航任务约定；不要求保留不适用的“修复代码仓库”任务指令。Skills 用于按需提供地图格式或工具用法，不强制固定导航步骤；MCP 按接入需要启用，不必为已有本地工具再增加一层。
 
-**框架不会自动保证模型性能。** 指定 `gpt6.1sol` 路由仍需验证多图、工具连续调用、reasoning 参数与协议要求的续接信息。先跑通“读资料→写／执行脚本→看结果→继续调用工具”，再接导航，避免把接口损失误判为空间能力不足。
+**框架不会自动保证模型性能。** 当前服务使用明确核验的 `gpt-6.1-sol` 标识，Responses/high/8192；原 `gpt6.1sol` 标识曾返回 404。真实 Coding、局部 IA、查询 QA 和压缩续接均已运行，结果只证明相应链路可用，不保证任意模型导航效果。
 
 ### 模型输入与输出
 
@@ -129,7 +150,7 @@ workspace/
 | `read`（原生） | 文件路径、可选读取范围 | 文本或支持的图片内容；沿用基座参数与反馈 |
 | `write`／`edit`（原生） | 文件路径、内容或替换文本 | 新建／修改当前地图、实体卡片、状态或脚本，保留原生反馈；记录实际文件变化 |
 | `bash`（原生，工作空间内） | 命令、可选超时 | 查询目录／搜索文本、执行脚本，返回输出与退出状态；沿用基座的截断和续接机制 |
-| `view_images` | `refs`、可选 `crop`、`layout` | 查看已有图片或其裁剪／拼图并返回来源；观察图保留原采集时刻，未知时标明；不采集新观察 |
+| `view_images` | `refs`、可选 `crops`、`layout` | 查看已有图片或其裁剪／拼图并返回来源；观察图保留原采集时刻，未知时标明；不采集新观察 |
 | `render_map` | `map_id`；可选 `region`、`highlight_ids`、`grid` 与图层选择 | 绘制基础墙层、当前实体及定位估计；返回图片引用、原图坐标范围、所用记录版本和估计对应帧，不自动重定位 |
 | `nav_observe` | `mode: single/panorama` | 从当前环境获取新 RGB、帧引用、步骤与视角说明；全景默认拼图并保留各视图引用，原地采集也属于新观察 |
 | `nav_step` | `actions`：任务允许的短原子动作序列 | 请求与实际执行动作、碰撞／中断、末帧 RGB、中间帧引用、相机视角与剩余预算；不返回真值位姿变化 |
@@ -169,7 +190,7 @@ workspace/
 
 **同一 episode 一个逻辑会话：平时只追加，接近预算上限时统一压缩。** 外部记忆保存完整资料，上下文保存实际加载的部分。不按“最近五组”滚动删图，不每轮重新组合输入。
 
-使用本地 Pi 的会话与原生压缩机制，**压缩提示直接修改 Core 源码**，不在外围额外追加一套摘要指令。提示统一位于 [Core compaction.ts](../src/harness-pi/pi/coding-agent/src/core/compaction/compaction.ts) 的共享摘要构造入口，覆盖首次摘要、已有摘要更新和 split-turn 前缀摘要。下述信息保留方式仍需验证；不另写压缩引擎。外围仅保留统一请求预算、审计和已有公开图片/状态恢复。Pi 与 Codex 的压缩实现不要求完全一致。
+使用本地 Pi 的会话与原生压缩机制，**压缩提示直接修改 Core 源码**，不在外围额外追加一套摘要指令。提示统一位于 [Core compaction.ts](../src/agent-core/pi/coding-agent/src/core/compaction/compaction.ts) 的共享摘要构造入口，覆盖首次摘要、已有摘要更新和 split-turn 前缀摘要。下述信息保留方式仍需验证；不另写压缩引擎。外围仅保留统一请求预算、审计和已有公开图片/状态恢复。Pi 与 Codex 的压缩实现不要求完全一致。
 
 ### 初始与增量形式
 
