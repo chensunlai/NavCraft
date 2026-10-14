@@ -1,29 +1,18 @@
 """Python callbacks preserve real environment state without a bridge subprocess."""
 
-import importlib.util
 import json
 from pathlib import Path
-import sys
 from threading import Event, get_ident
 
 import pytest
+
+from src.harness.tools import ToolSet
 
 from test_pi_bridge import Bridge, init_args, initialized
 from test_pi_memory import workspace
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PYTHON = ROOT / "src/harness-pi/python"
-SPEC = importlib.util.spec_from_file_location("pi_python_tools", PYTHON / "tools/__init__.py",
-                                             submodule_search_locations=[str(PYTHON / "tools")])
-MODULE = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = MODULE
-sys.path.insert(0, str(PYTHON))
-try:
-    SPEC.loader.exec_module(MODULE)
-finally:
-    sys.path.remove(str(PYTHON))
-ToolSet = MODULE.ToolSet
 
 
 def payload(response):

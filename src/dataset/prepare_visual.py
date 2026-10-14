@@ -431,7 +431,7 @@ def save_manifest(output, name, episodes, *, validated, seed):
 
 
 def preflight_maps(episodes, map_root):
-    from src.harness.map import MapCalibration
+    from src.common.map import MapCalibration
 
     calibrations = {}
     results = []

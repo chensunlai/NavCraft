@@ -10,7 +10,7 @@ from pathlib import Path
 
 from ..common.config import ROOT, resolve_path
 from ..common.io import write_json
-from ..harness.trace import TraceReader
+from src.legacy.harness.trace import TraceReader
 
 CACHE = "cache/visual-harness-v1"
 

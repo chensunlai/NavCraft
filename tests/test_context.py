@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from src.harness.agent.base import AgentLimits, ToolResult, ToolSpec
-from src.harness.agent.context import AgentContext
-from src.harness.agent.loop import AgentRuntime
-from src.harness.agent.model import ScriptedModel
+from src.legacy.harness.agent.base import AgentLimits, ToolResult, ToolSpec
+from src.legacy.harness.agent.context import AgentContext
+from src.legacy.harness.agent.loop import AgentRuntime
+from src.legacy.harness.agent.model import ScriptedModel
 
 
 def function(call_id):

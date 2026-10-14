@@ -7,10 +7,10 @@ import json
 import httpx
 import pytest
 
-from src.harness.agent.base import AgentLimits, ModelRequest, ToolResult, ToolSpec
-from src.harness.agent.context import AgentContext
-from src.harness.agent.loop import AgentRuntime
-from src.harness.agent.model import ModelError, ResponsesModel, ScriptedModel
+from src.legacy.harness.agent.base import AgentLimits, ModelRequest, ToolResult, ToolSpec
+from src.legacy.harness.agent.context import AgentContext
+from src.legacy.harness.agent.loop import AgentRuntime
+from src.legacy.harness.agent.model import ModelError, ResponsesModel, ScriptedModel
 
 
 class Trace:
@@ -286,7 +286,7 @@ def test_environment_failure_is_recorded_and_timeout_prevents_tool_execution(mon
             clock[0] = 2
             return super().complete(request)
 
-    monkeypatch.setattr("src.harness.agent.loop.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("src.legacy.harness.agent.loop.time.monotonic", lambda: clock[0])
     tools = Tools()
     result = AgentRuntime(SlowModel({"turns": [{"output": [function()]}]}), {}).run(
         [], tools, Trace(), AgentLimits(timeout_seconds=1)

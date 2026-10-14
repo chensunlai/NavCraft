@@ -12,8 +12,8 @@ from src.bench.evaluator import evaluate
 from src.common.config import ExperimentConfig
 from src.common.io import read_json, redact, write_json
 from src.dataset.episodes.base import EpisodeSpec
-from src.harness.build import build
-from src.harness.trace import TraceWriter
+from src.legacy.harness.build import build
+from src.legacy.harness.trace import TraceWriter
 
 
 def run_episode(

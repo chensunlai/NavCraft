@@ -1,1 +1,1 @@
-"""Model-independent navigation sessions and experimental tools."""
+"""Python navigation application backed by the independent Pi Agent Core."""

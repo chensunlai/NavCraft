@@ -14,7 +14,7 @@ from src.bench.worker import EpisodeWorker, execute_episode
 from src.common.config import ExperimentConfig, load_config, validate
 from src.common.io import write_json
 from src.common.register import episode_registry
-from src.harness.build import load_builtins
+from src.legacy.harness.build import load_builtins
 
 
 def _slot_config(config: ExperimentConfig, slot: int, episode=None) -> ExperimentConfig:

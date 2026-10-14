@@ -1,384 +1,434 @@
-"""One episode, one environment; tools only receive public operation callbacks."""
+"""Python-owned Habitat session. Only explicit RGB and public feedback enter tool results.
 
+Initialize, observe, move and close in the same episode worker thread.
+"""
+
+from __future__ import annotations
+
+from copy import deepcopy
 import json
-from dataclasses import replace
+import math
+import os
 from pathlib import Path
+import shutil
+import sys
+import tempfile
 
-import numpy as np
+REPO = Path(__file__).resolve().parents[2]
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
 
-from src.common.register import tool_registry
 from src.dataset.episodes.base import EpisodeSpec
-from src.environment.base import Environment, Observation, Transition
-from src.harness.agent.base import ToolCall, ToolResult
-from src.harness.map import MapAsset
-from src.harness.prompts import SYSTEM_PROMPT, observation_message
-from src.harness.tools import ToolSet, load_builtin_tools
-from src.harness.tools.navigation import ToolContext, ToolInputError
-from src.harness.trace import TraceWriter
+from src.environment.base import NavigationInputError
+from src.environment.tasks.base import TaskAdapter, TaskUpdate
+
+
+def _write(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
+                                         prefix=f".{path.name}.", suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _append(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as stream:
+        stream.write(json.dumps(value, ensure_ascii=False) + "\n")
+
+
+class AtomicTaskAdapter(TaskAdapter):
+    """Use existing local-event geometry without exposing labels to the agent."""
+
+    family = "atomic"
+
+    def __init__(self, labels, public, config, mapping=False):
+        super().__init__(config)
+        self.labels, self.public, self.mapping = labels, public, mapping
+
+    @property
+    def movement_actions(self):
+        return ("move_forward", "turn_left", "turn_right")
+
+    def event(self):
+        from src.dataset.atomic.geometry import local_event
+
+        return local_event(self.labels, [{"pose": {"position": p}} for p in self.trajectory])
+
+    def on_step(self, point, distance):
+        self._count(point, distance)
+        if not self.mapping and self.event()["passed"]:
+            self.terminated, self.reason = True, "local_event_complete"
+        elif self.steps >= self.max_steps:
+            self.truncated, self.reason = True, "max_steps"
+        elif self.path_length >= 4.0001:
+            self.truncated, self.reason = True, "travel_budget"
+        return self.update()
+
+    def finish(self, point, distance):
+        raise NavigationInputError("This atomic task ends on its local event; nav_finish is unavailable")
+
+    def finalize(self, reason):
+        if not self.done:
+            self.truncated, self.reason = True, reason
+
+    def metrics(self):
+        return {"steps": self.steps, "path_length": self.path_length,
+                "reason": self.reason, "local_event": self.event(), "mapping": self.mapping}
+
+    def private_state(self):
+        return {"metrics": self.metrics(), "trajectory": self.trajectory,
+                "terminated": self.terminated, "truncated": self.truncated}
 
 
 class NavigationSession:
-    def __init__(
-        self,
-        environment: Environment,
-        episode: EpisodeSpec,
-        trace: TraceWriter,
-        tool_names: list[str],
-        map_asset: MapAsset | None = None,
-        action_parameters: dict | None = None,
-        assets=None,
-    ):
-        load_builtin_tools()
-        if len(tool_names) != len(set(tool_names)) or not tool_names:
-            raise ValueError("Harness tools must be a nonempty unique list")
-        self.environment, self.episode, self.trace = environment, episode, trace
-        self.tools = {name: tool_registry.create(name) for name in tool_names}
-        self.toolset = ToolSet(self)
-        self.map_asset = map_asset
-        self.assets = assets
-        if self.assets is not None and "nav_depth" in self.tools:
-            raise ValueError("The visual map harness cannot expose nav_depth")
-        if "nav_observe" in self.tools:
-            self.tools["nav_observe"].visual = self.assets is not None
-        self.action_parameters = dict(action_parameters or {})
-        self.transition: Transition | None = None
-        self.frames: dict[str, Observation] = {}
-        self._calls: dict[str, tuple[str, ToolResult]] = {}
-        self._call_id = ""
+    def __init__(self, cancel_event=None):
+        self.env = None
+        self.cache = {}
+        self.closed = False
+        self.workspace = self.private_dir = None
+        self.published = {}
+        self.config = {}
+        self.mode = "navigation"
+        self.cancel_event = cancel_event
 
-    def start(self) -> list[dict]:
-        if self.transition is not None:
-            raise RuntimeError("Session already started")
-        self._accept(self.environment.reset(self.episode))
-        self.trace.emit("episode_started", public=self._public())
-        data = self._public()
-        data["movement_actions"] = list(self.movement_actions)
-        data["action_parameters"] = self.action_parameters
-        images = self._images(include_goal=True)
-        roles = self._image_roles(images)
-        prompt = SYSTEM_PROMPT
-        if self.assets is not None:
-            from .prompts import visual_system_prompt
-
-            map_data, map_images = self.assets.initial_map(
-                self.transition.observation.pose
-            )
-            data["memory"] = {
-                "description_ref": self.assets.description_ref,
-                "floor_plan_ref": self.assets.map_ref,
-                "room_images_ref": self.assets.rooms_ref,
-                "initial_map": map_data,
-                "coordinates": "Map tools use normalized [x,y] in the referenced image; origin top-left.",
-            }
-            images.extend(map_images)
-            roles.update({str(path): "map" for path in map_images})
-            prompt = visual_system_prompt()
-        return [
-            {"role": "system", "content": prompt},
-            observation_message(data, images, roles if self.assets else None),
-        ]
-
-    def _public(self) -> dict:
-        if self.assets is None:
-            return self.transition.public_dict()
-        transition = self.transition
-        observation = transition.observation
-        task = transition.task
-        public_task = None
-        if task is not None:
-            public_task = {
-                "goal_id": task.goal_id,
-                "modality": task.modality,
-                "instruction": task.instruction,
-            }
-            if task.image is not None:
-                public_task["image_ref"] = self.assets.register_image(
-                    task.image, ref=f"goal_{task.goal_id:03d}", kind="goal"
-                )
-        allowed = {
-            "event",
-            "action",
-            "collision",
-            "steps",
-            "remaining_total_actions",
-            "remaining_goal_actions",
-        }
-        return {
-            "observation": {
-                "frame_id": observation.frame_id,
-                "image": self.assets.image_info(observation.frame_id),
-            },
-            "task": public_task,
-            "feedback": {
-                key: value
-                for key, value in transition.feedback.items()
-                if key in allowed
-            },
-            "goal_changed": transition.goal_changed,
-            "terminated": transition.terminated,
-            "truncated": transition.truncated,
-            "reason": transition.reason,
-        }
-
-    @property
-    def movement_actions(self) -> tuple[str, ...]:
-        return ("move_forward", "turn_left", "turn_right") + (
-            () if self.episode.benchmark == "r2r" else ("look_up", "look_down")
-        )
-
-    def _accept(self, transition: Transition) -> None:
-        self.transition = transition
-        self.frames[transition.observation.frame_id] = transition.observation
-        if self.assets is not None:
-            self.assets.register_image(
-                transition.observation.rgb, ref=transition.observation.frame_id
-            )
-        self.trace.goal_id = (
-            transition.task.goal_id if transition.task is not None else None
-        )
-
-    def _images(self, include_goal: bool = False) -> list[Path]:
-        images = [Path(self.transition.observation.rgb)]
-        task = self.transition.task
-        if include_goal and task is not None and task.image is not None:
-            images.append(Path(task.image))
-        return images
-
-    def _image_roles(self, images: list[Path]) -> dict[str, str]:
-        roles = {str(path): "observation" for path in images}
-        task = self.transition.task
-        if task is not None and task.image is not None:
-            roles[str(task.image)] = "goal"
-        return roles
-
-    def _result(self, data: dict | None = None, images: bool = True) -> ToolResult:
-        transition = self.transition
-        image_paths = (
-            self._images(include_goal=transition.goal_changed) if images else []
-        )
-        return ToolResult(
-            self._call_id,
-            True,
-            self._public() if data is None else data,
-            image_paths,
-            transition.terminated,
-            transition.truncated,
-            goal_changed=transition.goal_changed,
-            image_roles=self._image_roles(image_paths),
-        )
-
-    def execute(self, call: ToolCall) -> ToolResult:
-        if self.transition is None:
-            raise RuntimeError("Session has not started")
-        self._call_id = call.call_id
+    def dispatch(self, request):
+        """Idempotent requests: even failed calls are retained; changed retries fail."""
+        request_id = request.get("id") if isinstance(request, dict) else None
+        if not isinstance(request_id, str) or not request_id:
+            return {"id": request_id, "ok": False, "error": "A nonempty string request id is required"}
+        fingerprint = json.dumps(request, sort_keys=True)
+        if request_id in self.cache:
+            prior, response = self.cache[request_id]
+            if prior != fingerprint:
+                return {"id": request_id, "ok": False, "error": "Request id reused with different arguments"}
+            return deepcopy(response)
         try:
-            arguments = (
-                json.loads(call.arguments)
-                if isinstance(call.arguments, str)
-                else call.arguments
-            )
-        except json.JSONDecodeError:
-            arguments = call.arguments
-        signature = json.dumps(
-            {"name": call.name, "arguments": arguments},
-            sort_keys=True,
-            ensure_ascii=False,
-        )
-        if call.call_id in self._calls:
-            previous, result = self._calls[call.call_id]
-            if previous != signature:
-                result = ToolResult(
-                    call.call_id,
-                    False,
-                    {"error": "call_id reused with different arguments"},
-                )
-            self.trace.emit("tool_replayed", call_id=call.call_id, result=result)
+            op, args = request.get("op"), request.get("args", {})
+            if not isinstance(args, dict):
+                raise ValueError("args must be an object")
+            operations = {"init": self.init, "observe": self.observe, "step": self.step,
+                          "finish": self.finish, "finalize": self.finalize, "close": self.close}
+            if op not in operations:
+                raise ValueError(f"Unknown operation: {op}")
+            if self.closed and op != "close":
+                raise RuntimeError("Navigation session is closed")
+            data = operations[op](**args)
+            response = {"id": request_id, "ok": True, "data": data}
+        except Exception as error:
+            response = {"id": request_id, "ok": False,
+                        "error": f"{type(error).__name__}: {error}"}
+        self.cache[request_id] = fingerprint, deepcopy(response)
+        return response
+
+    def _load(self, value):
+        import yaml
+
+        if isinstance(value, dict):
+            return deepcopy(value)
+        path = Path(value)
+        if not path.is_absolute():
+            path = self.repo / path
+        return yaml.safe_load(path.read_text())
+
+    def init(self, *, repo, workspace, private_dir, env_config, task_config=None,
+             episode_id=None, atomic_sample=None, goal_limit=None, scene_archive=None,
+             purpose="navigation", max_actions=None, scene_id=None, instruction_override=None):
+        if self.env is not None:
+            raise RuntimeError("One bridge owns one initialized episode")
+        if purpose not in {"navigation", "mapping"}:
+            raise ValueError("purpose must be navigation or mapping")
+        if instruction_override is not None:
+            if purpose != "mapping" or not atomic_sample:
+                raise ValueError("instruction_override is only allowed for mapping with an atomic seed")
+            if not isinstance(instruction_override, str) or not instruction_override.strip():
+                raise ValueError("instruction_override must be a nonempty string")
+        if max_actions is not None and (type(max_actions) is not int or max_actions < 1):
+            raise ValueError("max_actions must be a positive integer")
+        if not atomic_sample and (not isinstance(episode_id, str) or not episode_id):
+            raise ValueError("A canonical episode_id is required for navigation")
+        self.repo = Path(repo).resolve()
+        self.workspace, self.private_dir = Path(workspace).resolve(), Path(private_dir).resolve()
+        if (self.private_dir.is_relative_to(self.workspace)
+                or self.workspace.is_relative_to(self.private_dir)):
+            raise ValueError("Public workspace and private directory must be separate siblings")
+        self.workspace.mkdir(parents=True, exist_ok=True)
+        self.private_dir.mkdir(parents=True, exist_ok=True)
+        config = self._load(env_config)
+        self.config = config.get("environment", config)
+        if self.config.get("scenes"):
+            self.config["scenes"] = str((self.repo / self.config["scenes"]).resolve())
+        self.config["gpu"] = int(self.config.get("gpu", self.config.get("gpus", [2])[0]))
+        self.config.pop("gpus", None)
+        self.config["depth"] = False
+        if self.config.get("egl_vendor_file"):
+            os.environ["__EGL_VENDOR_LIBRARY_FILENAMES"] = self.config["egl_vendor_file"]
+        self.mode = "mapping" if purpose == "mapping" else "navigation"
+        if atomic_sample:
+            sample = (self.repo / atomic_sample).resolve()
+            public = json.loads((sample / "task.json").read_text())
+            labels = json.loads((sample / "private/labels.json").read_text())
+            if public["form"] != "interactive_ia" and self.mode != "mapping":
+                raise ValueError("Environment atomic mode requires an interactive_ia sample")
+            if scene_id is None:
+                if self.config.get("name") == "fake":
+                    scene_id = "fake.glb"
+                elif scene_archive:
+                    manifest = json.loads(((self.repo / scene_archive) / "raw/manifest.json").read_text())
+                    scene_id = manifest["scene_dataset_asset"]
+                else:
+                    matches = list(Path(self.config["scenes"]).glob(
+                        f"hm3d/*/*-{public['scene']}/{public['scene']}.basis.glb"))
+                    if len(matches) != 1:
+                        raise ValueError("Set scene_id or scene_archive for this atomic scene")
+                    scene_id = str(matches[0])
+            pose, dest = labels["start_pose"], labels["destination"]
+            instruction = public["question"] if instruction_override is None else instruction_override
+            goal = {"modality": "instruction", "instruction": instruction,
+                    "positions": [[dest[0], pose["position"][1], -dest[1]]]}
+            episode = EpisodeSpec(public["id"], public["id"], "atomic", scene_id,
+                                  pose["position"], pose["rotation_xyzw"], [goal], str(sample))
+            if instruction_override is not None:
+                episode.provenance = "derived_mapping_smoke;atomic_seed_only"
+            task = AtomicTaskAdapter(labels, public, {"max_steps": max_actions or 24}, self.mode == "mapping")
+            if self.mode != "mapping":
+                self.mode = "atomic_ia"
+        else:
+            from src.dataset.episodes.manifest import ManifestEpisodeSource
+            from src.environment.tasks.base import GOATTask, ObjectNavTask, VLNCETask
+
+            document = self._load(task_config)
+            source = deepcopy(document["episodes"])
+            for key in ("root", "manifest"):
+                if key in source:
+                    source[key] = str((self.repo / source[key]).resolve())
+            episodes = ManifestEpisodeSource(source).load([episode_id])
+            if len(episodes) != 1:
+                raise ValueError("Exactly one canonical episode_id is required")
+            episode = episodes[0]
+            if goal_limit is not None:
+                if (episode.benchmark != "goat" or isinstance(goal_limit, bool)
+                        or not isinstance(goal_limit, int) or not 1 <= goal_limit <= len(episode.goals)):
+                    raise ValueError("goal_limit must select a nonempty GOAT prefix")
+                episode.goals = episode.goals[:goal_limit]
+                episode.provenance = f"{episode.provenance};truncated_smoke_prefix={goal_limit}"
+            task_options = deepcopy(document["task"])
+            if max_actions is not None:
+                task_options["max_steps"] = max_actions
+            types = {"objectnav": ObjectNavTask, "vlnce": VLNCETask, "goat": GOATTask}
+            task = types[task_options["name"]](task_options)
+        _write(self.private_dir / "episode.json", episode.to_dict())
+        _write(self.private_dir / "config.json", {"environment": self.config, "mode": self.mode})
+        from src.environment.fake import FakeEnvironment
+        from src.environment.habitat import HabitatEnvironment
+
+        factory = FakeEnvironment if self.config.get("name") == "fake" else HabitatEnvironment
+        env = factory(self.config, task, self.private_dir / "environment")
+        try:
+            transition = env.reset(episode)
+            self.env = env
+            self._save_private_frame(transition.observation)
+            result = self._transition(transition)
+            result["actions"] = {"allowed": list(env.movement_actions),
+                                 "forward_metres": self.config.get("forward_step", .25),
+                                 "turn_degrees": self.config.get("turn_angle", 15),
+                                 "look_degrees": self.config.get("turn_angle", 15)}
+            result["mode"] = self.mode
+            result["episode_id"] = episode.id
+            if scene_archive:
+                from src.common.map import MapCalibration
+
+                calibration = MapCalibration((self.repo / scene_archive).resolve())
+                level, position, heading = calibration.initial_arrow(transition.observation.pose)
+                dx, dy = heading[0] - position[0], heading[1] - position[1]
+                scale = min(1.0, .04 / max(math.hypot(dx, dy), 1e-9))
+                while not all(0 <= coordinate <= 1 for coordinate in
+                              (position[0] + dx * scale, position[1] + dy * scale)):
+                    scale *= .5
+                heading = [position[0] + dx * scale, position[1] + dy * scale]
+                result["initial_hint"] = {"map_id": f"map_{level}", "position": position,
+                                          "heading_point": heading, "at_frame": result["observation"]["id"]}
+            self._save_result()
             return result
-        self.trace.emit(
-            "tool_call", call_id=call.call_id, name=call.name, arguments=arguments
-        )
-        try:
-            if not call.call_id:
-                raise ToolInputError("call_id must not be empty")
-            if self.transition.terminated or self.transition.truncated:
-                raise ToolInputError("Episode is already finished")
-            if call.name not in self.tools:
-                raise ToolInputError(f"Unavailable tool: {call.name}")
-            context = ToolContext(
-                self._observe,
-                self._depth,
-                self._step,
-                self._finish,
-                self.movement_actions,
-                self._read_text if self.assets else None,
-                self._view_images if self.assets else None,
-                self._mark_pose if self.assets else None,
-            )
-            result = self.tools[call.name].execute(arguments, context)
-            if self.assets is not None and result.goal_changed:
-                self.transition = replace(self.transition, goal_changed=False)
-        except ToolInputError as error:
-            result = ToolResult(
-                call.call_id,
-                False,
-                {"error": str(error)},
-                [],
-                self.transition.terminated,
-                self.transition.truncated,
-            )
-        except Exception:
-            # The action may already have happened before capture/transport failed.
-            result = ToolResult(
-                call.call_id,
-                False,
-                {"error": "Execution failed; this call will not be executed again"},
-                [],
-                False,
-                True,
-            )
-            self._calls[call.call_id] = (signature, result)
-            self.trace.emit(
-                "tool_execution_failed", call_id=call.call_id, result=result
-            )
+        except BaseException:
+            env.close()
+            self.env = None
             raise
-        self._calls[call.call_id] = (signature, result)
-        self.trace.emit("tool_result", call_id=call.call_id, result=result)
+
+    def _running(self):
+        if self.env is None:
+            raise RuntimeError("Initialize the environment first")
+        self.env._require_running()
+
+    def _save_private_frame(self, observation):
+        _append(self.private_dir / "frames.jsonl", {"id": observation.frame_id,
+                "step": self.env.task.steps, "pose": observation.pose, "camera": observation.camera})
+
+    def _publish(self, observation, *, right=0, pitch=None, panorama_id=None):
+        if observation.frame_id in self.published:
+            return self.published[observation.frame_id]
+        destination = self.workspace / "observations" / f"{observation.frame_id}.png"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            raise ValueError(f"Observation destination already exists: {destination.name}")
+        shutil.copyfile(observation.rgb, destination)
+        if pitch is None:
+            matrix = observation.pose.get("world_from_optical")
+            pitch = math.degrees(math.asin(max(-1.0, min(1.0, matrix[1][2])))) if matrix else 0
+        record = {"id": observation.frame_id, "path": destination.relative_to(self.workspace).as_posix(),
+                  "source": "observation", "step": self.env.task.steps,
+                  "view": {"right_degrees": right, "pitch_degrees": round(pitch, 6),
+                           "panorama_id": panorama_id}, "derived_from": []}
+        _append(self.workspace / "observations/index.jsonl", record)
+        self.published[observation.frame_id] = record
+        return record
+
+    def _task(self, task):
+        if task is None:
+            return None
+        result = {"goal_id": task.goal_id, "modality": task.modality,
+                  "instruction": task.instruction, "image": None}
+        if task.image:
+            destination = self.workspace / "observations" / f"target_{task.goal_id:03d}.png"
+            if not destination.exists():
+                shutil.copyfile(task.image, destination)
+                _append(self.workspace / "observations/index.jsonl", {
+                    "id": f"target_{task.goal_id:03d}", "path": destination.relative_to(self.workspace).as_posix(),
+                    "source": "target", "step": None, "view": None, "derived_from": []})
+            result["image"] = destination.relative_to(self.workspace).as_posix()
         return result
 
-    def _observe(self, mode: str = "single") -> ToolResult:
-        if mode == "panorama":
-            if self.assets is None:
-                raise ToolInputError("Panorama requires the visual harness")
-            views = self.environment.panorama()
-            refs = []
-            for offset, observation in zip(range(0, 360, 60), views):
-                self.frames[observation.frame_id] = observation
-                ref = self.assets.register_image(
-                    observation.rgb, ref=f"{observation.frame_id}_right_{offset:03d}"
-                )
-                refs.append(ref)
-            details, paths = self.assets.view_images(refs, layout="grid")
-            data = self._public()
-            data.update(
-                {
-                    "mode": "panorama",
-                    "views": [
-                        {"image_ref": ref, "right_degrees": angle}
-                        for ref, angle in zip(refs, range(0, 360, 60))
-                    ],
-                    "images": details,
-                }
-            )
-            self.trace.emit("panorama_captured", views=data["views"])
-            result = self._result(data, images=False)
-            result.images = paths
-            result.image_roles = {str(path): "observation" for path in paths}
-            return result
-        observation = self.environment.observe()
-        self.frames[observation.frame_id] = observation
-        self.transition = replace(
-            self.transition,
-            observation=observation,
-            goal_changed=False,
-            feedback={"event": "observe"},
-        )
-        return self._result()
+    def _transition(self, transition):
+        observation = self._publish(transition.observation)
+        task = self._task(transition.task)
+        result = {"task": task, "observation": observation, "images": [observation["path"]],
+                  "goal_changed": transition.goal_changed, "terminated": transition.terminated,
+                  "truncated": transition.truncated, "reason": transition.reason,
+                  "steps": self.env.task.steps,
+                  "remaining_total_actions": max(0, self.env.task.max_steps - self.env.task.steps)}
+        if task and task["image"] and (transition.goal_changed or self.env.task.steps == 0):
+            result["images"].append(task["image"])
+        if self.env.task.family == "goat":
+            result["remaining_goal_actions"] = max(0, self.env.task.max_subtask_steps - self.env.task.goal_steps)
+        return result
 
-    def _depth(self, frame_id: str, points: list[list[int]]) -> ToolResult:
-        if frame_id not in self.frames:
-            raise ToolInputError(
-                "Unknown frame; only already observed frames can be queried"
-            )
-        frame = self.frames[frame_id]
-        if frame.depth is None:
-            raise ToolInputError("Depth is not enabled")
-        depth = np.load(frame.depth, allow_pickle=False)
-        height, width = depth.shape
-        if any(not (0 <= u < width and 0 <= v < height) for u, v in points):
-            raise ToolInputError(
-                f"Pixels must be within width={width}, height={height}"
-            )
-        values = []
-        for u, v in points:
-            value = float(depth[v, u])
-            valid = bool(np.isfinite(value) and value > 0)
-            values.append(
-                {"pixel": [u, v], "depth_m": value if valid else None, "valid": valid}
-            )
-        return self._result(
-            {"frame_id": frame_id, "unit": "meters", "points": values}, images=False
-        )
+    def observe(self, mode="single"):
+        self._running()
+        if mode not in {"single", "panorama"}:
+            raise ValueError("mode must be single or panorama")
+        if mode == "single":
+            observation = self.env.capture_current()
+            self._save_private_frame(observation)
+            record = self._publish(observation)
+            return {"mode": mode, "observation": record, "views": [record],
+                    "steps": self.env.task.steps, "images": [record["path"]]}
+        observations = self.env.panorama()
+        group = f"panorama_{observations[0].frame_id}"
+        records = []
+        for index, observation in enumerate(observations):
+            self._save_private_frame(observation)
+            records.append(self._publish(observation, right=index * 60, pitch=0, panorama_id=group))
+        return {"mode": mode, "views": records, "steps": self.env.task.steps,
+                "restored_camera": True, "images": [record["path"] for record in records]}
 
-    def _step(self, actions: list[str]) -> ToolResult:
+    def step(self, actions):
+        self._running()
+        if not isinstance(actions, list) or not 1 <= len(actions) <= 6:
+            raise ValueError("actions requires 1–6 atomic actions")
+        if any(not isinstance(action, str) or action not in self.env.movement_actions for action in actions):
+            raise ValueError(f"Allowed actions: {self.env.movement_actions}")
         executed = []
+        interruption = None
         for action in actions:
-            transition = self.environment.step(action)
-            self._accept(transition)
-            feedback = (
-                self._public()["feedback"]
-                if self.assets is not None
-                else transition.feedback
-            )
-            executed.append(
-                {
-                    "action": action,
-                    "frame_id": transition.observation.frame_id,
-                    **feedback,
-                }
-            )
-            self.trace.emit(
-                "action_executed",
-                call_id=self._call_id,
-                action=action,
-                public=self._public(),
-            )
-            if (
-                transition.terminated
-                or transition.truncated
-                or transition.goal_changed
-                or (self.assets is not None and transition.feedback.get("collision"))
-            ):
+            if self.cancel_event is not None and self.cancel_event.is_set():
+                interruption = "cancelled"
                 break
-        data = self._public()
-        data["executed_actions"] = executed
-        return self._result(data)
+            if self.mode in {"atomic_ia", "mapping"} and action == "move_forward":
+                if self.env.task.path_length + self.config.get("forward_step", .25) > 4.0001:
+                    self.env.finalize("travel_budget")
+                    interruption = "travel_budget"
+                    break
+            before = self.env.observe().frame_id
+            transition = self.env.step(action)
+            self._save_private_frame(transition.observation)
+            result = self._transition(transition)
+            event = {"step": self.env.task.steps, "action": action,
+                     "collision": bool(transition.feedback.get("collision", False)),
+                     "before_frame": before, "after_frame": result["observation"]["id"],
+                     "goal_changed": transition.goal_changed}
+            _append(self.workspace / "observations/actions.jsonl", event)
+            executed.append(event)
+            if transition.terminated or transition.truncated:
+                interruption = transition.reason or "episode_finished"
+                break
+            if transition.goal_changed:
+                interruption = "goal_changed"
+                break
+            if event["collision"]:
+                interruption = "collision"
+                break
+        if not executed:
+            from src.environment.base import Transition
 
-    def _finish(self) -> ToolResult:
-        self._accept(self.environment.finish_goal())
-        self.trace.emit("goal_finished", call_id=self._call_id, public=self._public())
-        return self._result()
-
-    def _memory_result(self, data: dict, paths: list[Path]) -> ToolResult:
-        result = self._result(data, images=False)
-        result.images = paths
-        result.image_roles = {str(path): "observation" for path in paths}
-        if self.assets.latest_map_ref is not None:
-            latest = self.assets.path_for_image(self.assets.latest_map_ref)
-            if latest in paths:
-                result.image_roles[str(latest)] = "map"
+            result = self._transition(Transition(
+                self.env.observe(), None if self.env.task.done else self.env.public_task, {},
+                terminated=self.env.task.terminated, truncated=self.env.task.truncated,
+                reason=self.env.task.reason))
+        result.update(requested_actions=actions, executed_actions=executed, interruption=interruption,
+                      terminated=self.env.task.terminated, truncated=self.env.task.truncated,
+                      reason=self.env.task.reason)
+        if self.mode == "atomic_ia":
+            result["local_event_complete"] = self.env.task.reason == "local_event_complete"
+        self._save_result()
         return result
 
-    def _read_text(self, ref: str, start_line: int, max_lines: int) -> ToolResult:
-        try:
-            return self._memory_result(
-                self.assets.read_text(ref, start_line, max_lines), []
-            )
-        except ValueError as error:
-            raise ToolInputError(str(error)) from error
+    def finish(self, goal_id):
+        self._running()
+        if self.mode != "navigation":
+            raise NavigationInputError("nav_finish is only available for full navigation")
+        if type(goal_id) is not int or goal_id != self.env.task.goal_index:
+            raise NavigationInputError("goal_id does not match the current target")
+        before = self.env.observe().frame_id
+        transition = self.env.finish_goal()
+        self._save_private_frame(transition.observation)
+        result = self._transition(transition)
+        _append(self.workspace / "observations/actions.jsonl", {
+            "step": self.env.task.steps, "action": "stop", "collision": False,
+            "before_frame": before, "after_frame": result["observation"]["id"],
+            "goal_changed": transition.goal_changed})
+        self._save_result()
+        return result
 
-    def _view_images(self, refs: list[str], layout: str, crops) -> ToolResult:
-        try:
-            return self._memory_result(*self.assets.view_images(refs, layout, crops))
-        except ValueError as error:
-            raise ToolInputError(str(error)) from error
+    def _save_result(self):
+        if self.env is not None:
+            _write(self.private_dir / "result.json", self.env.task.private_state())
 
-    def _mark_pose(self, map_ref: str, position, heading, note: str) -> ToolResult:
-        try:
-            return self._memory_result(
-                *self.assets.mark_pose(map_ref, position, heading, note)
-            )
-        except ValueError as error:
-            raise ToolInputError(str(error)) from error
+    def finalize(self, reason="agent_stopped"):
+        if self.env is None:
+            raise RuntimeError("Initialize the environment first")
+        self.env.finalize(reason)
+        self._save_result()
+        return {"terminated": self.env.task.terminated, "truncated": self.env.task.truncated,
+                "reason": self.env.task.reason, "steps": self.env.task.steps}
 
-    def close(self) -> None:
-        self.environment.close()
+    def close(self):
+        if self.closed:
+            return {"closed": True}
+        self.closed = True
+        if self.env is not None:
+            try:
+                if not self.env.task.done:
+                    self.env.finalize("bridge_closed")
+                self._save_result()
+            finally:
+                self.env.close()
+        return {"closed": True}

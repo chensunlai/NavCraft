@@ -2,7 +2,6 @@
 
 from copy import deepcopy
 import hashlib
-import importlib.util
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,10 +9,9 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
+from src.bench import harness_verify as MODULE
+
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location("pi_verify", ROOT / "src/harness-pi/python/verify.py")
-MODULE = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(MODULE)
 
 
 def test_answer_parser_requires_anchor_and_unambiguous_final_answer():
@@ -43,8 +41,8 @@ def mapping_fixture(tmp_path, monkeypatch):
         {"id": "D03", "level": "L1", "segment": [[4, 5], [6, 5]], "connects": ["R01", "R03"]},
         {"id": "D02", "level": "L1", "segment": [[7, 8], [9, 8]], "connects": ["R01", "R02"]}]})
     panel = SimpleNamespace(level_id="L1", x_scale=10, y_scale=-10, x_offset=0, y_offset=100)
-    import src.harness.map
-    monkeypatch.setattr(src.harness.map, "MapCalibration", lambda directory: SimpleNamespace(viewbox=[0, 0, 100, 100], panels=[panel]))
+    import src.common.map
+    monkeypatch.setattr(src.common.map, "MapCalibration", lambda directory: SimpleNamespace(viewbox=[0, 0, 100, 100], panels=[panel]))
     map_path = "memory/maps/L1.entities.json"
     write(workspace / "scene/maps/index.json", {"maps": [{"map_id": "map_L1", "current_entities_ref": map_path}]})
     entity = {"id": "newDoor", "map_id": "map_L1", "type": "portal", "geometry": {"segment": [[.4, .5], [.6, .5]]}}

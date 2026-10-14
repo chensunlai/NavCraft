@@ -1,6 +1,5 @@
 """Public-memory contracts: no simulator dependency and no hidden source fallback."""
 
-import importlib.util
 import json
 from pathlib import Path
 import subprocess
@@ -9,11 +8,10 @@ import sys
 from PIL import Image, ImageChops
 import pytest
 
+from src.harness import memory
 
-MODULE = Path(__file__).resolve().parents[1] / "src/harness-pi/python/memory.py"
-SPEC = importlib.util.spec_from_file_location("pi_memory", MODULE)
-memory = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(memory)
+
+MODULE = Path(memory.__file__)
 
 
 def put(path, value):

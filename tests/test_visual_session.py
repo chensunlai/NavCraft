@@ -10,13 +10,13 @@ import pytest
 from src.dataset.episodes.base import EpisodeSpec
 from src.environment.fake import FakeEnvironment, FakeSimulator
 from src.environment.tasks.base import GOATTask, ObjectNavTask
-from src.harness.agent.base import AgentLimits, ToolCall
-from src.harness.agent.context import AgentContext
-from src.harness.agent.loop import AgentRuntime
-from src.harness.agent.model import ScriptedModel
-from src.harness.assets import SceneAssets
-from src.harness.session import NavigationSession
-from src.harness.trace import TraceReader, TraceWriter
+from src.legacy.harness.agent.base import AgentLimits, ToolCall
+from src.legacy.harness.agent.context import AgentContext
+from src.legacy.harness.agent.loop import AgentRuntime
+from src.legacy.harness.agent.model import ScriptedModel
+from src.legacy.harness.assets import SceneAssets
+from src.legacy.harness.session import NavigationSession
+from src.legacy.harness.trace import TraceReader, TraceWriter
 
 TOOLS = [
     "nav_observe",

@@ -7,7 +7,7 @@ import pytest
 import yaml
 
 from src.bench.probe_models import load_model_config, probe_model, scene_images
-from src.harness.agent.model import ResponsesModel
+from src.legacy.harness.agent.model import ResponsesModel
 
 
 def fixtures(tmp_path):

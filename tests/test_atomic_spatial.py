@@ -10,7 +10,7 @@ from src.dataset.atomic.schema import AtomicTask, COVERAGE, ALLOWED_TOOLS, check
 from src.dataset.atomic.geometry import crossed_opening, horizontal, local_event, map_point
 from src.dataset.atomic.export import check_dialogue, portable, visible_messages
 from src.dataset.atomic.runtime import AtomicTools, parse_answer
-from src.harness.agent.base import ToolCall
+from src.legacy.harness.agent.base import ToolCall
 
 
 def test_coverage_and_serialization(tmp_path):

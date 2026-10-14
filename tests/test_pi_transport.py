@@ -1,29 +1,21 @@
 """Real local pipes and processes exercise the Python-owned Core lifecycle."""
 
-import importlib.util
 import json
 import os
 from pathlib import Path
 import signal
+import subprocess
 import sys
 import threading
 import time
 
 import pytest
 
+from src.harness import core_client as transport
+from src.harness import runner, worker
+
 
 ROOT = Path(__file__).resolve().parents[1]
-PYTHON = ROOT / "src/harness-pi/python"
-
-
-def module(name):
-    spec = importlib.util.spec_from_file_location(f"pi_transport_{name}", PYTHON / f"{name}.py")
-    loaded = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(loaded)
-    return loaded
-
-
-transport, worker = module("core_client"), module("worker")
 
 
 FAKE_CORE = r'''
@@ -125,12 +117,14 @@ def test_cancellation_receives_settled_after_actual_tool_feedback(tmp_path):
 
 
 def test_runner_archives_even_when_core_close_and_scoring_fail(tmp_path, monkeypatch):
-    monkeypatch.syspath_prepend(str(PYTHON))
-    runner = module("run_case")
     repo = tmp_path / "repo"
     (repo / "config/harness-pi").mkdir(parents=True)
     (repo / "config/harness-pi/smoke.yaml").write_text(
         "cases:\n  query:\n    sample: sample\n    requests: 2\n    seconds: 2\n")
+    (repo / "unused").write_text(
+        "NAVCRAFT_TEST_BASE_URL=http://fixture.invalid\n"
+        "NAVCRAFT_TEST_MODEL=fixture\n"
+        "NAVCRAFT_TEST_API_KEY=fixture-not-a-secret\n")
     monkeypatch.setattr(runner, "_prepare_query", lambda *_: (
         {"task": {"goal_id": 0, "instruction": "fixture"}}, [], "fixture prompt"))
 
@@ -162,14 +156,14 @@ def test_runner_archives_even_when_core_close_and_scoring_fail(tmp_path, monkeyp
     assert "fixture close failure" in result["cleanup_error"]
     assert "fixture scoring failure" in result["scoring_error"]
     assert "Environment result" in result["archive_error"]
-    assert (directory / "private/python_events.jsonl").exists()
+    assert (directory / "private/trace.jsonl").exists()
 
 
 def _running(pid):
     try:
         # A killed orphan can remain briefly as a zombie until its reaper runs.
         return Path(f"/proc/{pid}/stat").read_text().split(") ", 1)[1].split()[0] != "Z"
-    except FileNotFoundError:
+    except OSError:
         return False
 
 
@@ -258,3 +252,51 @@ def test_worker_crash_cannot_be_reported_as_success_from_existing_result(tmp_pat
                               tmp_path, seconds=1, cwd=ROOT)
     assert result["finish_reason"] == "worker_error"
     assert result["answer"] == "partial"
+
+
+@pytest.mark.parametrize("order", ["new_first", "legacy_first"])
+def test_new_and_legacy_import_order_does_not_duplicate_registrations(order):
+    script = r'''
+import sys
+def new():
+    from src.harness import session, memory, tools, core_client, runner, worker, coding
+def legacy():
+    from src.legacy.harness.build import load_builtins
+    load_builtins()
+    load_builtins()
+if sys.argv[1] == "new_first":
+    new()
+    legacy()
+else:
+    legacy()
+    new()
+from src.common import register
+from src.common.map import MapCalibration
+from src.legacy.harness.map import MapCalibration as LegacyCalibration
+assert MapCalibration is LegacyCalibration
+assert register.runtime_registry.get("agent").__module__ == "src.legacy.harness.agent.loop"
+assert register.model_registry.get("responses").__module__ == "src.legacy.harness.agent.model"
+assert register.tool_registry.get("nav_step").__module__ == "src.legacy.harness.tools.navigation"
+assert register.env_registry.get("habitat").__module__ == "src.environment.habitat"
+assert register.task_registry.get("goat").__module__ == "src.environment.tasks.base"
+'''
+    result = subprocess.run([sys.executable, "-c", script, order], cwd=ROOT,
+                            capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr
+
+
+def test_new_harness_imports_do_not_load_legacy_or_native_simulator():
+    script = r'''
+import sys
+from src.harness import core_client, runner, session, memory, tools, worker, coding
+assert not any(name == "src.legacy" or name.startswith("src.legacy.") for name in sys.modules)
+assert "habitat_sim" not in sys.modules
+assert "src.harness.agent.model" not in sys.modules
+from src.common.register import model_registry, runtime_registry, tool_registry
+assert model_registry.list() == []
+assert runtime_registry.list() == []
+assert tool_registry.list() == []
+'''
+    result = subprocess.run([sys.executable, "-c", script], cwd=ROOT,
+                            capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr

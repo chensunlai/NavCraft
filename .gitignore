@@ -32,5 +32,5 @@ htmlcov/
 node_modules/
 
 # Compiled Pi runtime.
-src/harness-pi/dist/
-src/harness-pi/pi/coding-agent/dist/
+src/agent-core/dist/
+src/agent-core/pi/coding-agent/dist/

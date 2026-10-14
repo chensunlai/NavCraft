@@ -17,8 +17,8 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import yaml
 
-from src.harness.map import MapCalibration
-from src.harness.assets import compose_images
+from src.common.map import MapCalibration
+from src.legacy.harness.assets import compose_images
 from .geometry import crossed_opening, distance, horizontal, map_point
 from .runtime import AtomicWorld, RequestBudget, collect_attempt, parse_answer, text_message
 from .schema import AtomicTask, COVERAGE, write_json

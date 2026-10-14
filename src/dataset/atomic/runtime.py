@@ -7,12 +7,12 @@ import math
 from pathlib import Path
 import time
 
-from src.harness.agent.base import ModelRequest, ToolCall, ToolResult, ToolSpec
-from src.harness.agent.context import AgentContext
-from src.harness.agent.model import ResponsesModel
-from src.harness.assets import compose_images
-from src.harness.tools.files import ReadTextTool, ViewImagesTool
-from src.harness.tools.navigation import ObserveTool, StepTool, ToolContext
+from src.legacy.harness.agent.base import ModelRequest, ToolCall, ToolResult, ToolSpec
+from src.legacy.harness.agent.context import AgentContext
+from src.legacy.harness.agent.model import ResponsesModel
+from src.legacy.harness.assets import compose_images
+from src.legacy.harness.tools.files import ReadTextTool, ViewImagesTool
+from src.legacy.harness.tools.navigation import ObserveTool, StepTool, ToolContext
 
 from .geometry import distance, horizontal, local_event
 from .schema import ALLOWED_TOOLS, checked_resource, score_answer, write_json

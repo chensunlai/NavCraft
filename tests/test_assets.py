@@ -8,8 +8,8 @@ from pathlib import Path
 from PIL import Image
 import pytest
 
-from src.harness.assets import AssetError, SceneAssets
-from src.harness.map import MapCalibration
+from src.legacy.harness.assets import AssetError, SceneAssets
+from src.common.map import MapCalibration
 
 
 @pytest.fixture

@@ -14,10 +14,10 @@ import yaml
 
 from src.common.config import ROOT, resolve_path
 from src.common.io import redact, write_json
-from src.harness.agent.base import ModelBackend, ModelRequest, ToolResult, ToolSpec
-from src.harness.agent.context import AgentContext
-from src.harness.agent.model import ResponsesModel
-from src.harness.trace import TraceWriter
+from src.legacy.harness.agent.base import ModelBackend, ModelRequest, ToolResult, ToolSpec
+from src.legacy.harness.agent.context import AgentContext
+from src.legacy.harness.agent.model import ResponsesModel
+from src.legacy.harness.trace import TraceWriter
 
 DEFAULT_SCENE = "data/scene_maps/hm3d/val/00829-QaLdnwvtxbs"
 

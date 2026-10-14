@@ -1,18 +1,14 @@
 """Public/private boundaries and exact-once movement in the Pi environment bridge."""
 
-import importlib.util
 import json
 from pathlib import Path
-import subprocess
-import sys
 
 import pytest
 
+from src.harness import session as MODULE
+from src.harness.session import NavigationSession as Bridge
+
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location("pi_bridge", ROOT / "src/harness-pi/python/bridge.py")
-MODULE = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(MODULE)
-Bridge = MODULE.Bridge
 
 
 def init_args(tmp_path, *, family="objectnav", goals=None, task_overrides=None):
@@ -59,7 +55,7 @@ def test_public_rgb_and_initial_state_do_not_leak_private_pose(initialized):
 
 
 def test_initial_heading_hint_near_map_edge_stays_renderable(tmp_path, monkeypatch):
-    import src.harness.map
+    import src.common.map
 
     class Calibration:
         def __init__(self, _):
@@ -68,7 +64,7 @@ def test_initial_heading_hint_near_map_edge_stays_renderable(tmp_path, monkeypat
         def initial_arrow(self, pose):
             return "L1", [.99, .5], [1.05, .5]
 
-    monkeypatch.setattr(src.harness.map, "MapCalibration", Calibration)
+    monkeypatch.setattr(src.common.map, "MapCalibration", Calibration)
     bridge = Bridge()
     result = call(bridge, "init", "init", **init_args(tmp_path), scene_archive="fixture-scene")
     hint = result["initial_hint"]
@@ -239,17 +235,18 @@ def test_instruction_override_cannot_change_navigation_protocol(tmp_path, mode):
     assert bridge.env is None and not (tmp_path / "workspace").exists()
 
 
-def test_jsonl_process_has_only_protocol_output_and_closes_cleanly(tmp_path):
+def test_direct_dispatch_pairs_responses_and_closes_cleanly(tmp_path):
     requests = [{"id": "init", "op": "init", "args": init_args(tmp_path)},
                 {"id": "frame", "op": "observe", "args": {}},
                 {"id": "close", "op": "close", "args": {}}]
-    run = subprocess.run([sys.executable, str(ROOT / "src/harness-pi/python/bridge.py")],
-                         input="".join(json.dumps(r) + "\n" for r in requests), capture_output=True,
-                         text=True, timeout=20)
-    assert run.returncode == 0, run.stderr
-    responses = [json.loads(line) for line in run.stdout.splitlines()]
+    session = Bridge()
+    try:
+        responses = [session.dispatch(request) for request in requests]
+    finally:
+        session.close()
     assert [r["id"] for r in responses] == ["init", "frame", "close"]
     assert all(r["ok"] for r in responses)
+    assert session.closed
 
 
 def test_close_is_idempotent_without_rewriting_result(initialized, monkeypatch):

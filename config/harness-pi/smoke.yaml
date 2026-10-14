@@ -34,5 +34,5 @@ cases:
   compaction:
     sample: data/atomic_spatial/demo-20261012-v1/samples/A03-retrieval_qa-S
     purpose: mapping
-    requests: 12
+    requests: 16
     seconds: 600
