@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, lstatSync, writeFileSync, existsSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, lstatSync, writeFileSync, existsSync, readlinkSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { createHash } from 'node:crypto';
 
@@ -22,10 +22,9 @@ export class Trace {
       if (!existsSync(directory)) return;
       for (const item of readdirSync(directory)) {
         const path = join(directory, item); const stat = lstatSync(path);
-        if (stat.isSymbolicLink()) continue;
-        if (stat.isDirectory()) { walk(path); continue; }
-        if (!stat.isFile()) continue;
-        const bytes = readFileSync(path); const hash = createHash('sha256').update(bytes).digest('hex');
+        if (stat.isDirectory() && !stat.isSymbolicLink()) { walk(path); continue; }
+        if (!stat.isFile() && !stat.isSymbolicLink()) continue;
+        const bytes = stat.isSymbolicLink() ? Buffer.from(JSON.stringify({ type: 'symlink', target: readlinkSync(path) })) : readFileSync(path); const hash = createHash('sha256').update(bytes).digest('hex');
         const ref = relative(this.workspace, path); next.set(ref, hash);
         if (!existsSync(join(this.directory, 'blobs', hash))) writeFileSync(join(this.directory, 'blobs', hash), bytes);
         if (this.previous.get(ref) !== hash) changes.push({ path: ref, before: this.previous.get(ref), after: hash });

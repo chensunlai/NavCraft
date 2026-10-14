@@ -155,6 +155,7 @@ class Bridge:
         if self.config.get("scenes"):
             self.config["scenes"] = str((self.repo / self.config["scenes"]).resolve())
         self.config["gpu"] = int(self.config.get("gpu", self.config.get("gpus", [2])[0]))
+        self.config.pop("gpus", None)
         self.config["depth"] = False
         if self.config.get("egl_vendor_file"):
             os.environ["__EGL_VENDOR_LIBRARY_FILENAMES"] = self.config["egl_vendor_file"]

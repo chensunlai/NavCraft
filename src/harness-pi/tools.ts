@@ -63,6 +63,8 @@ export function navigationTools(repo: string, workspace: string, python: string,
       if (state.done) throw new Error('Task already ended');
       if (state.goalChanged) throw new Error('Target changed during this turn; read the new goal and decide again next turn');
       const data = await bridge.request(id, op, args); state.current = { ...state.current, ...data };
+      if (op !== 'observe') { delete state.current.mode; delete state.current.views; }
+      else if (args.mode === 'single') state.current.views = data.views;
       state.done = !!(data.terminated || data.truncated); state.goalChanged = !!data.goal_changed;
       if (op === 'observe' && args.mode === 'panorama') {
         const montage = await pythonRequest(python, memoryScript, 'view', { workspace, refs: data.images, layout: 'grid' });
