@@ -20,6 +20,7 @@ export async function pythonRequest(python: string, script: string, command: str
 }
 export class EnvironmentBridge {
   private child: ChildProcessWithoutNullStreams;
+  private exited = false;
   private pending = new Map<string, { accept: (x: any) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   constructor(python: string, repo: string, readonly directory: string) {
     this.child = spawn(python, ['-B', '-u', join(repo, 'src/harness-pi/python/bridge.py')], { cwd: repo, stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: process.env.PATH, LD_LIBRARY_PATH: process.env.LD_LIBRARY_PATH, __EGL_VENDOR_LIBRARY_FILENAMES: '/usr/share/glvnd/egl_vendor.d/10_nvidia.json', PYTHONDONTWRITEBYTECODE: '1' } });
@@ -30,20 +31,22 @@ export class EnvironmentBridge {
       clearTimeout(waiting.timer); this.pending.delete(value.id);
       if (value.ok) waiting.accept(value.data); else waiting.reject(new Error(value.error));
     });
-    this.child.on('error', error => this.fail(error));
-    this.child.on('exit', code => this.fail(new Error(`Environment exited: ${code}`)));
+    this.child.on('error', error => { this.exited = true; this.fail(error); });
+    this.child.stdin.on('error', error => this.fail(error));
+    this.child.on('exit', code => { this.exited = true; this.fail(new Error(`Environment exited: ${code}`)); });
   }
   private fail(error: Error) { for (const x of this.pending.values()) { clearTimeout(x.timer); x.reject(error); } this.pending.clear(); }
   request(id: string, op: string, args: Record<string, unknown> = {}) {
+    if (this.exited) return Promise.reject(new Error('Environment process already exited'));
     return new Promise<any>((accept, reject) => {
       const timer = setTimeout(() => { this.pending.delete(id); reject(new Error('Environment request timed out; execution may have occurred')); this.child.kill('SIGKILL'); }, op === 'init' ? 120000 : 60000);
       this.pending.set(id, { accept, reject, timer });
       this.child.stdin.write(JSON.stringify({ id, op, args }) + '\n');
     });
   }
-  async close() { try { await this.request('close-session', 'close'); } finally { this.child.stdin.end(); this.child.kill(); } }
+  async close() { if (this.exited) return; try { await this.request('close-session', 'close'); } finally { this.child.stdin.end(); this.child.kill(); } }
 }
-export interface ToolState { done: boolean; goalChanged: boolean; current?: any; latestMap?: string; }
+export interface ToolState { done: boolean; goalChanged: boolean; current?: any; latestMap?: string; latestMapMetadata?: unknown; }
 export function navigationTools(repo: string, workspace: string, python: string, bridge: EnvironmentBridge | undefined, state: ToolState, allowFinish = true): ToolDefinition<any>[] {
   const memoryScript = join(repo, 'src/harness-pi/python/memory.py');
   async function result(data: any, images: string[] = []) {
@@ -55,7 +58,7 @@ export function navigationTools(repo: string, workspace: string, python: string,
       const r = await pythonRequest(python, memoryScript, 'view', { ...args, workspace }, signal); return result(r.data, r.images);
     } },
     { name: 'render_map', label: 'Render map', description: 'Render the public wall layer and CURRENT memory geometry/state. Never locates you or plans routes. Region coordinates refer to the full map. Invalid records return errors.', parameters: Type.Object({ map_id: Type.String(), region: Type.Optional(Type.Tuple([Type.Number(), Type.Number(), Type.Number(), Type.Number()])), highlight_ids: Type.Optional(Type.Array(Type.String())), grid: Type.Optional(Type.Boolean()), layers: Type.Optional(Type.Array(Type.String())) }), async execute(id, args: any, signal) {
-      const r = await pythonRequest(python, memoryScript, 'render', { ...args, workspace }, signal); state.latestMap = r.images?.[0]; return result(r.data, r.images);
+      const r = await pythonRequest(python, memoryScript, 'render', { ...args, workspace }, signal); state.latestMap = r.images?.[0]; state.latestMapMetadata = r.data; return result(r.data, r.images);
     } },
   ];
   if (bridge) {

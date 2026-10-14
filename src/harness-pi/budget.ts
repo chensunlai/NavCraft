@@ -4,6 +4,7 @@ import type { Trace } from './trace.js';
 
 export class RequestBudget {
   readonly start: number;
+  exhausted = false;
   constructor(readonly file: string, readonly caseLimit: number, readonly trace: Trace, readonly totalLimit = 200) {
     mkdirSync(dirname(file), { recursive: true });
     if (!existsSync(file)) writeFileSync(file, JSON.stringify({ limit: totalLimit, attempts: [] }, null, 2));
@@ -23,7 +24,11 @@ export class RequestBudget {
     let state: ReturnType<RequestBudget['state']>;
     try {
       state = this.state();
-      if (state.attempts.length >= state.limit || state.attempts.filter(x => x.run === this.trace.directory).length >= this.caseLimit) throw new Error('NAVCRAFT_REQUEST_BUDGET_EXHAUSTED');
+      if (state.attempts.length >= state.limit || state.attempts.filter(x => x.run === this.trace.directory).length >= this.caseLimit) {
+        this.exhausted = true;
+        this.trace.emit('request_budget_exhausted', { totalUsed: state.attempts.length, caseUsed: this.used, caseLimit: this.caseLimit, totalLimit: state.limit });
+        throw new Error('NAVCRAFT_REQUEST_BUDGET_EXHAUSTED');
+      }
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const attempt = { number: state.attempts.length + 1, time: new Date().toISOString(), url, run: this.trace.directory };
     state.attempts.push(attempt); writeFileSync(this.file, JSON.stringify(state, null, 2));

@@ -12,7 +12,9 @@ test('HTTP attempts include failed requests and restart-safe global/case limits'
     const trace = new Trace(join(dir, 'private'), dir);
     const b = new RequestBudget(join(dir, 'budget.json'), 1, trace, 2);
     await assert.rejects(b.fetch('http://invalid.local'), /fixture/);
+    assert.equal(b.exhausted, false);
     await assert.rejects(b.fetch('http://invalid.local'), /BUDGET/);
+    assert.equal(b.exhausted, true);
     const restarted = new RequestBudget(join(dir, 'budget.json'), 5, trace, 2);
     await assert.rejects(restarted.fetch('http://invalid.local'), /fixture/);
     await assert.rejects(restarted.fetch('http://invalid.local'), /BUDGET/);
@@ -33,6 +35,7 @@ test('separate runs share the global ceiling and an occupied ledger lock fails c
     assert.equal(sent, 0); unlinkSync(file + '.lock');
     await a.fetch('http://invalid.local'); await b.fetch('http://invalid.local');
     assert.equal(a.used, 1); assert.equal(b.used, 1);
+    assert.equal(a.exhausted, false); assert.equal(b.exhausted, false);
     await assert.rejects(a.fetch('http://invalid.local'), /BUDGET/);
     assert.equal(sent, 2);
   } finally { globalThis.fetch = old; rmSync(dir, { recursive: true, force: true }); }

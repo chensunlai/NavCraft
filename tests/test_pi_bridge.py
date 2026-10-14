@@ -58,6 +58,26 @@ def test_public_rgb_and_initial_state_do_not_leak_private_pose(initialized):
     assert private["pose"]["position"] == [0, 0, 0]
 
 
+def test_initial_heading_hint_near_map_edge_stays_renderable(tmp_path, monkeypatch):
+    import src.harness.map
+
+    class Calibration:
+        def __init__(self, _):
+            pass
+
+        def initial_arrow(self, pose):
+            return "L1", [.99, .5], [1.05, .5]
+
+    monkeypatch.setattr(src.harness.map, "MapCalibration", Calibration)
+    bridge = Bridge()
+    result = call(bridge, "init", "init", **init_args(tmp_path), scene_archive="fixture-scene")
+    hint = result["initial_hint"]
+    assert hint["position"] == [.99, .5]
+    assert .99 < hint["heading_point"][0] <= 1
+    assert hint["heading_point"][1] == .5
+    bridge.close()
+
+
 def test_fresh_observation_and_panorama_preserve_state(initialized):
     bridge, initial, root = initialized
     single = call(bridge, "single", "observe")

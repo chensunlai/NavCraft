@@ -236,6 +236,12 @@ class Bridge:
 
                 calibration = MapCalibration((self.repo / scene_archive).resolve())
                 level, position, heading = calibration.initial_arrow(transition.observation.pose)
+                dx, dy = heading[0] - position[0], heading[1] - position[1]
+                scale = min(1.0, .04 / max(math.hypot(dx, dy), 1e-9))
+                while not all(0 <= coordinate <= 1 for coordinate in
+                              (position[0] + dx * scale, position[1] + dy * scale)):
+                    scale *= .5
+                heading = [position[0] + dx * scale, position[1] + dy * scale]
                 result["initial_hint"] = {"map_id": f"map_{level}", "position": position,
                                           "heading_point": heading, "at_frame": result["observation"]["id"]}
             self._save_result()
