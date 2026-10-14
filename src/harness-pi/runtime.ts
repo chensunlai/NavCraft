@@ -1,10 +1,12 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { createAgentSession, createExtensionRuntime, ModelRuntime, SessionManager, SettingsManager, type ResourceLoader, type ToolDefinition, type ExtensionFactory, type AgentSession } from '@earendil-works/pi-coding-agent';
+import { createAgentSession, createExtensionRuntime, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ResourceLoader, type ToolDefinition, type ExtensionFactory, type AgentSession } from '@earendil-works/pi-coding-agent';
 import type { ImageContent } from '@earendil-works/pi-ai';
 import { createCodingTools } from './sandbox.js';
 import { Trace } from './trace.js';
 import { RequestBudget } from './budget.js';
+import { createNavigationCompaction, type NavigationPublicState } from './compaction.js';
+import type { StreamFn } from '@earendil-works/pi-agent-core';
 
 export const DEFAULT_PYTHON = '/home2/chen/.local/anaconda3/envs/vln/bin/python';
 export function credentials(file: string) {
@@ -29,7 +31,7 @@ export function explicitLoader(systemPrompt: string): ResourceLoader {
 export interface RuntimeOptions {
   workspace: string; directory: string; budgetFile: string; maxRequests: number; credentialFile: string;
   modelId?: string; api?: 'openai-responses' | 'openai-completions'; python?: string; systemPrompt: string; tools?: ToolDefinition[];
-  coding?: boolean; timeoutSeconds?: number; extensions?: ExtensionFactory[]; compact?: boolean;
+  coding?: boolean; timeoutSeconds?: number; extensions?: ExtensionFactory[]; compact?: boolean; publicState?: () => NavigationPublicState | Promise<NavigationPublicState>;
 }
 export async function runtime(options: RuntimeOptions) {
   const auth = credentials(options.credentialFile);
@@ -44,7 +46,15 @@ export async function runtime(options: RuntimeOptions) {
   await modelRuntime.setRuntimeApiKey('navcraft', auth.apiKey);
   const tools = [...(options.coding === false ? [] : createCodingTools(options.workspace, options.python ?? DEFAULT_PYTHON)), ...(options.tools ?? [])];
   const settingsManager = SettingsManager.inMemory({ compaction: { enabled: options.compact ?? false, reserveTokens: 16384, keepRecentTokens: 20000 }, retry: { enabled: false }, cacheWarming: 'off' });
-  const resourceLoader = explicitLoader(options.systemPrompt);
+  let controlledStream!: StreamFn;
+  const factories = [...(options.extensions ?? []), ...(options.publicState ? [createNavigationCompaction((...args) => controlledStream(...args), options.publicState, trace)] : [])];
+  let resourceLoader: ResourceLoader = explicitLoader(options.systemPrompt);
+  if (factories.length) {
+    const loader = new DefaultResourceLoader({ cwd: options.workspace, agentDir, settingsManager, extensionFactories: factories, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true, systemPrompt: options.systemPrompt });
+    await loader.reload();
+    if (loader.getExtensions().errors.length) throw new Error(JSON.stringify(loader.getExtensions().errors));
+    resourceLoader = loader;
+  }
   const { session } = await createAgentSession({ cwd: options.workspace, agentDir, model: modelRuntime.getModel('navcraft', auth.model)!, modelRuntime, thinkingLevel: 'high', tools: tools.map(t => t.name), customTools: tools, resourceLoader, settingsManager, sessionManager: SessionManager.create(options.workspace, join(agentDir, 'sessions')) });
   session.agent.toolExecution = 'sequential';
   const originalStream = session.agent.streamFunction;
@@ -52,6 +62,8 @@ export async function runtime(options: RuntimeOptions) {
     trace.emit('model_input', { model: model.id, api: model.api, reasoning: streamOptions?.reasoning, context, files: trace.snapshot('before_model') });
     return originalStream(model, context, { ...streamOptions, maxRetries: 0, maxTokens: 8192, fetch: budget.fetch, timeoutMs: 300000, transport: 'sse' });
   };
+  controlledStream = session.agent.streamFunction;
+  await session.bindExtensions({});
   session.subscribe(event => {
     if (event.type === 'message_end' || event.type === 'tool_execution_start' || event.type === 'tool_execution_end' || event.type.includes('compaction') || event.type === 'agent_settled') trace.emit(event.type, event);
     if (event.type === 'tool_execution_end') trace.snapshot(`after_tool:${event.toolName}`);
