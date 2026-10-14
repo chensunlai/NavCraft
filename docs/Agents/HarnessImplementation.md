@@ -33,3 +33,5 @@ Pi v1.2.0 完整 coding-agent 本地源码、根 npm workspaces；Node 内嵌 SD
 - 阶段 1：Pi v1.2.0 单包 SDK 构建通过，本地解析与空会话检查通过；普通依赖统一安装到根目录。
 
 - 阶段 2：11 项 Node 验证通过；真实 Coding 闭环通过，多图识别、脚本执行、JSON 与生成图片重读均完成。服务配置原标识 `gpt6.1sol` 返回 404；公开列表核验后显式使用 `gpt-6.1-sol`，Responses/high/8192 保持。累计请求 8 次（含无效标识与模型列表），真实成功闭环 6 次。产物：`runs/harness-pi/2026-10-14T01-54-08-585Z-coding/`。
+
+- 阶段 3：19 项空间记忆测试通过；Qa prebuilt 55 实体/120 证据、partial 2 实体/4 证据、empty 0 均可检查与绘图。PNG-only 查询不要求额外图元，全景拼图标注相对方向。
