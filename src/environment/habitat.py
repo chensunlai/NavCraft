@@ -81,6 +81,12 @@ class HabitatEnvironment:
             raise RuntimeError("Environment has not been reset")
         return self.observation
 
+    def capture_current(self) -> Observation:
+        """Capture a new frame without taking an action or changing task progress."""
+        self._require_running()
+        self.observation = self._capture()
+        return self.observation
+
     def _reserve_frames(self, count: int) -> list[int]:
         frames = list(range(self._next_frame, self._next_frame + count))
         self._next_frame += count
