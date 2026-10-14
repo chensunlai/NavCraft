@@ -160,9 +160,19 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
     }
     if (request.op === "set_checkpoint") { checkpoint = args.checkpoint; return { updated: true, revision: checkpoint?.revision }; }
     if (request.op === "configure") {
+      if (args.maxRequests !== undefined) {
+        if (!Number.isInteger(args.maxRequests) || args.maxRequests < active!.budget.used) {
+          throw new Error("maxRequests must be an integer at least the actual requests already used");
+        }
+        active!.budget.caseLimit = args.maxRequests;
+        active!.budget.exhausted = false;
+      }
       if (args.compaction) active!.settingsManager.applyOverrides({ compaction: args.compaction });
       const applied = { configured: true, compaction: active!.settingsManager.getCompactionSettings(active!.session.model) };
       active!.trace.emit("runtime_configured", applied);
+      if (args.maxRequests !== undefined) active!.trace.emit("request_limit_configured", {
+        maxRequests: active!.budget.caseLimit, used: active!.budget.used,
+      });
       return applied;
     }
     if (request.op === "prompt") {

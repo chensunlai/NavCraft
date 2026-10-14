@@ -1,0 +1,9 @@
+python: /home2/chen/.local/anaconda3/envs/vln/bin/python
+credentials: .env.harness-astra
+api: openai-responses
+model: gpt-6-astra
+context_window: 128000
+compaction_threshold: 100000
+keep_recent_tokens: 20000
+max_total_requests: null
+output_dir: runs/harness-pi

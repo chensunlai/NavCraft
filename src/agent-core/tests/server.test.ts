@@ -93,6 +93,37 @@ test("a truncated answer is reported as output_limit rather than completed", asy
   } finally { await f.close(); }
 });
 
+test("successive task prompts retain one session and host-ended tool history", async () => {
+  const f = await setup([
+    message([{ type: "toolCall", id: "round1_finish", name: "inspect_local", arguments: { label: "round1" } }], "toolUse"),
+    message([{ type: "text", text: "second task uses the previous result" }], "stop"),
+  ]);
+  try {
+    await f.initialize();
+    const sessionId = f.records.find(record => record.id === "init").data.session_id;
+    f.send("first", "prompt", { text: "first current task" });
+    const call = await f.wait(record => record.type === "tool_request");
+    f.send("finish", "tool_reply", { call_id: call.call_id,
+      result: { content: [{ type: "text", text: "round1 completed at its actual position" }] },
+      control: { end_run: true } });
+    await f.wait(record => record.type === "settled" && record.prompt_id === "first");
+    f.send("budget2", "configure", { maxRequests: 8 });
+    assert.equal((await f.wait(record => record.id === "budget2")).ok, true);
+    assert.ok(f.records.some(record => record.event?.type === "request_limit_configured"
+      && record.event.data.maxRequests === 8));
+    f.send("second", "prompt", { text: "second current task; same position and memories" });
+    const second = await f.wait(record => record.type === "settled" && record.prompt_id === "second");
+    assert.equal(second.reason, "model_finished");
+    assert.equal(f.records.filter(record => record.event?.type === "runtime_started").length, 1);
+    assert.ok(sessionId);
+    const messages = f.inputs[1].messages;
+    assert.ok(messages.some((m: any) => m.role === "toolResult" && m.toolCallId === "round1_finish"));
+    assert.match(JSON.stringify(messages), /first current task/);
+    f.send("invalid_budget", "configure", { maxRequests: -1 });
+    assert.equal((await f.wait(record => record.id === "invalid_budget")).ok, false);
+  } finally { await f.close(); }
+});
+
 test("host completion stops at the tool boundary, without another model request", async () => {
   const f = await setup([message([{ type: "toolCall", id: "event", name: "inspect_local", arguments: { label: "event" } }, { type: "toolCall", id: "extra", name: "inspect_local", arguments: { label: "extra" } }], "toolUse")]);
   try {

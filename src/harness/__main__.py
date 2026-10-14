@@ -27,7 +27,7 @@ console.log(JSON.stringify({node:process.version,sdk:import.meta.resolve('@earen
     completed = subprocess.run(["node", "--import", "tsx", "--input-type=module", "-e", script, config["python"]],
                                cwd=REPO, text=True, capture_output=True, check=True)
     result = json.loads(completed.stdout)
-    result.update(python=config["python"], scene_present=(REPO / config["scene_archive"]).exists(),
+    result.update(python=config["python"], scene_present=(REPO / config["scene_archive"]).exists() if config.get("scene_archive") else None,
                   credentials_present=(REPO / config["credentials"]).is_file())
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return result
@@ -47,7 +47,17 @@ def main():
     run.add_argument("--directory", help=argparse.SUPPRESS)
     smoke = subparsers.add_parser("smoke")
     smoke.add_argument("--suite", choices=("quick", "full"), default="quick")
+    sequence = subparsers.add_parser("sequence", help="Run multiple tasks in the same environment and Agent session")
+    sequence.add_argument("--scenario", required=True, help="Private task sequence JSON")
+    sequence.add_argument("--directory")
     args = parser.parse_args()
+    if args.command == "sequence":
+        from .sequence import main as sequence_main
+        sys.argv = [sys.argv[0], "--config", args.config, "--scenario", args.scenario]
+        if args.directory:
+            sys.argv.extend(["--directory", args.directory])
+        sequence_main()
+        return
     config = load_config(args.config)
     if args.command == "doctor" and not args.online:
         doctor(config)

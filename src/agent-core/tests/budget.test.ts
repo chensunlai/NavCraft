@@ -56,3 +56,18 @@ test('an unlimited global ledger persists attempts while each run has its own ha
     assert.throws(() => new RequestBudget(file, 10, new Trace(join(dir, 'wrong'), dir), 200), /limit does not match/);
   } finally { globalThis.fetch = old; rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('later rounds extend the cumulative ceiling without resetting actual HTTP attempts', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'navcraft-budget-rounds-')); const old = globalThis.fetch;
+  let sent = 0; globalThis.fetch = async () => { sent++; return new Response('{}'); };
+  try {
+    const b = new RequestBudget(join(dir, 'budget.json'), 1, new Trace(join(dir, 'private'), dir));
+    await b.fetch('http://invalid.local');
+    await assert.rejects(b.fetch('http://invalid.local'), /BUDGET/);
+    b.caseLimit = b.used + 2; b.exhausted = false;
+    await b.fetch('http://invalid.local'); await b.fetch('http://invalid.local');
+    await assert.rejects(b.fetch('http://invalid.local'), /BUDGET/);
+    assert.equal(b.used, 3); assert.equal(b.totalUsed, 3); assert.equal(sent, 3);
+    assert.deepEqual(b.state().attempts.map(a => a.number), [1, 2, 3]);
+  } finally { globalThis.fetch = old; rmSync(dir, { recursive: true, force: true }); }
+});
