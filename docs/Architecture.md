@@ -35,9 +35,9 @@ flowchart LR
 
 ### 开发基座：优先复用完整 Pi Coding Agent
 
-**当前推荐采用 Pi 的 `pi-coding-agent` SDK＋导航扩展，Python 继续负责 Habitat 环境。** 复用基座的自主循环、原生文件／命令工具、会话、模型适配和压缩；项目主要增加空间资料、导航工具及实验记录。TypeScript 与 Python 通过薄接口连接，不要求把成熟 Agent 基座重新用 Python 写一遍。[Pi SDK](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/sdk.md)
+**基座采用本地维护的 Pi `pi-coding-agent`，目标边界是 Python 主程序＋独立 TS Core。** Python 主导任务、空间记忆、导航工具、环境、评分与实验组织；TS Core 保留 Pi 的自主循环、模型协议、原生 Coding 工具、会话与压缩。导航工具通过通用接口接入，不把导航任务判断写入 Core。当前实现仍由 TS 启动 Python，控制方向的迁移尚未实施。[本地 Pi SDK 文档](../src/harness-pi/pi/coding-agent/docs/sdk.md)
 
-SDK 与 NavCraft 入口在同一本机 Node 进程中运行，直接通过函数和事件交互；导航工具再与常驻 Python／Habitat 进程通信，首版可用子进程 JSONL 管道。Pi 调用远程模型 API，环境返回公开观察与执行反馈。本地维护的 Pi 核心源码、外部安装依赖和模型任务工作空间分别放置；源码在新 Harness 内，深层依赖在其目录外，具体布局和现有 nvm 环境见[当前交接](Agents/Message/latest.md)。
+Pi SDK 在独立 Node 进程内运行，通过双向 JSONL 与 Python 主程序通信；模型选择导航工具时回调 Python，Python 返回实际结果与公开状态。Pi 持有唯一模型会话，Python 保存审计记录，不另维护第二套对话。现有版本的 SDK 与任务入口仍在同一 Node 进程中，这部分需要后续迁移。本地维护的 Pi 核心源码、外部安装依赖和模型任务工作空间分别放置；源码在新 Harness 内，深层依赖在其目录外。
 
 需修改的 Pi 包保存在 `src/harness-pi/pi/`，通过 npm workspaces 链接使用；普通依赖由仓库根目录统一安装，`node_modules/` 不纳入版本控制。修改 TypeScript 后编译再运行，可用 watch 自动编译；Node 复用现有 nvm，包配置与 lockfile 随项目保存。
 
@@ -169,7 +169,7 @@ workspace/
 
 **同一 episode 一个逻辑会话：平时只追加，接近预算上限时统一压缩。** 外部记忆保存完整资料，上下文保存实际加载的部分。不按“最近五组”滚动删图，不每轮重新组合输入。
 
-优先使用 Pi 会话与现成压缩机制，配置预算并通过扩展补充导航摘要要求。下述信息保留方式是待验证的设计方向；本轮按[临时提示词](#compaction-prompt)简单适配并验证基本续接，不将完整压缩研究列为重构前置条件，也不另写一套压缩引擎。Pi 与 Codex 的压缩实现不要求完全一致。[Pi 压缩机制](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/compaction.md)
+使用本地 Pi 的会话与原生压缩机制，**压缩提示直接修改 Core 源码**，不在外围额外追加一套摘要指令。提示统一位于 [Core compaction.ts](../src/harness-pi/pi/coding-agent/src/core/compaction/compaction.ts) 的共享摘要构造入口，覆盖首次摘要、已有摘要更新和 split-turn 前缀摘要。下述信息保留方式仍需验证；不另写压缩引擎。外围仅保留统一请求预算、审计和已有公开图片/状态恢复。Pi 与 Codex 的压缩实现不要求完全一致。
 
 ### 初始与增量形式
 
@@ -224,7 +224,7 @@ workspace/
 
 ### 导航压缩提示词（临时适配，待研究）
 
-**导航中的上下文压缩仍需专门思考，当前提示词不是最终方案。** 本轮先沿用 Pi 的摘要结构、历史切分与会话保存，通过现有扩展简单补充导航关注点，验证基本续接，不另写压缩引擎。[Pi 压缩扩展](https://github.com/earendil-works/pi/blob/v1.2.0/packages/coding-agent/docs/compaction.md#session_before_compact)
+**导航中的上下文压缩仍需专门思考，当前提示词不是最终方案。** 导航要求直接放入本地 Pi Core 的摘要提示，沿用原生摘要结构、历史切分与会话保存。这里使用本地源码分支，后续改提示或压缩机制直接修改该源码并构建；外围不再负责提示注入。分支切换摘要有独立生成入口，本次没有修改。
 
 以下为临时附加提示词，供最简实现使用；它表达希望保留的信息，不代表这些要求已能可靠满足：
 

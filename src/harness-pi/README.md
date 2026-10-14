@@ -65,7 +65,7 @@ printf '%s' '{"workspace":"."}' | python -B scene/tools/memory.py check
 
 ## 上下文与产物
 
-正常运行增量追加历史，不滚动删图。使用 Pi 原生切分、摘要合并和会话保存，导航要求覆盖普通及 split-turn 摘要；摘要也走统一预算入口。压缩后仅补充已有公开目标、最新观察与必要图片，不新生成位置判断或改写记忆。文字摘要不能保留所有未表达的视觉细节。
+正常运行增量追加历史，不滚动删图。使用 Pi 原生切分、摘要合并和会话保存。**压缩提示直接维护在本地 Pi core 的 [compaction.ts](pi/coding-agent/src/core/compaction/compaction.ts)**，其共享提示构造入口覆盖首次摘要、已有摘要更新和 split-turn 摘要；修改后执行 `npm run build`。外围 `compaction.ts` 只负责预算/记录/失败处理与公开内容恢复，不再注入提示。摘要也走统一预算入口。压缩后仅补充已有公开目标、最新观察与必要图片，不新生成位置判断或改写记忆。文字摘要不能保留所有未表达的视觉细节。
 
 每个运行目录包含 `config.json`、`result.json`、公开图片/记忆，以及 `private/trace.jsonl`、文件版本 blobs、Pi session 和私有环境结果。trace 保存实际模型输入输出、HTTP 协议/用量、工具回执、图片与文件变化。服务未返回的指标保持缺失。私有 trace 含真值及大量图像数据，应与公开训练输入分开使用。
 

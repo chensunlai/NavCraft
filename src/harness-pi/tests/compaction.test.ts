@@ -5,8 +5,8 @@ import { join } from "node:path";
 import test from "node:test";
 import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
 import { createAssistantMessageEventStream, type AssistantMessage, type Model, type TranscriptContext, type Usage } from "@earendil-works/pi-ai";
-import { findCutPoint, type ExtensionAPI, type ExtensionContext, type SessionBeforeCompactEvent, type SessionEntry, type SessionCompactEvent } from "@earendil-works/pi-coding-agent";
-import { createNavigationCompaction, NAVIGATION_SUMMARY_INSTRUCTIONS, type NavigationPublicState } from "../compaction.js";
+import { compact, findCutPoint, type ExtensionAPI, type ExtensionContext, type SessionBeforeCompactEvent, type SessionEntry, type SessionCompactEvent } from "@earendil-works/pi-coding-agent";
+import { createNavigationCompaction, type NavigationPublicState } from "../compaction.js";
 
 const usage: Usage = { input: 20, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 30, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 const model: Model<"openai-responses"> = { id: "fixture", name: "fixture", api: "openai-responses", provider: "fixture", baseUrl: "http://fixture.invalid", reasoning: true, input: ["text", "image"], contextWindow: 65536, maxTokens: 8192, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
@@ -22,6 +22,103 @@ function preparation(split = false): SessionBeforeCompactEvent["preparation"] {
     settings: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 },
   };
 }
+
+function summaryPrompt(context: TranscriptContext): string {
+  return context.messages.filter((message) => message.role === "user").map((message) => {
+    if (typeof message.content === "string") return message.content;
+    return message.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+  }).join("\n");
+}
+
+function checkCoreNavigationPrompt(context: TranscriptContext): string {
+  const text = summaryPrompt(context);
+  assert.equal(text.split("Navigation checkpoint requirements:").length - 1, 1);
+  assert.match(text, /last observation in summarized segment/);
+  assert.match(text, /not the current state of the whole run/);
+  assert.match(text, /Later retained messages and public checkpoints take precedence/);
+  // Core adds instructions to its existing prompt; no extra user message is needed.
+  assert.equal(context.messages.filter((message) => message.role === "user").length, 1);
+  return text;
+}
+
+async function directCore(prep: SessionBeforeCompactEvent["preparation"], instructions?: string) {
+  const calls: { context: TranscriptContext; options: any }[] = [];
+  const stream: StreamFn = (_model, context, options) => {
+    calls.push({ context, options });
+    const result = createAssistantMessageEventStream(); result.end(assistant()); return result;
+  };
+  const result = await compact(prep, model, "fixture-key", undefined, instructions, undefined, "high", stream, undefined, { enabled: false, maxRetries: 0, baseDelayMs: 0 }, undefined, "fixture-core-session");
+  return { result, calls };
+}
+
+test("direct Pi core ordinary compaction adds navigation requirements without an outer extension", async () => {
+  const prep = preparation();
+  const { result, calls } = await directCore(prep);
+  assert.equal(calls.length, 1);
+  const text = checkCoreNavigationPrompt(calls[0].context);
+  assert.match(text, /<conversation>/);
+  assert.match(text, /Use this EXACT format/);
+  assert.match(text, /## Goal/);
+  assert.match(text, /## Constraints & Preferences/);
+  assert.equal(result.firstKeptEntryId, prep.firstKeptEntryId);
+  assert.equal(result.tokensBefore, prep.tokensBefore);
+  assert.deepEqual(result.usage, usage);
+  assert.deepEqual(result.details, { readFiles: ["scene/room.md"], modifiedFiles: ["memory/state.json"] });
+  assert.equal(prep.previousSummary, undefined);
+  assert.deepEqual([...prep.fileOps.read], ["scene/room.md"]);
+  assert.deepEqual([...prep.fileOps.written], ["memory/state.json"]);
+  assert.equal(calls[0].options.reasoning, "high");
+});
+
+test("direct Pi core updated summary retains the previous summary and update format", async () => {
+  const prep = preparation(); prep.previousSummary = "prior checkpoint: pose estimate at frame_000003 is uncertain";
+  const { result, calls } = await directCore(prep);
+  assert.equal(calls.length, 1);
+  const text = checkCoreNavigationPrompt(calls[0].context);
+  assert.match(text, /<previous-summary>/);
+  assert.ok(text.includes(prep.previousSummary));
+  assert.match(text, /Update the existing structured summary/);
+  assert.match(text, /PRESERVE exact file paths/);
+  assert.equal(result.firstKeptEntryId, prep.firstKeptEntryId);
+  assert.deepEqual(result.usage, usage);
+});
+
+test("direct Pi core split history and turn prefix both use the patched common prompt builder", async () => {
+  const prep = preparation(true);
+  const { result, calls } = await directCore(prep);
+  assert.equal(calls.length, 2);
+  const [history, prefix] = calls.map((call) => checkCoreNavigationPrompt(call.context));
+  assert.match(history, /Use this EXACT format/);
+  assert.match(prefix, /## Original Request/);
+  assert.match(prefix, /## Progress So Far/);
+  assert.match(prefix, /Only summarize information explicitly present above/);
+  assert.match(result.summary, /Turn Context \(split turn\)/);
+  assert.equal(result.firstKeptEntryId, prep.firstKeptEntryId);
+  assert.equal(result.usage?.totalTokens, 60);
+  assert.equal(result.usage?.input, 40);
+  assert.deepEqual(result.details, { readFiles: ["scene/room.md"], modifiedFiles: ["memory/state.json"] });
+});
+
+test("direct Pi core prefix-only compaction preserves prior history with a single request", async () => {
+  const prep = preparation(true); prep.messagesToSummarize = []; prep.previousSummary = "unchanged prior checkpoint";
+  const { result, calls } = await directCore(prep);
+  assert.equal(calls.length, 1);
+  const text = checkCoreNavigationPrompt(calls[0].context);
+  assert.match(text, /## Original Request/);
+  assert.ok(result.summary.startsWith(prep.previousSummary));
+  assert.equal(result.firstKeptEntryId, prep.firstKeptEntryId);
+  assert.deepEqual(result.usage, usage);
+});
+
+test("direct Pi core retains caller focus alongside exactly one navigation requirement block", async () => {
+  const prep = preparation();
+  const focus = "Keep the unresolved cabinet identity and evidence frame_000047 verbatim.";
+  const { calls, result } = await directCore(prep, focus);
+  const text = checkCoreNavigationPrompt(calls[0].context);
+  assert.ok(text.includes(`Additional focus: ${focus}`));
+  assert.equal(result.firstKeptEntryId, prep.firstKeptEntryId);
+  assert.equal(calls[0].options.sessionId, "fixture-core-session");
+});
 
 async function fixture(options: { response?: AssistantMessage; messages?: AgentMessage[]; state?: NavigationPublicState; workspace?: string } = {}) {
   const calls: { context: TranscriptContext; options: any }[] = [];
@@ -62,9 +159,7 @@ test("ordinary native summary keeps cut point, file tracking and provider usage"
   assert.deepEqual(result.compaction.usage, usage);
   assert.deepEqual(result.compaction.details.readFiles, ["scene/room.md"]);
   assert.deepEqual(result.compaction.details.modifiedFiles, ["memory/state.json"]);
-  assert.ok(f.calls[0].context.messages.some((message) => message.role === "user" && Array.isArray(message.content) && message.content.some((block) => block.type === "text" && block.text === NAVIGATION_SUMMARY_INSTRUCTIONS)));
-  assert.match(JSON.stringify(f.calls[0].context), /last observation in summarized segment/);
-  assert.match(JSON.stringify(f.calls[0].context), /Later retained messages and public checkpoints take precedence/);
+  checkCoreNavigationPrompt(f.calls[0].context);
   assert.equal(f.calls[0].options.maxRetries, 0);
   assert.equal(f.calls[0].options.reasoning, "high");
 });
@@ -74,9 +169,7 @@ test("history and split-turn summary BOTH receive navigation instructions and sh
   const result = await f.before(preparation(true));
   assert.equal(f.calls.length, 2);
   for (const call of f.calls) {
-    assert.ok(call.context.messages.some((message) => JSON.stringify(message).includes("Navigation checkpoint requirements")));
-    assert.match(JSON.stringify(call.context), /not the current state of the whole run/);
-    assert.match(JSON.stringify(call.context), /Later retained messages and public checkpoints take precedence/);
+    checkCoreNavigationPrompt(call.context);
     assert.equal(call.options.maxRetries, 0);
     assert.equal(call.options.reasoning, "high");
   }

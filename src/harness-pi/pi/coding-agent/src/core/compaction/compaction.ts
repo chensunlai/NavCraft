@@ -504,6 +504,21 @@ export function findCutPoint(
 // Summarization
 // ============================================================================
 
+// NavCraft local source patch: keep the navigation focus in the native prompt
+// builder so initial, updated and split-turn summaries use the same requirements.
+const NAVIGATION_SUMMARY_INSTRUCTIONS = `Navigation checkpoint requirements:
+When navigation information is present, preserve the following within the requested summary format. Omit missing information rather than inventing it.
+This summary covers only the supplied older messages. "Latest" means the last observation within this summarized segment, not the current state of the whole run.
+Label it "last observation in summarized segment" with its frame/step. Later retained messages and public checkpoints take precedence for current goals, observations and state; do not relabel historical data as globally current.
+Preserve the last goal recorded in the summarized segment and its goal ID, description/image references, and which goals have already been submitted.
+Preserve actual observation frame IDs, action steps, image references and view/camera information.
+Preserve exact map, memory and evidence file references so they can be reopened.
+Keep position/heading estimates explicitly labelled as estimates and bound to their supporting observation time; preserve uncertainty and conflicts.
+Keep actual executed actions, collisions, unfinished local intentions and questions requiring more evidence.
+Distinguish observed facts from model hypotheses and old plans from the goal recorded in the same segment.
+Summarize only supplied history. Do not solve navigation, invent a new location, infer private scores, generate evidence, or write memory files.
+The image contents may no longer be present: retain their references rather than claiming a text summary preserves all visual detail.`;
+
 const SUMMARIZATION_PROMPT = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
 
 Use this EXACT format:
@@ -685,7 +700,7 @@ function buildSummarizationContext(promptText: string): TranscriptContext {
 		messages: [
 			{
 				role: "user",
-				content: [{ type: "text", text: promptText }],
+				content: [{ type: "text", text: `${promptText}\n\n${NAVIGATION_SUMMARY_INSTRUCTIONS}` }],
 				timestamp: Date.now(),
 			},
 		],

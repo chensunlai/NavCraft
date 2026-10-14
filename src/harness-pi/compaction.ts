@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
-import { normalizeContext, type ImageContent, type TextContent } from "@earendil-works/pi-ai";
+import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { compact, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { publicPath } from "./sandbox.js";
 
@@ -17,18 +17,6 @@ export interface NavigationPublicState {
 export interface CompactionTrace {
   emit(type: string, data?: unknown): void;
 }
-
-export const NAVIGATION_SUMMARY_INSTRUCTIONS = `Navigation checkpoint requirements:
-This summary covers only the supplied older messages. "Latest" means the last observation within this summarized segment, not the current state of the whole run.
-Label it "last observation in summarized segment" with its frame/step. Later retained messages and public checkpoints take precedence for current goals, observations and state; do not relabel historical data as globally current.
-Preserve the current goal and goal ID, its description/image references, and which goals have already been submitted.
-Preserve the latest actual observation's frame ID, action step, image references and view/camera information.
-Preserve exact map, memory and evidence file references so they can be reopened.
-Keep position/heading estimates explicitly labelled as estimates and bound to their supporting observation time; preserve uncertainty and conflicts.
-Keep actual executed actions, collisions, unfinished local intentions and questions requiring more evidence.
-Distinguish observed facts from model hypotheses and old plans from the current goal.
-Summarize only supplied history. Do not solve navigation, invent a new location, infer private scores, generate evidence, or write memory files.
-The image contents may no longer be present: retain their references rather than claiming a text summary preserves all visual detail.`;
 
 function contextText(messages: AgentMessage[]): string {
   return messages.map((message) => {
@@ -61,7 +49,7 @@ function hasImage(messages: AgentMessage[], image: ImageContent): boolean {
   return messages.some((message) => "content" in message && Array.isArray(message.content) && message.content.some((block) => block.type === "image" && (block as ImageContent).data === image.data));
 }
 
-/** Keep Pi's prepared cut point, summary merge, file tracking, usage and persistence. */
+/** Budgeted transport, audit and public-state restoration; prompts live in local Pi core. */
 export function createNavigationCompaction(
   sharedStreamFn: StreamFn,
   getPublicState: () => NavigationPublicState | Promise<NavigationPublicState>,
@@ -83,13 +71,8 @@ export function createNavigationCompaction(
         const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
         if (!auth.ok) throw new Error(auth.error);
         const stream: StreamFn = async (model, context, options) => {
-          // Both the history and split-turn generator pass through this function.
-          const augmented = normalizeContext({ messages: [
-            ...context.messages,
-            { role: "user", content: [{ type: "text", text: NAVIGATION_SUMMARY_INSTRUCTIONS }], timestamp: Date.now() },
-          ] });
-          trace.emit("navigation_summary_input", { model: model.id, context: augmented, maxRetries: 0 });
-          const resultStream = await sharedStreamFn(model, augmented, { ...options, maxRetries: 0 });
+          trace.emit("navigation_summary_input", { model: model.id, context, maxRetries: 0 });
+          const resultStream = await sharedStreamFn(model, context, { ...options, maxRetries: 0 });
           const originalResult = resultStream.result.bind(resultStream);
           resultStream.result = async () => {
             const response = await originalResult();
