@@ -1,0 +1,38 @@
+cases:
+  query:
+    sample: data/atomic_spatial/demo-20261012-v1/samples/A03-retrieval_qa-S
+    requests: 8
+    seconds: 600
+  local:
+    sample: data/atomic_spatial/demo-20261012-v1/samples/A04-interactive_ia-S
+    requests: 12
+    seconds: 600
+  objnav:
+    task_config: config/task/objnav_dev_visual.yaml
+    env_config: config/environment/objectnav_visual.yaml
+    episode_id: objnav:val:QaLdnwvtxbs:bed:8
+    requests: 32
+    seconds: 1800
+  instruction:
+    task_config: config/task/instruction_dev_visual.yaml
+    env_config: config/environment/r2r_visual.yaml
+    episode_id: r2r:synthetic_hm3d:QaLdnwvtxbs:001
+    requests: 32
+    seconds: 1800
+  goat:
+    task_config: config/task/goat_dev_visual.yaml
+    env_config: config/environment/goat_visual.yaml
+    episode_id: goat:val_unseen:QaLdnwvtxbs:0
+    goal_limit: 2
+    requests: 52
+    seconds: 2700
+  mapping:
+    sample: data/atomic_spatial/demo-20261012-v1/samples/A03-retrieval_qa-S
+    purpose: mapping
+    requests: 16
+    seconds: 600
+  compaction:
+    sample: data/atomic_spatial/demo-20261012-v1/samples/A03-retrieval_qa-S
+    purpose: mapping
+    requests: 12
+    seconds: 600

@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { parse } from 'yaml';
 import { runtime, DEFAULT_PYTHON, imageContent, promptBounded } from './runtime.js';
 import { sandboxRun } from './sandbox.js';
+import { runCase } from './run.js';
 
 const repo = resolve('.');
 const args = process.argv.slice(2);
@@ -30,6 +31,8 @@ async function main() {
     console.log(JSON.stringify({ node: process.version, sdk: import.meta.resolve('@earendil-works/pi-coding-agent'), python: config.python, sandbox: result, credentials_present: existsSync(resolve(config.credentials)), scene_present: existsSync(resolve(config.scene_archive)) }, null, 2)); return;
   }
   if (args[0] === 'coding' || (args[0] === 'doctor' && args.includes('--online'))) { await codingSmoke(); return; }
+  if (args[0] === 'run') { await runCase(repo, config, option('case', 'query')!, { maxRequests: option('max-requests') ? Number(option('max-requests')) : undefined }); return; }
+  if (args[0] === 'smoke') { for (const name of ['query','local','objnav','instruction','goat','mapping','compaction']) await runCase(repo, config, name); return; }
   throw new Error('Usage: npm run harness -- doctor [--online] | coding | run --case CASE | smoke');
 }
 main().catch(error => { console.error(String(error)); process.exitCode = 1; });
