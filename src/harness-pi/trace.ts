@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 export class Trace {
   private previous = new Map<string, string>();
   private secrets: string[];
-  constructor(readonly directory: string, readonly workspace: string, secrets: string[] = []) {
+  constructor(readonly directory: string, readonly workspace: string, secrets: string[] = [], private onEvent?: (event: { timestamp: string; type: string; data: unknown }) => void) {
     this.secrets = secrets.filter(Boolean);
     mkdirSync(directory, { recursive: true });
     mkdirSync(join(directory, 'blobs'), { recursive: true });
@@ -14,6 +14,7 @@ export class Trace {
     let line = JSON.stringify({ timestamp: new Date().toISOString(), type, data });
     for (const secret of this.secrets) line = line.split(secret).join('[REDACTED]');
     appendFileSync(join(this.directory, 'trace.jsonl'), line + '\n');
+    this.onEvent?.(JSON.parse(line));
   }
   snapshot(label: string) {
     const next = new Map<string, string>();

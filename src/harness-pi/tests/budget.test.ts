@@ -40,3 +40,19 @@ test('separate runs share the global ceiling and an occupied ledger lock fails c
     assert.equal(sent, 2);
   } finally { globalThis.fetch = old; rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('an unlimited global ledger persists attempts while each run has its own hard ceiling', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'navcraft-budget-unlimited-')); const old = globalThis.fetch;
+  let sent = 0; globalThis.fetch = async () => { sent++; return new Response('{}'); };
+  try {
+    const file = join(dir, 'budget.json');
+    const first = new RequestBudget(file, 1, new Trace(join(dir, 'first'), dir), null);
+    await first.fetch('http://invalid.local');
+    await assert.rejects(first.fetch('http://invalid.local'), /BUDGET/);
+    const second = new RequestBudget(file, 2, new Trace(join(dir, 'second'), dir), null);
+    await second.fetch('http://invalid.local'); await second.fetch('http://invalid.local');
+    assert.equal(second.state().limit, null);
+    assert.equal(second.totalUsed, 3); assert.equal(second.used, 2); assert.equal(sent, 3);
+    assert.throws(() => new RequestBudget(file, 10, new Trace(join(dir, 'wrong'), dir), 200), /limit does not match/);
+  } finally { globalThis.fetch = old; rmSync(dir, { recursive: true, force: true }); }
+});

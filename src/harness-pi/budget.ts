@@ -5,14 +5,14 @@ import type { Trace } from './trace.js';
 export class RequestBudget {
   readonly start: number;
   exhausted = false;
-  constructor(readonly file: string, readonly caseLimit: number, readonly trace: Trace, readonly totalLimit = 200) {
+  constructor(readonly file: string, readonly caseLimit: number, readonly trace: Trace, readonly totalLimit: number | null = 200) {
     mkdirSync(dirname(file), { recursive: true });
     if (!existsSync(file)) writeFileSync(file, JSON.stringify({ limit: totalLimit, attempts: [] }, null, 2));
     const state = this.state();
     if (state.limit !== totalLimit) throw new Error('Budget file limit does not match configured global limit');
     this.start = state.attempts.length;
   }
-  state(): { limit: number; attempts: { number: number; time: string; url: string; run: string }[] } {
+  state(): { limit: number | null; attempts: { number: number; time: string; url: string; run: string }[] } {
     return JSON.parse(readFileSync(this.file, 'utf8'));
   }
   get used() { return this.state().attempts.filter(x => x.run === this.trace.directory).length; }
@@ -24,7 +24,7 @@ export class RequestBudget {
     let state: ReturnType<RequestBudget['state']>;
     try {
       state = this.state();
-      if (state.attempts.length >= state.limit || state.attempts.filter(x => x.run === this.trace.directory).length >= this.caseLimit) {
+      if ((state.limit !== null && state.attempts.length >= state.limit) || state.attempts.filter(x => x.run === this.trace.directory).length >= this.caseLimit) {
         this.exhausted = true;
         this.trace.emit('request_budget_exhausted', { totalUsed: state.attempts.length, caseUsed: this.used, caseLimit: this.caseLimit, totalLimit: state.limit });
         throw new Error('NAVCRAFT_REQUEST_BUDGET_EXHAUSTED');

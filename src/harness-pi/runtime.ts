@@ -32,13 +32,14 @@ export interface RuntimeOptions {
   workspace: string; directory: string; budgetFile: string; maxRequests: number; credentialFile: string;
   modelId?: string; api?: 'openai-responses' | 'openai-completions'; python?: string; systemPrompt: string; tools?: ToolDefinition[];
   coding?: boolean; timeoutSeconds?: number; extensions?: ExtensionFactory[]; compact?: boolean; publicState?: () => NavigationPublicState | Promise<NavigationPublicState>;
+  totalLimit?: number | null; onEvent?: (event: { timestamp: string; type: string; data: unknown }) => void;
 }
 export async function runtime(options: RuntimeOptions) {
   const auth = credentials(options.credentialFile);
   const requestedModel = auth.model;
   if (options.modelId) auth.model = options.modelId;
-  const trace = new Trace(join(options.directory, 'private'), options.workspace, [auth.apiKey]);
-  const budget = new RequestBudget(options.budgetFile, options.maxRequests, trace);
+  const trace = new Trace(join(options.directory, 'private'), options.workspace, [auth.apiKey], options.onEvent);
+  const budget = new RequestBudget(options.budgetFile, options.maxRequests, trace, options.totalLimit);
   const agentDir = join(options.directory, 'private', 'pi'); mkdirSync(agentDir, { recursive: true });
   const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, 'auth.json'), modelsPath: null, allowModelNetwork: false });
   const api = options.api ?? 'openai-responses';
@@ -65,7 +66,7 @@ export async function runtime(options: RuntimeOptions) {
   controlledStream = session.agent.streamFunction;
   await session.bindExtensions({});
   session.subscribe(event => {
-    if (event.type === 'message_end' || event.type === 'tool_execution_start' || event.type === 'tool_execution_end' || event.type.includes('compaction') || event.type === 'agent_settled') trace.emit(event.type, event);
+    if (event.type === 'turn_start' || event.type === 'message_end' || event.type === 'tool_execution_start' || event.type === 'tool_execution_end' || event.type.includes('compaction') || event.type === 'agent_settled') trace.emit(event.type, event);
     if (event.type === 'tool_execution_end') trace.snapshot(`after_tool:${event.toolName}`);
   });
   trace.snapshot('initial');
