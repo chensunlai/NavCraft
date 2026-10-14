@@ -47,6 +47,10 @@ def _path(workspace, ref, roots=None):
     result = (root / relative).resolve()
     if not result.is_relative_to(root):
         raise MemoryError(f"Path resolves outside the public workspace: {ref}")
+    if roots and not any(result.is_relative_to(root / name) for name in roots):
+        # Do not resolve the allowed roots: a symlink must not redefine which
+        # workspace tree is writable (e.g. scratch -> scene).
+        raise MemoryError(f"Path resolves outside allowed resource roots {sorted(roots)}: {ref}")
     return result
 
 
@@ -118,7 +122,7 @@ def _maps(workspace):
 def _image_index(workspace):
     result = {}
     for name in ("scene/evidence/index.jsonl", "observations/index.jsonl", "scratch/images/index.jsonl"):
-        path = _path(workspace, name)
+        path = _path(workspace, name, {name.split("/", 1)[0]})
         if not path.exists():
             continue
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
@@ -144,12 +148,13 @@ def _record_image(workspace, picture, prefix, metadata):
     image_id = f"{prefix}_{uuid.uuid4().hex[:12]}"
     ref = f"scratch/images/{image_id}.png"
     path = _path(workspace, ref, {"scratch"})
+    index_path = _path(workspace, "scratch/images/index.jsonl", {"scratch"})
     path.parent.mkdir(parents=True, exist_ok=True)
     picture.save(path)
     row = {"id": image_id, "path": ref, "source": "derived", "step": None,
            "view": None, "derived_from": [], **metadata,
            "width": picture.width, "height": picture.height, "sha256": _sha(path)}
-    with _path(workspace, "scratch/images/index.jsonl").open("a", encoding="utf-8") as handle:
+    with index_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     return row
 
@@ -346,14 +351,15 @@ def check(workspace):
                 if label == "地图" and entity["map_id"] not in value:
                     raise MemoryError(f"{name}: card map disagrees with geometry")
                 if label in {"所属区域", "连接", "关系"}:
-                    for ref in re.findall(r"\b[RODPC]\d+\b", value):
+                    refs = set(re.findall(r"\b[RODPC]\d+\b", value))
+                    refs.update(re.findall(r"`([A-Za-z][A-Za-z0-9_-]*)`", value))
+                    for ref in sorted(refs):
                         if ref not in entities:
                             raise MemoryError(f"{name}: unknown entity reference {ref}")
                 if label == "证据":
-                    refs = re.findall(r"`([^`]+)`", value)
-                    if not refs and value.strip() not in {"无", "未知", ""}:
-                        refs = re.findall(r"\b(?:render_|review_|f_|E_)[A-Za-z0-9_-]+", value)
-                    for ref in refs:
+                    refs = set(re.findall(r"`([^`]+)`", value))
+                    refs.update(re.findall(r"\b(?:render_|review_|frame_|rgb_|map_|crop_|grid_|f_|E_)[A-Za-z0-9_-]+", value))
+                    for ref in sorted(refs):
                         if ref not in images:
                             raise MemoryError(f"{name}: unknown evidence {ref}")
         for name, row in images.items():

@@ -95,6 +95,51 @@ def test_image_access_rejects_private_or_traversal(workspace, tmp_path, ref):
         memory.view(workspace, [ref])
 
 
+@pytest.mark.parametrize("readonly_root", ["scene", "observations"])
+@pytest.mark.parametrize("link_kind", ["directory", "index"])
+@pytest.mark.parametrize("operation", ["crop", "render"])
+def test_derived_images_cannot_write_through_links_into_readonly_trees(
+        workspace, readonly_root, link_kind, operation):
+    before = {p.relative_to(workspace).as_posix(): p.read_bytes()
+              for name in ("scene", "observations")
+              for p in (workspace / name).rglob("*") if p.is_file()}
+    images = workspace / "scratch/images"
+    if link_kind == "directory":
+        images.rmdir()
+        images.symlink_to(workspace / readonly_root, target_is_directory=True)
+    else:
+        (images / "index.jsonl").symlink_to(workspace / readonly_root / "index.jsonl")
+    with pytest.raises(memory.MemoryError, match="outside allowed resource roots"):
+        if operation == "crop":
+            memory.view(workspace, ["f_001"], crops=[[0, 0, 0.5, 1]])
+        else:
+            memory.render(workspace, "map_L1")
+    after = {p.relative_to(workspace).as_posix(): p.read_bytes()
+             for name in ("scene", "observations")
+             for p in (workspace / name).rglob("*") if p.is_file()}
+    assert after == before
+
+
+def test_record_image_validates_index_destination_before_writing_image(workspace):
+    images = workspace / "scratch/images"
+    protected = workspace / "observations/index.jsonl"
+    before = protected.read_bytes()
+    (images / "index.jsonl").symlink_to(protected)
+    with pytest.raises(memory.MemoryError, match="outside allowed resource roots"):
+        memory._record_image(workspace, Image.new("RGB", (20, 20)), "crop", {})
+    assert protected.read_bytes() == before
+    assert not list(images.glob("*.png"))
+
+
+def test_allowed_root_cannot_be_redefined_by_a_symlink(workspace):
+    (workspace / "scratch/images").rmdir()
+    (workspace / "scratch").rmdir()
+    (workspace / "scratch").symlink_to(workspace / "scene", target_is_directory=True)
+    with pytest.raises(memory.MemoryError, match="outside allowed resource roots"):
+        memory._record_image(workspace, Image.new("RGB", (20, 20)), "crop", {})
+    assert not (workspace / "scene/images").exists()
+
+
 @pytest.mark.parametrize("mutation", ["coordinate", "duplicate", "missing_card", "dangling_evidence", "dangling_entity", "unknown_frame"])
 def test_invalid_current_memory_is_reported_and_never_falls_back(workspace, mutation):
     path = workspace / "memory/maps/L1.entities.json"
@@ -129,6 +174,31 @@ def test_cli_check_runs_without_repository_imports(workspace):
                             capture_output=True, cwd=workspace)
     assert result.returncode == 0, result.stderr + result.stdout
     assert json.loads(result.stdout)["ok"]
+
+
+@pytest.mark.parametrize("prefix", ["frame_", "rgb_", "map_", "crop_", "grid_"])
+def test_unquoted_evidence_ids_are_checked_even_beside_valid_quotes(workspace, prefix):
+    card = workspace / "memory/entities/O01.md"
+    card.write_text(f"# O01\n- 证据：`f_001` 与 {prefix}999999\n")
+    result = memory.check(workspace)
+    assert not result["ok"]
+    assert f"unknown evidence {prefix}999999" in result["errors"][0]
+
+
+@pytest.mark.parametrize("label", ["所属区域", "连接", "关系"])
+def test_explicit_custom_entity_references_are_checked_without_parsing_prose(workspace, label):
+    path = workspace / "memory/maps/L1.entities.json"
+    items = json.loads(path.read_text())
+    items.append({"id": "Door_new", "map_id": "map_L1", "type": "portal", "geometry": None})
+    put(path, items)
+    (workspace / "memory/entities/Door_new.md").write_text("# Door_new\n- 地图：map_L1\n- 证据：未知\n")
+    card = workspace / "memory/entities/O01.md"
+    card.write_text(f"# O01\n- {label}：`Door_new`，另一侧 unknown hallway 尚未确认\n")
+    assert memory.check(workspace)["ok"]
+    card.write_text(f"# O01\n- {label}：`Door_missing`，另一侧 unknown hallway 尚未确认\n")
+    result = memory.check(workspace)
+    assert not result["ok"]
+    assert "unknown entity reference Door_missing" in result["errors"][0]
 
 
 @pytest.fixture
