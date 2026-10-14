@@ -250,3 +250,60 @@ def test_jsonl_process_has_only_protocol_output_and_closes_cleanly(tmp_path):
     responses = [json.loads(line) for line in run.stdout.splitlines()]
     assert [r["id"] for r in responses] == ["init", "frame", "close"]
     assert all(r["ok"] for r in responses)
+
+
+def test_close_is_idempotent_without_rewriting_result(initialized, monkeypatch):
+    bridge, _, root = initialized
+    calls = {"save": 0, "close": 0}
+    save, close = bridge._save_result, bridge.env.close
+
+    def save_once():
+        calls["save"] += 1
+        save()
+
+    def close_once():
+        calls["close"] += 1
+        close()
+
+    monkeypatch.setattr(bridge, "_save_result", save_once)
+    monkeypatch.setattr(bridge.env, "close", close_once)
+    assert bridge.close() == {"closed": True}
+    original = (root / "private/result.json").read_bytes()
+    assert bridge.close() == {"closed": True}
+    assert calls == {"save": 1, "close": 1}
+    assert (root / "private/result.json").read_bytes() == original
+    assert json.loads(original)["truncated"] is True
+
+
+def test_atomic_result_replace_failure_preserves_old_bytes(tmp_path, monkeypatch):
+    path = tmp_path / "result.json"
+    MODULE._write(path, {"status": "earlier", "steps": 7})
+    original = path.read_bytes()
+
+    def fail_replace(source, destination):
+        assert Path(source).parent == path.parent
+        assert json.loads(Path(source).read_text())["steps"] == 8
+        raise OSError("simulated interrupted publication")
+
+    monkeypatch.setattr(MODULE.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="interrupted publication"):
+        MODULE._write(path, {"status": "new", "steps": 8})
+    assert path.read_bytes() == original
+    assert json.loads(path.read_text())["steps"] == 7
+    assert not list(tmp_path.glob(".result.json.*.tmp"))
+
+
+def test_close_still_releases_environment_if_result_write_fails(initialized, monkeypatch):
+    bridge, _, root = initialized
+    simulator = bridge.env.sim
+    original = (root / "private/result.json").read_bytes()
+
+    def fail_save():
+        raise OSError("result unavailable")
+
+    monkeypatch.setattr(bridge, "_save_result", fail_save)
+    with pytest.raises(OSError, match="result unavailable"):
+        bridge.close()
+    assert simulator.closed and bridge.closed
+    assert bridge.close() == {"closed": True}
+    assert (root / "private/result.json").read_bytes() == original

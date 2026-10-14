@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runCase, runFinishReason } from '../run.js';
+import { runCase, runFinishReason, savedEnvironmentResult } from '../run.js';
 import { DEFAULT_PYTHON } from '../runtime.js';
 
 test('a final successful request at the exact limit is not budget exhaustion', () => {
@@ -31,4 +31,16 @@ test('initialization failure leaves a result without contacting any model', asyn
     assert.match(result.error, /Python prepare/);
     assert.equal(result.requests, undefined);
   } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+test('an interrupted private result cannot prevent archiving the model trajectory', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'navcraft-private-result-'));
+  const file = join(directory, 'result.json');
+  try {
+    assert.equal(savedEnvironmentResult(file), undefined);
+    writeFileSync(file, '');
+    assert.match((savedEnvironmentResult(file) as any).error, /Unusable private/);
+    writeFileSync(file, '{"metrics":{"success":false}}');
+    assert.deepEqual(savedEnvironmentResult(file), { metrics: { success: false } });
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });

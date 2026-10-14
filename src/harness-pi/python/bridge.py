@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import shutil
 import sys
+import tempfile
 
 REPO = Path(__file__).resolve().parents[3]
 if str(REPO) not in sys.path:
@@ -25,7 +26,19 @@ from src.environment.tasks.base import TaskAdapter, TaskUpdate
 
 def _write(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+    content = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
+                                         prefix=f".{path.name}.", suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _append(path, value):
@@ -403,12 +416,16 @@ class Bridge:
                 "reason": self.env.task.reason, "steps": self.env.task.steps}
 
     def close(self):
-        if self.env is not None:
-            if not self.env.task.done:
-                self.env.finalize("bridge_closed")
-            self._save_result()
-            self.env.close()
+        if self.closed:
+            return {"closed": True}
         self.closed = True
+        if self.env is not None:
+            try:
+                if not self.env.task.done:
+                    self.env.finalize("bridge_closed")
+                self._save_result()
+            finally:
+                self.env.close()
         return {"closed": True}
 
 

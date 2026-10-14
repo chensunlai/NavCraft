@@ -44,7 +44,17 @@ export class EnvironmentBridge {
       this.child.stdin.write(JSON.stringify({ id, op, args }) + '\n');
     });
   }
-  async close() { if (this.exited) return; try { await this.request('close-session', 'close'); } finally { this.child.stdin.end(); this.child.kill(); } }
+  async close() {
+    if (this.exited) return;
+    try {
+      await this.request('close-session', 'close');
+      this.child.stdin.end();
+      if (!this.exited) await new Promise<void>(accept => {
+        const timer = setTimeout(() => { this.child.kill('SIGKILL'); accept(); }, 3000);
+        this.child.once('exit', () => { clearTimeout(timer); accept(); });
+      });
+    } finally { if (!this.exited) this.child.kill('SIGKILL'); }
+  }
 }
 export interface ToolState { done: boolean; goalChanged: boolean; current?: any; latestMap?: string; latestMapMetadata?: unknown; }
 export function navigationTools(repo: string, workspace: string, python: string, bridge: EnvironmentBridge | undefined, state: ToolState, allowFinish = true): ToolDefinition<any>[] {

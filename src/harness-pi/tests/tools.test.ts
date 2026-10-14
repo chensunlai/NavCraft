@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { navigationTools, type EnvironmentBridge, type ToolState } from '../tools.js';
+import { navigationTools, EnvironmentBridge, type ToolState } from '../tools.js';
 import { DEFAULT_PYTHON } from '../runtime.js';
 
 test('movement supersedes panorama as latest evidence and a goal switch blocks the rest of its turn', async () => {
@@ -29,4 +29,19 @@ test('movement supersedes panorama as latest evidence and a goal switch blocks t
     await assert.rejects(step.execute('step2',{actions:['move_forward']},undefined,undefined,{} as any),/Target changed/);
     assert.deepEqual(calls,['observe','step']);
   } finally {rmSync(ws,{recursive:true,force:true});}
+});
+
+test('bridge close waits for child cleanup after acknowledgment and remains safe to repeat', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'navcraft-bridge-close-'));
+  const repo = join(directory, 'repo'); const scripts = join(repo, 'src/harness-pi/python');
+  mkdirSync(scripts, { recursive: true });
+  const saved = join(directory, 'cleanup.json');
+  writeFileSync(join(scripts, 'bridge.py'), `import json,sys,time\nfrom pathlib import Path\nfor line in sys.stdin:\n r=json.loads(line)\n print(json.dumps({'id':r['id'],'ok':True,'data':{'closed':True}}),flush=True)\n if r['op']=='close':\n  time.sleep(0.1)\n  Path(${JSON.stringify(saved)}).write_text('{"complete":true}')\n  break\n`);
+  const bridge = new EnvironmentBridge(DEFAULT_PYTHON, repo, join(directory, 'private'));
+  try {
+    await bridge.close();
+    assert.deepEqual(JSON.parse(readFileSync(saved, 'utf8')), { complete: true });
+    await bridge.close();
+    await assert.rejects(bridge.request('after-exit', 'observe'), /already exited/);
+  } finally { await bridge.close(); rmSync(directory, { recursive: true, force: true }); }
 });

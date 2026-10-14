@@ -4,6 +4,12 @@ import { parse } from 'yaml';
 import { runtime, DEFAULT_PYTHON, imageContent, promptBounded } from './runtime.js';
 import { EnvironmentBridge, navigationTools, pythonRequest, type ToolState } from './tools.js';
 
+export function savedEnvironmentResult(file: string): unknown {
+  if (!existsSync(file)) return undefined;
+  try { return JSON.parse(readFileSync(file, 'utf8')); }
+  catch (error) { return { error: `Unusable private environment result: ${String(error)}` }; }
+}
+
 export function runFinishReason(state: ToolState, budgetExhausted: boolean, lastMessage: any, error?: string): string {
   if (state.done) return state.current?.reason ?? 'task_ended';
   if (budgetExhausted) return 'request_budget';
@@ -110,7 +116,7 @@ export async function runCase(repo: string, config: any, name: string, overrides
     r.trace.snapshot('final');
     const answer = r.session.getLastAssistantText(); const last: any = r.session.messages.at(-1);
     const result: any = { case: name, sample: job.sample, episode_id: job.episode_id, goal_limit: job.goal_limit, model: config.model, api: config.api, requests: r.budget.used, global_requests: r.budget.totalUsed, answer, error, finish_reason: finishReason, last_stop_reason: last?.stopReason, last_error: last?.errorMessage, terminated: !!state.current?.terminated, truncated: !!state.current?.truncated, software_only: false };
-    const envResult = join(privateDir, 'environment/result.json'); if (existsSync(envResult)) result.environment = JSON.parse(readFileSync(envResult, 'utf8'));
+    result.environment = savedEnvironmentResult(join(privateDir, 'environment/result.json'));
     if (name === 'query') {
       result.verification = await pythonRequest(python, join(repo, 'src/harness-pi/python/verify.py'), 'qa', { mode: 'qa', workspace, sample_dir: resolve(repo, job.sample), answer }).catch(e => ({ error: String(e) }));
     }
@@ -131,7 +137,7 @@ export async function runCase(repo: string, config: any, name: string, overrides
         terminated: !!state.current?.terminated, truncated: true, software_only: false };
       if (r) { partial.requests = r.budget.used; partial.global_requests = r.budget.totalUsed; r.trace.snapshot('failed'); }
       const envResult = join(privateDir, 'environment/result.json');
-      if (existsSync(envResult)) partial.environment = JSON.parse(readFileSync(envResult, 'utf8'));
+      partial.environment = savedEnvironmentResult(envResult);
       writeFileSync(join(dir, 'result.json'), JSON.stringify(partial, null, 2));
     }
     throw error;
