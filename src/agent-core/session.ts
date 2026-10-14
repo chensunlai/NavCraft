@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createAgentSession, createExtensionRuntime, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ResourceLoader, type ToolDefinition, type ExtensionFactory, type AgentSession } from '@earendil-works/pi-coding-agent';
 import type { ImageContent } from '@earendil-works/pi-ai';
@@ -8,7 +8,6 @@ import { RequestBudget } from './budget.js';
 import { createCheckpointCompaction, type PublicCheckpoint } from './compaction.js';
 import type { StreamFn } from '@earendil-works/pi-agent-core';
 
-export const DEFAULT_PYTHON = '/home2/chen/.local/anaconda3/envs/vln/bin/python';
 export function explicitLoader(systemPrompt: string): ResourceLoader {
   return {
     getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
@@ -31,6 +30,7 @@ export async function runtime(options: RuntimeOptions) {
   if (!auth?.baseUrl || !auth.model || !auth.apiKey) throw new Error('Missing model credentials');
   const requestedModel = auth.model;
   if (options.modelId) auth.model = options.modelId;
+  if (options.coding !== false && !options.python) throw new Error('Coding tools require an explicit Python executable');
   const trace = new Trace(join(options.directory, 'private'), options.workspace, [auth.apiKey], options.onEvent, options.tracePersist !== false, options.executionPolicy?.readWrite);
   const budget = new RequestBudget(options.budgetFile, options.maxRequests, trace, options.totalLimit);
   const agentDir = join(options.directory, 'private', 'pi'); mkdirSync(agentDir, { recursive: true });
@@ -38,7 +38,7 @@ export async function runtime(options: RuntimeOptions) {
   const api = options.api ?? 'openai-responses';
   modelRuntime.registerProvider('navcraft', { baseUrl: auth.baseUrl.endsWith('/v1') ? auth.baseUrl : auth.baseUrl + '/v1', api, apiKey: auth.apiKey, models: [{ id: auth.model, name: auth.model, reasoning: true, input: ['text', 'image'], contextWindow: 65536, maxTokens: 8192, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] });
   await modelRuntime.setRuntimeApiKey('navcraft', auth.apiKey);
-  const tools = [...(options.coding === false ? [] : createCodingTools(options.workspace, options.python ?? DEFAULT_PYTHON, options.executionPolicy)), ...(options.tools ?? [])];
+  const tools = [...(options.coding === false ? [] : createCodingTools(options.workspace, options.python!, options.executionPolicy)), ...(options.tools ?? [])];
   const settingsManager = SettingsManager.inMemory({ compaction: { enabled: options.compact ?? false, reserveTokens: 16384, keepRecentTokens: 20000 }, retry: { enabled: false }, cacheWarming: 'off' });
   let controlledStream!: StreamFn;
   const factories = [...(options.extensions ?? []), ...(options.checkpoint ? [createCheckpointCompaction((...args) => controlledStream(...args), options.checkpoint, trace, options.executionPolicy)] : [])];
@@ -66,9 +66,6 @@ export async function runtime(options: RuntimeOptions) {
   trace.emit('runtime_started', { pi: '1.2.0', requestedModel, model: auth.model, api, baseUrl: auth.baseUrl, thinking: 'high', maxTokens: 8192, contextWindow: 65536, tools: tools.map(t => t.name) });
   writeFileSync(join(options.directory, 'config.json'), JSON.stringify({ ...options, auth: options.auth ? '[PRIVATE]' : undefined, tools: tools.map(t => t.name), extensions: undefined, baseUrl: auth.baseUrl, model: auth.model }, null, 2));
   return { session, trace, budget, settingsManager, modelRuntime };
-}
-export function imageContent(workspace: string, refs: string[]): ImageContent[] {
-  return refs.map(ref => ({ type: 'image', data: readFileSync(join(workspace, ref)).toString('base64'), mimeType: ref.endsWith('.jpg') || ref.endsWith('.jpeg') ? 'image/jpeg' : 'image/png' }));
 }
 export async function promptBounded(session: AgentSession, text: string, images: ImageContent[], seconds: number) {
   const timer = setTimeout(() => { void session.abort(); }, seconds * 1000);

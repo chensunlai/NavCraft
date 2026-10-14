@@ -20,15 +20,25 @@ class CoreClient:
         self._stderr = (self.directory / "core.log").open("a")
         command = command or ["node", "src/agent-core/dist/server.js"]
         self.process = subprocess.Popen(command, cwd=self.repo, stdin=subprocess.PIPE,
-                                        stdout=subprocess.PIPE, stderr=self._stderr,
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                         text=True, bufsize=1)
         self._events = queue.Queue()
         self._responses = {}
         self._condition = threading.Condition()
         self._write_lock = threading.Lock()
         self._closed = False
+        self._secrets = ()
         self._reader = threading.Thread(target=self._read, daemon=True)
+        self._stderr_reader = threading.Thread(target=self._read_stderr, daemon=True)
         self._reader.start()
+        self._stderr_reader.start()
+
+    def _read_stderr(self):
+        for line in self.process.stderr:
+            for secret in self._secrets:
+                line = line.replace(secret, "[REDACTED]")
+            self._stderr.write(line)
+            self._stderr.flush()
 
     def _read(self):
         try:
@@ -50,6 +60,10 @@ class CoreClient:
     def request(self, op, args=None, timeout=30):
         request_id = uuid.uuid4().hex
         message = {"id": request_id, "op": op, "args": args or {}}
+        if op == "init":
+            secret = (message["args"].get("auth") or {}).get("apiKey")
+            if secret:
+                self._secrets += (secret,)
         with self._write_lock:
             if self.process.poll() is not None:
                 raise CoreError(f"Core exited with code {self.process.returncode}")
@@ -126,7 +140,9 @@ class CoreClient:
                     self.process.wait(timeout=5)
         finally:
             self._reader.join(timeout=1)
+            self._stderr_reader.join(timeout=1)
             self.process.stdout.close()
+            self.process.stderr.close()
             self._stderr.close()
 
     def drain_events(self, on_event):

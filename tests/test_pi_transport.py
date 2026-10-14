@@ -18,6 +18,28 @@ from src.harness import runner, worker
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_core_stderr_redacts_explicit_credentials(tmp_path):
+    fake = r'''
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if request['op'] == 'init':
+        print('fixture diagnostic ' + request['args']['auth']['apiKey'], file=sys.stderr, flush=True)
+    print(json.dumps({'id': request['id'], 'ok': True, 'data': {}}), flush=True)
+    if request['op'] == 'close':
+        break
+'''
+    client = transport.CoreClient(ROOT, tmp_path, command=[sys.executable, "-u", "-c", fake])
+    try:
+        client.request("init", {"auth": {"apiKey": "private-fixture-key"}})
+    finally:
+        client.close()
+    diagnostic = (tmp_path / "core.log").read_text()
+    assert "private-fixture-key" not in diagnostic
+    assert "[REDACTED]" in diagnostic
+    assert not client._stderr_reader.is_alive()
+
+
 FAKE_CORE = r'''
 import json, sys
 def emit(value):

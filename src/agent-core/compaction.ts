@@ -48,7 +48,7 @@ export function createCheckpointCompaction(
       });
       try {
         event.signal.throwIfAborted();
-        if (!ctx.model) throw new Error("No model selected for navigation compaction");
+        if (!ctx.model) throw new Error("No model selected for compaction");
         const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
         if (!auth.ok) throw new Error(auth.error);
         const stream: StreamFn = async (model, context, options) => {
@@ -59,10 +59,10 @@ export function createCheckpointCompaction(
             const response = await originalResult();
             trace.emit("checkpoint_summary_output", response);
             if (["aborted", "deferred", "pending"].includes(response.stopReason)) {
-              throw new Error(`Navigation summary did not complete: ${response.stopReason}`);
+              throw new Error(`Summary did not complete: ${response.stopReason}`);
             }
             if (response.stopReason === "stop" && !response.content.some((block) => block.type === "text" && block.text.trim())) {
-              throw new Error("Navigation summary returned empty text");
+              throw new Error("Summary returned empty text");
             }
             return response;
           };

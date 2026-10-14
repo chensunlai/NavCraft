@@ -189,3 +189,14 @@ def test_trace_preserves_core_sequence_and_file_metadata_without_retaining_conte
     assert rows[1]["data"] == metadata and rows[2]["data"] == tool
     assert secret not in raw and "[REDACTED]" in raw
     assert writer.calls == [{"name": "view_images", "isError": False}]
+
+
+@pytest.mark.parametrize("argument", ["--max-requests", "--seconds"])
+def test_cli_rejects_explicit_zero_limits(monkeypatch, argument):
+    from src.harness import __main__ as entry
+
+    monkeypatch.setattr(sys, "argv", ["harness", "run", "--case", "local", argument, "0"])
+    monkeypatch.setattr(entry, "load_config", lambda *_: {})
+    with pytest.raises(SystemExit) as error:
+        entry.main()
+    assert error.value.code == 2
