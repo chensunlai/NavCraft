@@ -33,7 +33,7 @@ def crossed_opening(before, after, segment, *, margin=0.03):
     return 0 < t <= 1 and inset < s < 1 - inset
 
 
-def local_event(labels, history):
+def local_event(labels, history, *, actions=None):
     """IA success includes the designated crossing and arrival, not just room ID."""
     if not history:
         return {"passed": False, "crossed": False, "arrival": False}
@@ -42,7 +42,7 @@ def local_event(labels, history):
                   for a, b in zip(points, points[1:]))
     arrival = distance(points[-1], labels["destination"]) <= labels.get("radius", 0.35)
     length = sum(distance(a, b) for a, b in zip(points, points[1:]))
-    actions = len(history) - 1
+    actions = len(history) - 1 if actions is None else actions
     passed = crossed and arrival and actions <= 24 and length <= 4.0001
     return {"passed": passed, "crossed": crossed, "arrival": arrival,
             "actions": actions, "travel_metres": length,

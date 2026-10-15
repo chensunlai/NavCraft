@@ -297,6 +297,46 @@ def _tool_messages_paired(messages):
     return not pending and calls.keys() == results, calls
 
 
+def _motion_replay(state):
+    """Split the private path at real action boundaries; old runs use endpoints."""
+    trajectory = state.get("trajectory", [])
+    points = state.get("motion_trajectory", trajectory)
+    if "motion_trajectory" not in state:
+        return points, [trajectory[i - 1:i + 1] for i in range(1, len(trajectory))], bool(points)
+    spans = state.get("motion_spans", [])
+    paths, cursor = [], 0
+    valid = bool(trajectory and points and points[0] == trajectory[0]
+                 and len(spans) == len(trajectory) - 1)
+    for index, span in enumerate(spans):
+        if (not isinstance(span, list) or len(span) != 2
+                or any(type(value) is not int for value in span)):
+            valid = False
+            break
+        start, end = span
+        if not 0 <= start <= end < len(points) or start != cursor or index + 1 >= len(trajectory):
+            valid = False
+            break
+        path = points[start:end + 1]
+        valid &= path[0] == trajectory[index] and path[-1] == trajectory[index + 1]
+        paths.append(path)
+        cursor = end
+    valid &= cursor == len(points) - 1 and len(paths) == len(trajectory) - 1
+    metrics = state.get("metrics", {})
+    if "path_length" in metrics:
+        length = sum(math.dist(a, b) for a, b in zip(points, points[1:]))
+        valid &= math.isclose(length, metrics["path_length"], abs_tol=1e-6)
+    valid &= metrics.get("steps", len(trajectory) - 1) == len(trajectory) - 1
+    return points, paths, bool(valid)
+
+
+def _local_replay_event(labels, state):
+    from src.dataset.atomic.geometry import local_event
+
+    points = state.get("motion_trajectory", state.get("trajectory", []))
+    actions = state.get("metrics", {}).get("steps", len(state.get("trajectory", [])) - 1)
+    return local_event(labels, [{"pose": {"position": point}} for point in points], actions=actions)
+
+
 def verify_moving_compaction(*, workspace, sample_dir, trace_dir, environment_private_dir,
                              diagnostic=None, finish_reason=None, cleanup_error=None,
                              runtime_error=None, core_close=None, **unused):
@@ -306,8 +346,6 @@ def verify_moving_compaction(*, workspace, sample_dir, trace_dir, environment_pr
     accuracy under a naturally exhausted 100k context. Spatial judgment semantics
     and whether uncertainty was preserved still require reading the cited evidence.
     """
-    from src.dataset.atomic.geometry import local_event
-
     workspace, sample_dir, trace_dir, environment_private_dir = map(
         Path, (workspace, sample_dir, trace_dir, environment_private_dir))
     diagnostic = diagnostic if diagnostic is not None else _json(trace_dir / "moving_compaction.json")
@@ -349,11 +387,15 @@ def verify_moving_compaction(*, workspace, sample_dir, trace_dir, environment_pr
     labels = _json(sample_dir / "private/labels.json")
     final = _json(environment_private_dir / "result.json")
     trajectory = final.get("trajectory", [])
-    history = lambda points: [{"pose": {"position": point}} for point in points]
-    event = local_event(labels, history(trajectory))
-    prefix = phase.get("state", {}).get("trajectory", [])
-    checks["prefix_matches_final_replay"] = bool(prefix and trajectory[:len(prefix)] == prefix)
-    checks["goal_pending_before_compression"] = bool(prefix and not local_event(labels, history(prefix))["passed"]
+    motion, motion_paths, motion_valid = _motion_replay(final)
+    event = _local_replay_event(labels, final)
+    phase_state = phase.get("state", {})
+    prefix = phase_state.get("trajectory", [])
+    prefix_motion, _, prefix_valid = _motion_replay(phase_state)
+    checks["motion_path_consistent"] = motion_valid and prefix_valid
+    checks["prefix_matches_final_replay"] = bool(prefix and trajectory[:len(prefix)] == prefix
+        and motion[:len(prefix_motion)] == prefix_motion)
+    checks["goal_pending_before_compression"] = bool(prefix and not _local_replay_event(labels, phase_state)["passed"]
                                                    and not phase["state"].get("terminated"))
     checks["local_event_complete"] = bool(event["passed"] and final.get("terminated")
                                          and final.get("metrics", {}).get("reason") == "local_event_complete")
@@ -403,6 +445,9 @@ def verify_moving_compaction(*, workspace, sample_dir, trace_dir, environment_pr
             authentic = False
             continue
         actual = math.dist(before["pose"]["position"], after["pose"]["position"])
+        action_index = action["step"] - 1
+        path = motion_paths[action_index] if 0 <= action_index < len(motion_paths) else []
+        travel = sum(math.dist(a, b) for a, b in zip(path, path[1:]))
         frame_id = action["after_frame"]
         ref = public.get(frame_id, {}).get("path")
         original = environment_private_dir / "environment/observations" / f"rgb_{frame_id.removeprefix('frame_')}.png"
@@ -411,20 +456,23 @@ def verify_moving_compaction(*, workspace, sample_dir, trace_dir, environment_pr
                           and before.get("step") == action["step"] - 1
                           and after.get("step") == action["step"]
                           and trajectory[action["step"] - 1] == before["pose"]["position"]
-                          and trajectory[action["step"]] == after["pose"]["position"])
+                          and trajectory[action["step"]] == after["pose"]["position"]
+                          and bool(path) and path[0] == before["pose"]["position"]
+                          and path[-1] == after["pose"]["position"])
         rgb_ok = bool(rgb.is_file() and original.is_file() and rgb.read_bytes() == original.read_bytes())
         authentic &= rgb_ok and replay_matches
         movement.append({"step": action["step"], "action": action["action"], "frame": frame_id,
                          "trace_index": index, "displacement_m": actual, "rgb_authentic": rgb_ok,
+                         "travel_m": travel,
                          "phase": "after" if index > compaction else "before"})
     checks["motion_records_authentic"] = bool(movement and authentic
         and [action["step"] for action in actions] == list(range(1, len(trajectory))))
-    travel_before = sum(item["displacement_m"] for item in movement if item["phase"] == "before")
-    travel_after = sum(item["displacement_m"] for item in movement if item["phase"] == "after")
+    travel_before = sum(item["travel_m"] for item in movement if item["phase"] == "before")
+    travel_after = sum(item["travel_m"] for item in movement if item["phase"] == "after")
     checks["translation_before_and_after"] = travel_before > .05 and travel_after > .05
     checks["compression_at_pending_goal"] = bool(diagnostic.get("at_compaction")
         and not diagnostic["at_compaction"]["state"].get("terminated")
-        and not local_event(labels, history(diagnostic["at_compaction"]["state"]["trajectory"]))["passed"])
+        and not _local_replay_event(labels, diagnostic["at_compaction"]["state"])["passed"])
 
     note, note_hash = phase.get("note", ""), phase.get("note_sha256")
     latest_frame = gate.get("current_frame")

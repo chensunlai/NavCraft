@@ -91,7 +91,8 @@ class SequenceSession(NavigationSession):
         value.update(actions={'allowed': list(self.env.movement_actions),
                               'forward_metres': self.config['forward_step'],
                               'translation_metres': self.config['forward_step'],
-                              'turn_degrees': self.config['turn_angle'], 'look_degrees': self.config['turn_angle']},
+                              'turn_degrees': self.config['turn_angle'], 'look_degrees': self.config['turn_angle'],
+                              'max_auto_yaw_degrees': 15},
                      round_number=index + 1, relocated=bool(spec.get('teleport')))
         self.boundaries.append({'round': index + 1, 'before': before, 'after': transition.observation.pose,
                                 'teleport': spec.get('teleport'), 'frame': transition.observation.frame_id})
@@ -120,12 +121,12 @@ class SequenceSession(NavigationSession):
         spec, task = self.scenario['rounds'][self.round_index], self.env.task
         if not task.done:
             self.env.finalize(reason)
-        route = score_route(spec, task.trajectory, {r['id']: r for r in self.scenario['private_rooms']})
+        route = score_route(spec, task.motion_trajectory, {r['id']: r for r in self.scenario['private_rooms']})
         result = task.private_state()
         if spec['kind'] == 'explore':
             living = next(r for r in self.scenario['private_rooms'] if r['id'] == spec['scope_room'])
             result['exploration'] = {'scope_maintained': all(inside([p[0], -p[2]], living['polygon'])
-                                                           for p in task.trajectory),
+                                                           for p in task.motion_trajectory),
                                      'navigation_success': None, 'manual_memory_review_required': True}
         else:
             result['independent'] = {'arrival': bool(task.stopped and task.distance < task.threshold),

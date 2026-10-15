@@ -37,9 +37,13 @@ python -m src.harness run --case objnav --max-requests 32 --seconds 1800
 
 查询任务只读取固定资料；局部 IA 按真实事件结束；完整导航需要 `nav_finish`，GOAT 切换目标后重新决策。模型自主决定工具顺序，程序不自动定位或规划。
 
-`nav_step` 支持 `move_forward`、`move_left`、`move_right`、`move_backward` 四个机体相对方向的平移动作，以及 `turn_left`／`turn_right`；允许俯仰的任务还提供 `look_up`／`look_down`。四个平移动作共用配置 `forward_step`（默认 0.25 m），公开状态用 `translation_metres` 声明，并保留原 `forward_metres` 字段。左右、后退保持机体朝向和相机俯仰；碰撞可导致部分位移并中断批次，动作数与实际路程照常计入任务预算。例如：`nav_step({"actions":["move_left","move_backward"]})`。扩展动作集合与先前只有前进／转向的实验应分开记录。
+`nav_step` 支持 `move_forward`、`move_left`、`move_right`、`move_backward` 四个机体相对方向的平移动作，以及 `turn_left`／`turn_right`；允许俯仰的任务还提供 `look_up`／`look_down`。四个平移动作共用配置 `forward_step`（默认 0.25 m），公开状态用 `translation_metres` 声明，并保留原 `forward_metres` 字段。平移保持相机俯仰，接触边界时身体可轻微转向；动作数与实际路程计入任务预算。例如：`nav_step({"actions":["move_left","move_backward"]})`。扩展动作集合与先前只有前进／转向的实验应分开记录。
 
 2026-10-15 平移验收：Python 全量 248 项通过；真实 Qa Habitat 场景检查两个机体朝向下的四方向位移、俯仰保持及三种新动作的碰撞，共 11 项通过，无模型请求。[验收记录](../../cache/harness-pi/translation-actions-20261015/result.json)
+
+四种平移统一采用滑移与轻微转向，不提供关闭开关，也不需要额外环境配置。按不超过 5 cm 的微步执行，每微步自动转向至多 3°、每原子动作累计至多 15°；跨角时仅细分当前微步，不搜索路线。动作回执保留 `collision`，提供 `blocked` 和左转为正的 `auto_yaw_delta_degrees`，有进展的接触继续执行，真正受阻才中断批次。工具参数不变。
+
+每个原子动作仍只计一次动作预算、返回一次动作后 RGB；私有 `motion_trajectory`、`motion_spans` 和 `environment/private/motions.jsonl` 保存真实微步路径与转向，路程和穿门按该路径核验，nDTW 沿用原子动作端点。绝对位姿与微步样本不进入模型回执。无模型重放命令：`python scripts/replay_adaptive_motion.py --gpu 3`；图文结果见[自适应运动重放](../../outputs/adaptive-motion-20261015/index.html)。
 
 工作空间为 `scene/observations/memory/scratch`，前两者只读、后两者可写。私有评分、Core 会话、请求账本和 audit 放在相邻 `private/`，模型不可访问。每次运行有独立请求账本，本轮无全局请求总限额；单 episode 限额包含摘要及失败尝试。
 

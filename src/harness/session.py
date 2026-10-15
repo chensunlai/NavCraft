@@ -62,10 +62,11 @@ class AtomicTaskAdapter(TaskAdapter):
     def event(self):
         from src.dataset.atomic.geometry import local_event
 
-        return local_event(self.labels, [{"pose": {"position": p}} for p in self.trajectory])
+        return local_event(self.labels, [{"pose": {"position": p}} for p in self.motion_trajectory],
+                           actions=self.steps)
 
-    def on_step(self, point, distance):
-        self._count(point, distance)
+    def on_step(self, point, distance, *, motion_path=None):
+        self._count(point, distance, motion_path=motion_path)
         if not self.mapping and self.event()["passed"]:
             self.terminated, self.reason = True, "local_event_complete"
         elif self.steps >= self.max_steps:
@@ -87,6 +88,8 @@ class AtomicTaskAdapter(TaskAdapter):
 
     def private_state(self):
         return {"metrics": self.metrics(), "trajectory": self.trajectory,
+                "motion_trajectory": self.motion_trajectory,
+                "motion_spans": self.motion_spans,
                 "terminated": self.terminated, "truncated": self.truncated}
 
 
@@ -245,7 +248,8 @@ class NavigationSession:
                                  "forward_metres": self.config.get("forward_step", .25),
                                  "translation_metres": self.config.get("forward_step", .25),
                                  "turn_degrees": self.config.get("turn_angle", 15),
-                                 "look_degrees": self.config.get("turn_angle", 15)}
+                                 "look_degrees": self.config.get("turn_angle", 15),
+                                 "max_auto_yaw_degrees": 15}
             result["mode"] = self.mode
             result["episode_id"] = episode.id
             if scene_archive:
@@ -356,11 +360,6 @@ class NavigationSession:
             if self.cancel_event is not None and self.cancel_event.is_set():
                 interruption = "cancelled"
                 break
-            if self.mode in {"atomic_ia", "mapping"} and action in TRANSLATION_ACTIONS:
-                if self.env.task.path_length + self.config.get("forward_step", .25) > 4.0001:
-                    self.env.finalize("travel_budget")
-                    interruption = "travel_budget"
-                    break
             before = self.env.observe().frame_id
             self.execution_uncertain = True
             transition = self.env.step(action)
@@ -368,6 +367,8 @@ class NavigationSession:
             result = self._transition(transition)
             event = {"step": self.env.task.steps, "action": action,
                      "collision": bool(transition.feedback.get("collision", False)),
+                     "blocked": bool(transition.feedback.get("blocked", False)),
+                     "auto_yaw_delta_degrees": transition.feedback.get("auto_yaw_delta_degrees", 0.0),
                      "before_frame": before, "after_frame": result["observation"]["id"],
                      "goal_changed": transition.goal_changed}
             _append(self.workspace / "observations/actions.jsonl", event)
@@ -378,8 +379,8 @@ class NavigationSession:
             if transition.goal_changed:
                 interruption = "goal_changed"
                 break
-            if event["collision"]:
-                interruption = "collision"
+            if event["blocked"]:
+                interruption = "blocked"
                 break
         if not executed:
             from src.environment.base import Transition

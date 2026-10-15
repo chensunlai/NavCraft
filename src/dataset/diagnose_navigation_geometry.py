@@ -102,11 +102,11 @@ def native_action_probe(simulator, targets, best):
                 }
             ]
             for _ in range(3):
-                collided = simulator.step("move_forward")
+                motion = simulator.step("move_forward")
                 records.append(
                     {
                         "position": simulator.position(),
-                        "collision": collided,
+                        **motion.public_dict(),
                         "distance_to_original_goals_m": simulator.distance(targets),
                     }
                 )

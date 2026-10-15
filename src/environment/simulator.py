@@ -12,7 +12,7 @@ from PIL import Image
 from habitat_sim.utils.common import quat_from_coeffs, quat_to_coeffs
 import quaternion
 
-from src.environment.base import Observation, TRANSLATION_ACTIONS
+from src.environment.base import MotionResult, Observation, TRANSLATION_ACTIONS
 
 
 @dataclass(frozen=True)
@@ -26,7 +26,6 @@ class SensorConfig:
     navmesh_cell_height: float = 0.2
     forward_step: float = 0.25
     turn_angle: float = 15
-    allow_sliding: bool = True
     depth: bool = True
     seed: int = 0
 
@@ -85,7 +84,7 @@ class HabitatSimulator:
         native = habitat_sim.SimulatorConfiguration()
         native.scene_id = str(scene.resolve())
         native.gpu_device_id = int(config.get("gpu", 2))
-        native.allow_sliding = self.config.allow_sliding
+        native.allow_sliding = True
         agent = habitat_sim.agent.AgentConfiguration()
         agent.height, agent.radius = self.config.agent_height, self.config.agent_radius
         sensors = []
@@ -162,7 +161,91 @@ class HabitatSimulator:
         self.sim.pathfinder.find_path(query)
         return float(query.geodesic_distance)
 
-    def step(self, action: str) -> bool:
+    def _motion_sample(self, *, collision=False, auto_yaw=0.0) -> dict:
+        state = self.agent.get_state()
+        return {"position": [float(v) for v in state.position],
+                "rotation_xyzw": [float(v) for v in quat_to_coeffs(state.rotation)],
+                "collision": bool(collision), "auto_yaw_delta_degrees": float(auto_yaw)}
+
+    def _slide_projection(self, start, direction, amount, pending):
+        """Subdivide a corner-cutting slide; never choose another direction."""
+        pathfinder = self.sim.pathfinder
+        while True:
+            end = np.asarray(self.agent.controls.move_filter_fn(start, start + direction * amount))
+            # The reverse check avoids false rejection of floating-point edge tangents.
+            forward = np.asarray(pathfinder.try_step_no_sliding(start, end))
+            reverse = np.asarray(pathfinder.try_step_no_sliding(end, start))
+            error = min(np.linalg.norm((forward - end)[[0, 2]]),
+                        np.linalg.norm((reverse - start)[[0, 2]]))
+            if error <= .0001:
+                return amount, end
+            # Edge tangents can fail both casts after float rounding. Test a
+            # parallel line 20 micrometres to either side; do not move the agent.
+            delta = end - start
+            side = np.asarray([-delta[2], 0, delta[0]])
+            length = float(np.linalg.norm(side))
+            if length > 1e-8:
+                side *= .00002 / length
+                for offset in (side, -side):
+                    cast = np.asarray(pathfinder.try_step_no_sliding(start + offset, end + offset))
+                    if np.linalg.norm((cast - end - offset)[[0, 2]]) <= .00001:
+                        return amount, end
+            if amount <= .00005:
+                return amount, None
+            amount /= 2
+            pending.append(amount)
+
+    def _adaptive_translation(self, action: str) -> MotionResult:
+        count = math.ceil(self.config.forward_step / .05)
+        micro_step = self.config.forward_step / count
+        local = {"move_forward": [0, 0, -1], "move_backward": [0, 0, 1],
+                 "move_left": [-1, 0, 0], "move_right": [1, 0, 0]}[action]
+        samples = [self._motion_sample()]
+        collision, blocked, auto_yaw = False, False, 0.0
+        pending = [micro_step] * count
+        while pending:
+            state = self.agent.get_state()
+            start = np.asarray(state.position).copy()
+            direction = quaternion.as_rotation_matrix(state.rotation) @ np.asarray(local)
+            amount, projected = self._slide_projection(start, direction, pending.pop(), pending)
+            if projected is None:
+                blocked = True
+                break
+            requested = start + direction * amount
+            controls = self.agent.controls
+            original_filter = controls.move_filter_fn
+            try:
+                controls.move_filter_fn = lambda _start, _end: mn.Vector3(projected)
+                hit = controls.action(self.agent.scene_node, action,
+                                      habitat_sim.agent.ActuationSpec(amount=amount))
+            finally:
+                controls.move_filter_fn = original_filter
+            collision |= bool(hit)
+            end = np.asarray(self.agent.get_state().position)
+            delta = end - start
+            travel = float(np.linalg.norm(delta[[0, 2]]))
+            blocked = travel < min(.001, amount * .1)
+            if not blocked and np.linalg.norm((end - requested)[[0, 2]]) > .001:
+                actual_yaw = math.atan2(-float(delta[0]), -float(delta[2]))
+                requested_yaw = math.atan2(-float(direction[0]), -float(direction[2]))
+                error = (math.degrees(actual_yaw - requested_yaw) + 180) % 360 - 180
+                turn_limit = 3 * amount / micro_step
+                adjusted = float(np.clip(auto_yaw + np.clip(error, -turn_limit, turn_limit), -15, 15))
+                self.agent.scene_node.rotate_y(mn.Rad(math.radians(adjusted - auto_yaw)))
+                auto_yaw = adjusted
+            samples.append(self._motion_sample(collision=hit, auto_yaw=auto_yaw))
+            if blocked:
+                break
+        displacement = np.asarray(samples[-1]["position"]) - np.asarray(samples[0]["position"])
+        blocked |= float(np.linalg.norm(displacement[[0, 2]])) < self.config.forward_step * .08
+        # Match one native atomic action's world tick, without rendering each microstep.
+        self.sim.step_physics(1.0 / 60.0)
+        return MotionResult(collision, bool(blocked), auto_yaw, samples)
+
+    def step(self, action: str) -> MotionResult:
+        if action in TRANSLATION_ACTIONS:
+            return self._adaptive_translation(action)
+        before = self._motion_sample()
         controls = self.agent.controls
         movement_filter = controls.move_filter_fn
         try:
@@ -171,7 +254,8 @@ class HabitatSimulator:
             observations = self.sim.step(action)
         finally:
             controls.move_filter_fn = movement_filter
-        return bool(observations.get("collided", False))
+        collision = bool(observations.get("collided", False))
+        return MotionResult(collision, collision, samples=[before, self._motion_sample(collision=collision)])
 
     def pose(self) -> dict:
         state = self.agent.get_state()

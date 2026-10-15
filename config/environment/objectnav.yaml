@@ -12,6 +12,5 @@ environment:
   agent_height: 0.88
   agent_radius: 0.18
   turn_angle: 30
-  allow_sliding: false
   egl_vendor_file: /usr/share/glvnd/egl_vendor.d/10_nvidia.json
   startup_timeout_seconds: 120

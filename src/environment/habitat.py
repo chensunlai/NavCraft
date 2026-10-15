@@ -1,11 +1,13 @@
 """Navigation environment lifecycle with a lazily imported Habitat renderer."""
 
 from pathlib import Path
+import json
 
 from src.common.io import write_json
 from src.common.register import env_registry
 from src.environment.base import (
     NavigationInputError,
+    MotionResult,
     Observation,
     PublicTask,
     Transition,
@@ -110,32 +112,39 @@ class HabitatEnvironment:
             raise NavigationInputError(
                 f"Allowed movement actions: {self.movement_actions}; use nav_finish to stop"
             )
-        collision = self.sim.step(action)
+        motion = self.sim.step(action)
         update = self.task.on_step(
-            self.sim.position(), self.sim.distance(self.task.goal["positions"])
+            self.sim.position(), self.sim.distance(self.task.goal["positions"]),
+            motion_path=motion.positions or None,
         )
-        return self._after_action(action, collision, update)
+        return self._after_action(action, motion, update)
 
     def finish_goal(self) -> Transition:
         self._require_running()
         update = self.task.finish(
             self.sim.position(), self.sim.distance(self.task.goal["positions"])
         )
-        return self._after_action("stop", False, update)
+        return self._after_action("stop", MotionResult(), update)
 
     def _after_action(
-        self, action: str, collision: bool, update: TaskUpdate
+        self, action: str, motion: MotionResult, update: TaskUpdate
     ) -> Transition:
         if update.goal_changed and not self.task.done:
             self.task.set_goal_distance(self.sim.distance(self.task.goal["positions"]))
+        before_frame = self.observation.frame_id
         self.observation = self._capture()
         self.public_task = self._public_task()
         self._save()
+        with (self.workspace / "private/motions.jsonl").open("a") as stream:
+            stream.write(json.dumps({"episode_id": self.task.episode.id,
+                                     "step": self.task.steps, "action": action,
+                                     "before_frame": before_frame, "after_frame": self.observation.frame_id,
+                                     **motion.public_dict(), "samples": motion.samples}) + "\n")
         return self._transition(
             update,
             {
                 "action": action,
-                "collision": bool(collision),
+                **motion.public_dict(),
                 "steps": self.task.steps,
                 "remaining_total_actions": max(
                     0, self.task.max_steps - self.task.steps

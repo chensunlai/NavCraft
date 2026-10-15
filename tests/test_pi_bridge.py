@@ -7,6 +7,7 @@ import pytest
 
 from src.harness import session as MODULE
 from src.harness.session import NavigationSession as Bridge
+from src.environment.base import MotionResult
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -171,11 +172,11 @@ def test_finish_precheck_and_failed_publication_keep_correct_uncertainty(initial
 
 
 @pytest.mark.parametrize("action", ["move_forward", "move_left", "move_right", "move_backward"])
-def test_collision_interrupts_batch_and_records_actual_actions(initialized, monkeypatch, action):
+def test_blocked_interrupts_batch_and_records_actual_actions(initialized, monkeypatch, action):
     bridge, _, root = initialized
-    monkeypatch.setattr(bridge.env.sim, "step", lambda action: True)
+    monkeypatch.setattr(bridge.env.sim, "step", lambda action: MotionResult(collision=True, blocked=True))
     result = call(bridge, "collision", "step", actions=[action] * 6)
-    assert result["interruption"] == "collision"
+    assert result["interruption"] == "blocked"
     assert len(result["executed_actions"]) == 1 and result["steps"] == 1
     actions = [json.loads(line) for line in (root / "workspace/observations/actions.jsonl").read_text().splitlines()]
     assert actions[0]["collision"] and actions[0]["before_frame"] != actions[0]["after_frame"]
@@ -283,9 +284,10 @@ def test_atomic_translation_respects_four_metre_budget(tmp_path, mapping, action
         call(bridge, "second", "step", actions=[action] * 6)
         result = call(bridge, "third", "step", actions=[action] * 6)
         assert result["truncated"] and result["interruption"] == "travel_budget"
-        assert len(result["executed_actions"]) == 1
-        assert bridge.env.task.steps == 13
-        assert bridge.env.task.path_length == pytest.approx(3.9)
+        assert len(result["executed_actions"]) == 2
+        assert bridge.env.task.steps == 14
+        assert bridge.env.task.path_length == pytest.approx(4.2)
+        assert not result.get("local_event_complete", False)
     finally:
         bridge.close()
 

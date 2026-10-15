@@ -47,6 +47,8 @@ class TaskAdapter:
         self.goal_index = self.steps = self.goal_steps = 0
         self.path_length = self.goal_path_length = 0.0
         self.trajectory = [list(point)]
+        self.motion_trajectory = [list(point)]
+        self.motion_spans = []
         self.subtasks = []
         self.terminated = self.truncated = self.stopped = False
         self.reason = None
@@ -72,20 +74,32 @@ class TaskAdapter:
     def set_goal_distance(self, distance: float) -> None:
         self.shortest = self.distance = self.minimum_distance = distance
 
-    def _count(self, point: list[float], distance: float) -> None:
+    def _count(
+        self, point: list[float], distance: float, *, motion_path=None
+    ) -> None:
         if self.done:
             raise NavigationInputError("Episode is already finished")
         self.steps += 1
         self.goal_steps += 1
-        travel = math.dist(point, self.trajectory[-1])
+        path = (
+            motion_path
+            if motion_path is not None
+            else [self.trajectory[-1], point]
+        )
+        travel = sum(math.dist(a, b) for a, b in zip(path, path[1:]))
         self.path_length += travel
         self.goal_path_length += travel
         self.trajectory.append(list(point))
+        motion_start = len(self.motion_trajectory) - 1
+        self.motion_trajectory.extend(list(position) for position in path[1:])
+        self.motion_spans.append([motion_start, len(self.motion_trajectory) - 1])
         self.distance = distance
         self.minimum_distance = min(self.minimum_distance, distance)
 
-    def on_step(self, point: list[float], distance: float) -> TaskUpdate:
-        self._count(point, distance)
+    def on_step(
+        self, point: list[float], distance: float, *, motion_path=None
+    ) -> TaskUpdate:
+        self._count(point, distance, motion_path=motion_path)
         if self.steps >= self.max_steps:
             self._record_goal(stopped=False, reason="max_steps")
             self.truncated, self.reason = True, "max_steps"
@@ -157,8 +171,8 @@ class TaskAdapter:
                 hit = next(
                     (
                         index
-                        for index in range(cursor, len(self.trajectory))
-                        if math.dist(self.trajectory[index], check["position"])
+                        for index in range(cursor, len(self.motion_trajectory))
+                        if math.dist(self.motion_trajectory[index], check["position"])
                         <= check.get("radius", 1.5)
                     ),
                     None,
@@ -211,6 +225,8 @@ class TaskAdapter:
             "metrics": self.metrics(),
             "subtasks": results,
             "trajectory": self.trajectory,
+            "motion_trajectory": self.motion_trajectory,
+            "motion_spans": self.motion_spans,
             "goal_index": self.goal_index,
             "terminated": self.terminated,
             "truncated": self.truncated,

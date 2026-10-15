@@ -7,7 +7,7 @@ import numpy as np
 from PIL import Image
 
 from src.common.register import env_registry
-from src.environment.base import Observation, TRANSLATION_ACTIONS
+from src.environment.base import MotionResult, Observation, TRANSLATION_ACTIONS
 from src.environment.habitat import HabitatEnvironment
 
 
@@ -36,14 +36,25 @@ class FakeSimulator:
             (math.dist(self.position(), target) for target in targets), default=math.inf
         )
 
-    def step(self, action: str) -> bool:
+    def _motion_sample(self) -> dict:
+        return {"position": self.position(),
+                "rotation_xyzw": [0, math.sin(self.yaw / 2), 0, math.cos(self.yaw / 2)],
+                "collision": False, "auto_yaw_delta_degrees": 0.0}
+
+    def step(self, action: str) -> MotionResult:
+        samples = [self._motion_sample()]
         angle = math.radians(self.config.get("turn_angle", 30))
         if action in TRANSLATION_ACTIONS:
             forward = np.array([-math.sin(self.yaw), 0, -math.cos(self.yaw)])
             right = np.array([math.cos(self.yaw), 0, -math.sin(self.yaw)])
             direction = {"move_forward": forward, "move_backward": -forward,
                          "move_left": -right, "move_right": right}[action]
-            self.point += self.config.get("forward_step", 0.25) * direction
+            amount = self.config.get("forward_step", 0.25)
+            count = math.ceil(amount / .05)
+            start = self.point.copy()
+            for index in range(1, count + 1):
+                self.point = start + amount * index / count * direction
+                samples.append(self._motion_sample())
         elif action == "turn_left":
             self.yaw += angle
         elif action == "turn_right":
@@ -52,7 +63,9 @@ class FakeSimulator:
             self.pitch = min(math.pi / 2, self.pitch + angle)
         elif action == "look_down":
             self.pitch = max(-math.pi / 2, self.pitch - angle)
-        return False
+        if action not in TRANSLATION_ACTIONS:
+            samples.append(self._motion_sample())
+        return MotionResult(samples=samples)
 
     def capture(self, workspace: Path, frame: int) -> Observation:
         directory = workspace / "observations"

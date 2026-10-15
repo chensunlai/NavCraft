@@ -31,7 +31,7 @@ def snapshot(session, workspace, checkpoint):
 def ready(phase):
     """A frame ID or a rotation alone cannot satisfy the pre-movement gate."""
     state = phase["state"]
-    points = state.get("trajectory", [])
+    points = state.get("motion_trajectory", state.get("trajectory", []))
     travel = sum(math.dist(a, b) for a, b in zip(points, points[1:]))
     current = phase.get("checkpoint", {}).get("metadata", {}).get("current", {})
     candidates = ([current["observation"]] if current.get("observation") else current.get("views", []))

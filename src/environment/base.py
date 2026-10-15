@@ -1,11 +1,29 @@
 """Public navigation contracts; evaluator annotations never enter transitions."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
 AtomicAction = str
 TRANSLATION_ACTIONS = ("move_forward", "move_left", "move_right", "move_backward")
+
+
+@dataclass(frozen=True)
+class MotionResult:
+    """One atomic action; absolute microstep states stay in private records."""
+
+    collision: bool = False
+    blocked: bool = False
+    auto_yaw_delta_degrees: float = 0.0
+    samples: list[dict] = field(default_factory=list)
+
+    @property
+    def positions(self) -> list[list[float]]:
+        return [sample["position"] for sample in self.samples]
+
+    def public_dict(self) -> dict:
+        return {"collision": self.collision, "blocked": self.blocked,
+                "auto_yaw_delta_degrees": self.auto_yaw_delta_degrees}
 
 
 @dataclass(frozen=True)
