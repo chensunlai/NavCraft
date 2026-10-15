@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from src.bench.goal_viewpoints import horizontal_distance, semantic_geometry, validate_grid
+from src.dataset.qa_campaign.viewpoints import horizontal_distance, semantic_geometry, validate_grid
 
 
 def semantic_fixture(tmp_path, *, normalized=False, transformed=False, sparse=False):

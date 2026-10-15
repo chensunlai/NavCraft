@@ -235,7 +235,7 @@ GOAT 第二目标还有**描述与实例证据不一致的疑点**：原目标�
 
 **仍需保留的限制：**第 6 轮在 R06 边界外仍满足 1 m；三个自建指令的 3 m 接受区域均延伸到目标房间外。因此当前距离分数不保证进入房间，也不实时验证 STOP 画面可见性。采样点可距实例边界 1 m，再加成功点容差，不能解释成“最终距离物体表面 1 m”；餐桌途经的 1.5 m 同样是到视点的距离。ObjectNav／GOAT 的源视点逐点核对无丢失，但部分 GOAT 描述与场景解释有疑义，已保留原文并标记，未擅自改目标。图册的覆盖范围只限这些 Qa 开发任务。
 
-正式私有目标材料：`data/datasets/navcraft/qa_campaign_goals_v2.json`；新清单由 `src.bench.astra_campaign` 默认读取，经 `goal_catalog` 核对实例、来源、环境参数和可见性回执。缺材料会报错。旧运行目录与评分不覆盖；完整命令见 [Harness 说明](../src/harness/README.md#连续任务案例)。
+正式私有目标材料：`data/datasets/navcraft/qa_campaign_goals_v2.json`。离线准备代码集中在 `src/dataset/qa_campaign/`：`viewpoints` 生成视点，`goals` 核对实例、来源、环境参数和可见性回执，`build` 产出 `data/datasets/navcraft/qa_campaign_v2/` 下的完整 `scenario.json` 与 `catalog.json`。运行和 bench 复评只加载已准备的版本，缺数据直接报错，不隐式生成或修订目标。图册由同目录的 `render_audit` 显式制作。旧运行目录与评分不覆盖；完整命令见 [Harness 说明](../src/harness/README.md#连续任务案例)。
 
 ## 正式比较要求
 

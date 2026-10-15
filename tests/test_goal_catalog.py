@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from src.bench import goal_catalog as module
+from src.dataset.qa_campaign import goals as module
 
 
 def write_json(path, value):

@@ -1,6 +1,7 @@
-"""Private scenario preparation and offline scoring for one 12-round campaign.
+"""Prepare the private dataset for the Qa 12-round campaign offline.
 
-Archived scene geometry is used only here, never copied to the public workspace.
+Writes a complete scenario and catalog for later loading by navigation or bench.
+Archived scene geometry is never copied to the public workspace.
 """
 
 from copy import deepcopy
@@ -8,7 +9,7 @@ import json
 import math
 from pathlib import Path
 
-from src.bench.goal_catalog import complete_scenario, load_goal_catalog
+from .goals import complete_scenario, load_goal_catalog
 
 
 def build_scenario(repo, goal_catalog=None):
@@ -67,12 +68,26 @@ def build_scenario(repo, goal_catalog=None):
 
 
 
-if __name__ == '__main__':
+def prepare(repo, output):
+    """Build once; consumers only need the resulting two JSON files."""
+    catalog = load_goal_catalog(repo)
+    scenario = build_scenario(repo, catalog)
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    for name, value in (('scenario.json', scenario), ('catalog.json', catalog)):
+        (output / name).write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + '\n')
+    return scenario
+
+
+def main():
     import argparse
+    repo = Path(__file__).resolve().parents[3]
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--output', required=True)
+    parser.add_argument('--output', type=Path, default=repo / 'data/datasets/navcraft/qa_campaign_v2')
     args = parser.parse_args()
-    path = Path(args.output)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(build_scenario(Path(__file__).resolve().parents[2]), ensure_ascii=False, indent=2) + '\n')
-    print(path)
+    prepare(repo, args.output)
+    print(args.output)
+
+
+if __name__ == '__main__':
+    main()

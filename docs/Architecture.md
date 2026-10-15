@@ -48,8 +48,12 @@ src/harness/             Python 任务入口、空间记忆、导航工具、环
 src/agent-core/          独立 TS Core、原生 Coding、模型协议、会话与压缩
 src/agent-core/pi/       完整 Pi Fork 子模块，仅链接其中 packages/coding-agent
 src/common/map.py        地图校准，仅用于可信初始化和私有核验
-src/bench/              固定案例和私有评分
+src/environment/        仿真、动作执行和任务适配
+src/dataset/            数据集读取、离线构建与修订；qa_campaign/ 保存本次目标视点构建与核验图册
+src/bench/              加载已准备的数据、组织评测和私有评分；不生成或优化数据集
 ```
+
+数据构建与评测分开执行：离线准备把目标、成功视点、路线约束及来源写成完整文件；Harness 和 bench 只加载已有文件，不隐式调用构建器。Qa 连续任务的准备入口为 `python -m src.dataset.qa_campaign.build`，运行时通过 `sequence --scenario .../scenario.json` 明确选择版本。
 
 运行入口为 `python -m src.harness doctor/run/smoke`，npm 负责安装、构建和 Core 测试。`smoke` 默认顺序运行 Coding、局部 IA、压缩续接；完整案例使用 `smoke --suite full`。沿用 `config/harness-pi` 配置目录。
 

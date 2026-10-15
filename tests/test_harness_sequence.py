@@ -8,15 +8,42 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.bench.astra_campaign import build_scenario
 from src.bench.sequence import crosses, score_route
 from src.harness.sequence import validate_scenario
 
 REPO = Path(__file__).resolve().parents[1]
 
 
-def test_latest_twelve_rounds_have_fixed_sequence_and_private_targets():
-    scenario = build_scenario(REPO)
+def _prepared_scenario():
+    """Runtime fixture: no compiler, scene archive, cache or generated viewpoints."""
+    identifiers = ['explore', 'find_bed', 'find_bathtub', 'find_dining_table',
+                   'bedroom_tv', 'preparation_area_sink', 'hallway_bathroom_sink',
+                   'double_basin', 'living_room_tv', 'relocate_closet',
+                   'relocate_hallway', 'relocate_bathroom']
+    rounds = []
+    for index, identifier in enumerate(identifiers):
+        spec = {'id': identifier, 'kind': 'navigation' if index else 'explore',
+                'instruction': f'Fixture task {index + 1}: {identifier}',
+                'max_actions': 12, 'max_requests': 4, 'seconds': 60}
+        if index:
+            spec.update(positions=[[0, 0, -1]], success_distance=1,
+                        private_verification={'target_object_id': f'private-{index}'})
+        else:
+            spec['scope_room'] = 'fixture-room'
+        if index >= 9:
+            spec['teleport'] = {'position': [1, 0, 1], 'rotation_xyzw': [0, 0, 0, 1]}
+        rounds.append(spec)
+    return {'schema_version': 3, 'protocol': 'fixture-prepared-sequence',
+            'scene_id': 'fixture-scene', 'environment': {'width': 32, 'height': 24,
+                'depth': False, 'forward_step': .25, 'turn_angle': 30},
+            'start_position': [0, 0, 0], 'start_rotation': [0, 0, 0, 1],
+            'rounds': rounds, 'private_rooms': [{'id': 'fixture-room',
+                'polygon': [[-10, -10], [10, -10], [10, 10], [-10, 10]]}],
+            'seconds': 720}
+
+
+def test_prepared_twelve_round_manifest_validates_without_scene_resources():
+    scenario = _prepared_scenario()
     validate_scenario(scenario)
     rounds = scenario['rounds']
     assert len(rounds) == 12
@@ -25,16 +52,11 @@ def test_latest_twelve_rounds_have_fixed_sequence_and_private_targets():
         'living_room_tv', 'relocate_closet', 'relocate_hallway', 'relocate_bathroom']
     assert all('teleport' not in r for r in rounds[:9])
     assert all('teleport' in r for r in rounds[9:])
-    assert rounds[11]['private_verification']['target_object_id'] == 'O188'
-    assert rounds[11]['private_verification']['source_evidence_ids'] == ['render_O188_1']
-    assert rounds[7]['private_verification']['target_object_id'] == 'O108'
-    assert scenario['start_position'][0] == -.7
-    assert rounds[9]['teleport']['position'][0] == 3.55
 
 
 @pytest.mark.parametrize('corruption', ['duplicate', 'empty', 'budget', 'target'])
 def test_invalid_sequences_fail_before_any_environment_or_model_call(corruption):
-    s = build_scenario(REPO)
+    s = _prepared_scenario()
     if corruption == 'duplicate': s['rounds'][1]['id'] = s['rounds'][0]['id']
     if corruption == 'empty': s['rounds'] = []
     if corruption == 'budget': s['rounds'][2]['max_requests'] = 0
@@ -69,7 +91,7 @@ def test_round_transition_preserves_environment_pose_frames_and_memory(tmp_path,
 
     monkeypatch.setattr(module, 'HabitatEnvironment', lambda config, task, workspace:
         HabitatEnvironment(config, task, workspace, simulator_factory=FakeSimulator))
-    s = build_scenario(REPO)
+    s = _prepared_scenario()
     s['environment']['depth'] = False
     bridge = module.SequenceSession(REPO, tmp_path / 'workspace', tmp_path / 'private', s)
     try:
@@ -103,7 +125,7 @@ def _small_fake_scenario(monkeypatch):
 
     monkeypatch.setattr(module, 'HabitatEnvironment', lambda config, task, workspace:
         HabitatEnvironment(config, task, workspace, simulator_factory=FakeSimulator))
-    scenario = build_scenario(REPO)
+    scenario = _prepared_scenario()
     scenario['rounds'] = deepcopy(scenario['rounds'][:3])
     scenario['environment'].update(width=32, height=24, depth=False)
     for spec in scenario['rounds']:

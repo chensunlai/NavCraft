@@ -22,7 +22,7 @@ from matplotlib.font_manager import FontProperties
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch, Polygon, Rectangle
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[3]
 DEFAULT_AUDIT = REPO / 'outputs/goal-completion-20261015'
 DEFAULT_PREVIOUS = REPO / 'outputs/goal-coverage-20261015'
 SOURCE_LABELS = {

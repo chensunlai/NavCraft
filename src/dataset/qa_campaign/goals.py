@@ -1,4 +1,4 @@
-"""Private, instance-specific goal information for the Qa continuous campaign.
+"""Offline assembly of instance-specific goals for the Qa campaign dataset.
 
 Evidence photographs identify objects; their camera positions are not goal sets.
 Official instance viewpoints are retained exactly. Other objects require the
@@ -44,7 +44,7 @@ def load_goal_catalog(repo, generated_path=None):
     if not generated_path.exists():
         raise FileNotFoundError(
             f"Verified custom goal viewpoints are required: {generated_path}. "
-            f"Generate them with python -m src.bench.goal_viewpoints --output {generated_path}; "
+            f"Generate them with python -m src.dataset.qa_campaign.viewpoints --output {generated_path}; "
             "evidence-camera positions are not an acceptable fallback."
         )
     generated = json.loads(generated_path.read_text())
