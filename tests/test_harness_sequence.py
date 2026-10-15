@@ -156,7 +156,9 @@ def _fake_runtime(monkeypatch, module, *, failing_prompt=None):
 
     def fake_open(repo, config, directory, workspace, system_prompt, tools, *,
                   max_requests, trace=None, on_event=None, cancel_event=None):
-        assert system_prompt == module.PROMPT
+        expected = '\n\n'.join((repo / 'src/harness' / name).read_text().strip()
+                               for name in ('navigation_prompt.md', 'navigation_experience.md')) + '\n'
+        assert system_prompt == expected
         instance = FakeRuntime(workspace, tools, trace)
         opened.append(instance)
         return instance
@@ -279,7 +281,8 @@ def test_persistent_runtime_allows_followups_without_resetting_current_navigatio
     original_task, original_env, original_sim = bridge.env.task, bridge.env, bridge.env.sim
     note = workspace / 'memory/note.md'
     note.write_text('Keep across followups and task changes')
-    session = runtime.open_session(REPO, {}, tmp_path, workspace, module.PROMPT, tools, max_requests=4)
+    session = runtime.open_session(REPO, {}, tmp_path, workspace,
+                                   module.load_navigation_prompt(REPO), tools, max_requests=4)
     try:
         first = session.prompt('Observe this task', initial['images'])
         frame = state['current']['observation']['id']

@@ -1,0 +1,4 @@
+[submodule "pi"]
+	path = src/agent-core/pi
+	url = https://github.com/chensunlai/pi-navcraft.git
+	branch = navcraft

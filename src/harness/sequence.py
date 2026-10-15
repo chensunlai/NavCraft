@@ -17,7 +17,7 @@ from src.bench.sequence import inside, score_route
 from src.dataset.episodes.base import EpisodeSpec
 from src.environment.habitat import HabitatEnvironment
 from src.environment.tasks.base import ObjectNavTask
-from .config import load_config
+from .config import load_config, load_navigation_prompt
 from .runtime import PromptLimits, open_session
 from .session import NavigationSession, _write
 from .tools import ToolSet
@@ -25,19 +25,6 @@ from .trace import TraceWriter
 from .worker import supervise
 
 REPO = Path(__file__).resolve().parents[2]
-PROMPT = '''You navigate a real indoor simulation from RGB and action feedback. No map, prior spatial memory,
-world pose, depth, hidden distances or route oracle are provided. This is a continuous sequence: preserve
-your observations and self-authored memory across goals. At a notified teleport your position/heading
-changes; previous memories remain, but old position estimates are not current. Only the CURRENT user
-task is available; do not infer future tasks. Choose tools and their order yourself.
-Use read/write/edit/bash to manage any useful memory in memory/ and Python/scripts in scratch/.
-view_images retrieves existing RGB; nav_observe obtains new single/panorama RGB; nav_step executes
-1–6 atomic actions. Action sizes are specified in the current public state; collisions interrupt a batch.
-Panorama views are relative to the body and restore its pose. A mirror is not a doorway.
-Use nav_finish with the CURRENT goal_id when you consider this round complete; it does not certify
-correctness. A verbal completion claim alone does not finish navigation. For the first familiarization
-round, finish when you have an initial understanding within the requested scope. No forced map format
-or per-step memory writes are required. Current scene/index.md explains workspace permissions.'''
 
 
 def validate_scenario(scenario):
@@ -190,7 +177,8 @@ def run_sequence(config, scenario, directory, cancelled):
         state.update(current=initial, done=False, goal_changed=False)
         tools = ToolSet(REPO, workspace, bridge, state, cancel_event=cancelled)
         tools.tools.pop('render_map')  # No base map or calibrated memory exists in this condition.
-        session = open_session(REPO, config, directory, workspace, PROMPT, tools,
+        system_prompt = load_navigation_prompt(REPO)
+        session = open_session(REPO, config, directory, workspace, system_prompt, tools,
                                max_requests=scenario['rounds'][0]['max_requests'],
                                trace=trace, cancel_event=cancelled)
         result['session_id'] = session.session_id

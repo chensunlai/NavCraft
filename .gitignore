@@ -36,4 +36,4 @@ node_modules/
 
 # Compiled Pi runtime.
 src/agent-core/dist/
-src/agent-core/pi/coding-agent/dist/
+src/agent-core/pi/packages/coding-agent/dist/

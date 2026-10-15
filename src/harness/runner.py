@@ -19,7 +19,7 @@ from . import memory
 from . import moving_compaction
 from src.bench import harness_verify as verify
 from .tools import ToolSet
-from .config import context_options, credentials
+from .config import context_options, credentials, load_navigation_prompt
 from .runtime import PromptLimits, open_session
 from .trace import TraceWriter
 from src.bench.harness_cases import case_config
@@ -39,6 +39,12 @@ def _prepare_query(repo, job, workspace):
         _copy(sample / ref, workspace / target)
         resources[identifier] = target
     _write(workspace / "scene/resources.json", resources)
+    (workspace / "scene/index.md").write_text(
+        "# Public workspace\n\nFixed resources: scene/resources.json. "
+        "Only the listed documents/images are available; no fresh observations or movement. "
+        "No structured map memory or map renderer is supplied. "
+        "Use only pose hints explicitly present in the task resources. "
+        "Keep answers tied to the frame requested by the task.\n")
     observation = {"id": "initial_observation", "path": resources["initial_observation"],
                    "step": 0, "source": "observation", "view": None, "derived_from": []}
     (workspace / "observations/index.jsonl").write_text(json.dumps(observation) + "\n")
@@ -171,8 +177,9 @@ def run_case(repo, config, name, max_requests=None, seconds=None, directory=None
         state["current"] = initial
         toolset = ToolSet(repo, workspace, bridge=bridge, state=state,
                           allow_finish=bool(job.get("task_config")), cancel_event=cancel_event)
-        system_prompt = ("Answer the spatial question using the fixed public resource bank. Use read or view_images. Preserve the answer anchor."
-                         if name == "query" else (repo / "src/harness/navigation_prompt.md").read_text())
+        if name == "query":
+            toolset.tools.pop("render_map")  # Fixed resources have no renderable map memory.
+        system_prompt = load_navigation_prompt(repo)
         session = open_session(repo, config, directory, workspace, system_prompt, toolset,
                                max_requests=max_requests or job["requests"], trace=trace,
                                on_event=on_event, cancel_event=cancel_event)

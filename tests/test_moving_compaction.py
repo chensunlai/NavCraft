@@ -239,6 +239,7 @@ def test_runner_uses_one_core_and_forces_compression_only_after_real_movement_ga
     (repo / 'sample/task_map.png').write_bytes(b'fixture map')
     (repo / 'src/harness').mkdir(parents=True)
     (repo / 'src/harness/navigation_prompt.md').write_text('Fixture navigation')
+    (repo / 'src/harness/navigation_experience.md').write_text('Fixture navigation experience')
     config = {'output_dir': 'runs', 'scene_archive': 'unused', 'model': 'fixture',
               'api': 'openai-responses', 'python': '/fixture/python'}
     monkeypatch.setattr(runner, 'credentials', lambda *_: {'apiKey': 'fixture key',

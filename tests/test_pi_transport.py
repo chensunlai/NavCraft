@@ -220,6 +220,9 @@ def test_cancellation_receives_settled_after_actual_tool_feedback(tmp_path):
 
 def test_runner_archives_even_when_core_close_and_scoring_fail(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
+    (repo / "src/harness").mkdir(parents=True)
+    (repo / "src/harness/navigation_prompt.md").write_text("Fixture shared navigation prompt")
+    (repo / "src/harness/navigation_experience.md").write_text("Fixture navigation experience")
     (repo / "config/harness-pi").mkdir(parents=True)
     (repo / "config/harness-pi/smoke.yaml").write_text(
         "cases:\n  query:\n    sample: sample\n    requests: 2\n    seconds: 2\n")

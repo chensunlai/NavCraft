@@ -2,7 +2,7 @@ model:
   name: responses
   model: gpt-6.1-sol
   base_url: http://221-api.undertides.cn/v1
-  api_key: REDACTED_USE_API_KEY_ENV
+  api_key_env: OMNI_API_KEY
   timeout_seconds: 120
   max_output_tokens: 4096
   max_retries: 1

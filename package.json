@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "workspaces": [
-    "src/agent-core/pi/coding-agent"
+    "src/agent-core/pi/packages/coding-agent"
   ],
   "scripts": {
     "build:pi": "npm run build --workspace @earendil-works/pi-coding-agent",

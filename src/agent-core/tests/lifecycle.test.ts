@@ -8,7 +8,7 @@ import { runtime } from '../session.js';
 
 test('SDK resolves local workspace and creates an isolated empty session', async () => {
   const entry = await realpath(new URL(import.meta.resolve('@earendil-works/pi-coding-agent')).pathname);
-  assert.match(entry, /src\/agent-core\/pi\/coding-agent\/dist\/index\.js$/);
+  assert.match(entry, /src\/agent-core\/pi\/packages\/coding-agent\/dist\/index\.js$/);
   const cwd = await mkdtemp(join(tmpdir(), 'navcraft-lifecycle-'));
   const resourceLoader: ResourceLoader = {
     getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),

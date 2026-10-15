@@ -18,6 +18,9 @@ from src.harness.trace import TraceWriter
 @pytest.fixture
 def app(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
+    (repo / "src/harness").mkdir(parents=True)
+    (repo / "src/harness/navigation_prompt.md").write_text("Fixture shared navigation prompt")
+    (repo / "src/harness/navigation_experience.md").write_text("Fixture navigation experience")
     (repo / "config/harness-pi").mkdir(parents=True)
     (repo / "config/harness-pi/smoke.yaml").write_text(
         "cases:\n  query:\n    sample: sample\n    requests: 2\n    seconds: 2\n")
@@ -100,6 +103,10 @@ def test_model_configuration_is_sent_only_to_core_not_public_workspace(app, tmp_
     run_app(kind, app, directory)
     assert [op for op, _ in requests] == ["init", "configure", "set_checkpoint"]
     options = requests[0][1]
+    if kind == "query":
+        assert options["systemPrompt"] == "Fixture shared navigation prompt\n\nFixture navigation experience\n"
+        assert {tool["name"] for tool in options["tools"]} == {"view_images"}
+        assert "scene/resources.json" in (directory / "workspace/scene/index.md").read_text()
     assert options["auth"]["apiKey"] == app[2]
     assert options["maxRequests"] == 2
     assert options["tracePersist"] is False
@@ -120,7 +127,6 @@ def test_compaction_diagnostic_restores_custom_budget_without_resetting_regular_
     monkeypatch.setattr(runtime, "CoreClient", Mock(return_value=core))
     monkeypatch.setattr(runner, "case_config", lambda *_: {"sample": "sample", "requests": 4, "seconds": 2})
     if kind == "compaction":
-        (repo / "src/harness").mkdir(parents=True)
         (repo / "src/harness/navigation_prompt.md").write_text("Fixture navigation task")
         monkeypatch.setattr(runner.memory, "prepare", lambda _, workspace, **kwargs:
                             (Path(workspace) / "memory/state.json").write_text("{}"))

@@ -77,3 +77,13 @@ python -m src.harness --config config/harness-pi/astra.yaml sequence \
 ```
 
 `src/bench/astra_campaign.py` 只准备这次已确认的 12 轮清单；通用运行器读取任意符合上述格式的清单，私有路线评分位于 `src/bench/sequence.py`。Astra 的凭据文件 `.env.harness-astra` 只在本地保存。每轮限额含摘要和失败尝试；轮间扩展累计请求上限，保留原账本条目。预算／动作耗尽后保留失败并从实际当前位置继续下一个任务；服务／协议错误中止整条链，避免在未知执行状态下重发运动。每轮独立结果、记忆版本及传送前后真实位姿均保存，整条链不作为独立样本的成功率评测。
+
+## 提示词入口
+
+- `navigation_prompt.md`：稳定的基础提示词，描述角色、资源边界、工具真实语义、坐标／证据要求及任务结束规则。
+- `navigation_experience.md`：可迭代的导航经验，包括目标与入口辨认、局部通行、碰撞恢复、记忆更新及按需检索。
+- `config.load_navigation_prompt()` 按“基础提示词＋导航经验”拼接为一份系统提示词；导航、空间 QA 和 `sequence` 共用此入口。
+- 任务消息、`scene/index.md` 和实际工具列表说明本次条件：有没有地图／初始位姿、能否运动、如何结束。`sequence` 只负责同一会话中依次下发任务，不维护另一套导航提示词。Coding 基座检查使用其独立的通用 Coding 指令。
+- `../agent-core/pi/packages/coding-agent/src/core/compaction/compaction.ts` 的 `NAVIGATION_SUMMARY_INSTRUCTIONS`：导航摘要要求，同时用于初次、更新和 split-turn 压缩；修改后执行 `npm run build`。
+
+2026-10-15 根据 12 轮轨迹补强通用提示词，并移除 sequence 和查询案例中的独立系统提示词：从可走地面选择接近方式、按实际动作回执更新、反复受阻后改变接近位置、按发现和纠错维护记忆、缺少历史证据时定向检索。摘要保留有效空间知识及未完成的局部状态，合并旧动作日志。不强制全景／读写频率或固定恢复动作，不包含场景路线与私有评分点。这是待验证的提示词修订，不代表已减少碰撞或提高成功率；后续对照需在同一 runner 上分别运行旧／新提示词，历史旧 runner 的成绩不能直接作为纯提示词对照。

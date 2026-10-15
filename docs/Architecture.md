@@ -35,18 +35,18 @@ flowchart LR
 
 ### 开发基座：优先复用完整 Pi Coding Agent
 
-**基座采用本地维护的 Pi `pi-coding-agent`，目标边界是 Python 主程序＋独立 TS Core。** Python 主导任务、空间记忆、导航工具、环境、评分与实验组织；TS Core 保留 Pi 的自主循环、模型协议、原生 Coding 工具、会话与压缩。导航工具通过通用接口接入，不把导航任务判断写入 Core。当前已实现 Python 启动并管理独立 Node Core；导航工具定义、环境和实验编排位于 Python。[本地 Pi SDK 文档](../src/agent-core/pi/coding-agent/docs/sdk.md)
+**基座采用本地维护的 Pi `pi-coding-agent`，目标边界是 Python 主程序＋独立 TS Core。** Python 主导任务、空间记忆、导航工具、环境、评分与实验组织；TS Core 保留 Pi 的自主循环、模型协议、原生 Coding 工具、会话与压缩。导航工具通过通用接口接入，不把导航任务判断写入 Core。当前已实现 Python 启动并管理独立 Node Core；导航工具定义、环境和实验编排位于 Python。[本地 Pi SDK 文档](../src/agent-core/pi/packages/coding-agent/docs/sdk.md)
 
 Pi SDK 在独立 Node 进程内运行，通过双向 JSONL 与 Python 主程序通信；模型选择导航工具时回调 Python，Python 返回实际结果与公开状态。Pi 持有唯一模型会话，Python 保存审计记录，不另维护第二套对话。Python 的 episode worker 直接持有 Habitat，工具回调在初始化环境的同一线程执行；不再增加 Python 环境桥进程。本地维护的 Pi 核心源码、外部安装依赖和模型任务工作空间分别放置；Pi 源码位于独立 Core 中，普通依赖在仓库根目录。
 
-需修改的 Pi 包保存在 `src/agent-core/pi/`，通过 npm workspaces 链接使用；普通依赖由仓库根目录统一安装，`node_modules/` 不纳入版本控制。修改 TypeScript 后编译再运行，可用 watch 自动编译；Node 复用现有 nvm，包配置与 lockfile 随项目保存。
+完整 Pi Fork `chensunlai/pi-navcraft` 作为 Git 子模块保存在 `src/agent-core/pi/`，NavCraft 固定使用其某个提交。Fork 的 `navcraft` 分支基于 v1.2.0 维护修改，并保留官方 `upstream`。npm workspace 只链接 `packages/coding-agent`；其他 Pi 包与普通依赖仍从 npm 安装到 NavCraft 根目录的 `node_modules/`，不纳入版本控制。所有 npm 安装、构建均在 NavCraft 根目录执行，不启动 Pi 全仓构建。修改 TypeScript 后重新编译；Node 复用现有 nvm。初次获取使用 `git clone --recurse-submodules`，已有克隆执行 `git submodule update --init --recursive`；Pi 源码提交与 NavCraft 的子模块指针分别管理。
 
 ### 现行代码边界与运行入口
 
 ```text
 src/harness/             Python 任务入口、空间记忆、导航工具、环境会话、实验记录
 src/agent-core/          独立 TS Core、原生 Coding、模型协议、会话与压缩
-src/agent-core/pi/       本地维护的完整 Pi coding-agent 源码
+src/agent-core/pi/       完整 Pi Fork 子模块，仅链接其中 packages/coding-agent
 src/legacy/harness/      旧 Python 实现，旧数据生成／评测保持原行为
 src/common/map.py        新旧共享的地图校准，仅用于可信初始化和私有核验
 src/bench/              固定案例和私有评分
@@ -190,7 +190,7 @@ workspace/
 
 **同一 episode 一个逻辑会话：平时只追加，接近预算上限时统一压缩。** 外部记忆保存完整资料，上下文保存实际加载的部分。不按“最近五组”滚动删图，不每轮重新组合输入。
 
-使用本地 Pi 的会话与原生压缩机制，**压缩提示直接修改 Core 源码**，不在外围额外追加一套摘要指令。提示统一位于 [Core compaction.ts](../src/agent-core/pi/coding-agent/src/core/compaction/compaction.ts) 的共享摘要构造入口，覆盖首次摘要、已有摘要更新和 split-turn 前缀摘要。下述信息保留方式仍需验证；不另写压缩引擎。外围仅保留统一请求预算、审计和已有公开图片/状态恢复。Pi 与 Codex 的压缩实现不要求完全一致。
+使用本地 Pi 的会话与原生压缩机制，**压缩提示直接修改 Core 源码**，不在外围额外追加一套摘要指令。提示统一位于 [Core compaction.ts](../src/agent-core/pi/packages/coding-agent/src/core/compaction/compaction.ts) 的共享摘要构造入口，覆盖首次摘要、已有摘要更新和 split-turn 前缀摘要。下述信息保留方式仍需验证；不另写压缩引擎。外围仅保留统一请求预算、审计和已有公开图片/状态恢复。Pi 与 Codex 的压缩实现不要求完全一致。
 
 ### 初始与增量形式
 

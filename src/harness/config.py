@@ -9,6 +9,12 @@ import yaml
 REPO = Path(__file__).resolve().parents[2]
 
 
+def load_navigation_prompt(repo=REPO):
+    folder = Path(repo) / "src/harness"
+    return "\n\n".join((folder / name).read_text().strip() for name in (
+        "navigation_prompt.md", "navigation_experience.md")) + "\n"
+
+
 def load_config(path="config/harness-pi/default.yaml", repo=REPO):
     path = Path(path)
     if not path.is_absolute():
