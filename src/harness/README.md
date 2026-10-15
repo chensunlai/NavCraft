@@ -39,7 +39,7 @@ python -m src.harness run --case objnav --max-requests 32 --seconds 1800
 
 工作空间为 `scene/observations/memory/scratch`，前两者只读、后两者可写。私有评分、Core 会话、请求账本和 audit 放在相邻 `private/`，模型不可访问。每次运行有独立请求账本，本轮无全局请求总限额；单 episode 限额包含摘要及失败尝试。
 
-旧 Python Harness、旧数据生成和旧评测保留在 `src/legacy/harness`，旧入口维持原行为。新应用不依赖旧 Agent 循环。
+2026-10-15 暂时移除 `src/legacy/` 及依赖它的旧批量评测、模型探测、原子数据采集／重放入口和旧启动脚本。当前运行统一使用 `python -m src.harness`。已有场景、样例与实验结果保留；原子数据 schema、几何判定、导出和旧结果离线报告仍可使用。旧实现及配套测试可从 Git 提交 `92ae3e0` 恢复；暂不将旧数据采集器迁移到 Pi。
 
 ## 持久会话接口
 

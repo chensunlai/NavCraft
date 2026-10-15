@@ -5,7 +5,7 @@ import gzip
 import json
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 
 def read_json(path: str | Path) -> Any:
@@ -13,6 +13,12 @@ def read_json(path: str | Path) -> Any:
     opener = gzip.open if path.suffix == ".gz" else open
     with opener(path, "rt", encoding="utf-8") as stream:
         return json.load(stream)
+
+
+def read_jsonl(path: str | Path) -> Iterator[dict]:
+    with Path(path).open(encoding="utf-8") as stream:
+        for line in stream:
+            yield json.loads(line)
 
 
 def json_value(value: Any) -> Any:

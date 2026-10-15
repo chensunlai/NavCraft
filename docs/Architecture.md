@@ -47,12 +47,13 @@ Pi SDK 在独立 Node 进程内运行，通过双向 JSONL 与 Python 主程序�
 src/harness/             Python 任务入口、空间记忆、导航工具、环境会话、实验记录
 src/agent-core/          独立 TS Core、原生 Coding、模型协议、会话与压缩
 src/agent-core/pi/       完整 Pi Fork 子模块，仅链接其中 packages/coding-agent
-src/legacy/harness/      旧 Python 实现，旧数据生成／评测保持原行为
-src/common/map.py        新旧共享的地图校准，仅用于可信初始化和私有核验
+src/common/map.py        地图校准，仅用于可信初始化和私有核验
 src/bench/              固定案例和私有评分
 ```
 
 运行入口为 `python -m src.harness doctor/run/smoke`，npm 负责安装、构建和 Core 测试。`smoke` 默认顺序运行 Coding、局部 IA、压缩续接；完整案例使用 `smoke --suite full`。沿用 `config/harness-pi` 配置目录。
+
+2026-10-15 已暂时移除旧 `src/legacy/` 及依赖它的执行入口、脚本与专属测试。旧代码可从 Git 提交 `92ae3e0` 恢复；已有数据、当前 Harness、通用数据格式与导出、离线报告保留。旧原子数据采集／重放需要后续适配当前 Harness，不能继续调用原入口。
 
 Python 注册工具名称、说明、JSON Schema 和执行函数；Core 只创建通用代理。原生文件／命令工具留在 Core，Python 提供读写目录与 Python 可执行路径。初始化、工具回执、实际模型事件通过双向 JSONL 交互；等待模型执行期间持续接收工具请求。
 

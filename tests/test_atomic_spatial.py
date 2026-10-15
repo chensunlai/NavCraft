@@ -1,16 +1,13 @@
 """Fixture-only integrity checks; never imports Habitat or sends model requests."""
 
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from src.dataset.atomic.schema import AtomicTask, COVERAGE, ALLOWED_TOOLS, checked_resource, score_answer
+from src.dataset.atomic.schema import AtomicTask, COVERAGE, checked_resource, score_answer
 from src.dataset.atomic.geometry import crossed_opening, horizontal, local_event, map_point
 from src.dataset.atomic.export import check_dialogue, portable, visible_messages
-from src.dataset.atomic.runtime import AtomicTools, parse_answer
-from src.legacy.harness.agent.base import ToolCall
 
 
 def test_coverage_and_serialization(tmp_path):
@@ -34,26 +31,10 @@ def test_resource_bank_blocks_private_and_traversal(tmp_path):
             checked_resource(ref, bank, tmp_path)
 
 
-def test_form_permission_checked_even_for_forged_call(tmp_path):
-    world = SimpleNamespace(sim=SimpleNamespace(pose=lambda: {"position": [0, 0, 0]}))
-    task = AtomicTask("x", "A03", "retrieval_qa", "single", "q", [], {}, "t0", "start", {})
-    tools = AtomicTools(task, tmp_path, tmp_path / "attempt", world)
-    result = tools.call(ToolCall("one", "nav_step", {"actions": ["move_forward"]}))
-    assert not result.ok and len(tools.history) == 1
-    assert "nav_observe" not in ALLOWED_TOOLS["retrieval_qa"]
-
-
 def test_answer_time_is_part_of_label():
     private = {"choice": "B", "anchor": "before_motion", "label_method": "geometry"}
     assert not score_answer({"choice": "B", "anchor": "after_motion"}, private)["passed"]
     assert score_answer({"choice": "B", "anchor": "before_motion"}, private)["passed"]
-
-
-def test_never_score_a_reasoning_draft_as_final_answer():
-    draft = {"type": "reasoning", "content": [{"type": "output_text", "text": '{"choice":"A"}'}]}
-    answer = {"type": "message", "content": [{"type": "output_text", "text": '{"choice":"B"}'}]}
-    assert parse_answer([draft, answer]) == {"choice": "B"}
-    assert parse_answer([draft]) == {}
 
 
 def test_coordinate_orientation_and_calibration():

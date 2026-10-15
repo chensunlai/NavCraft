@@ -201,3 +201,29 @@ def test_overlapping_smoke_develop_kept_separate_and_acceptance_flag_checked(tmp
     assert "不能声称达到 80%" in markdown
     assert "service_error: 1" in markdown
     assert "must-not-appear" not in markdown
+
+
+def test_acceptance_requires_two_distinct_complete_frozen_rounds():
+    from src.bench.visual_report import acceptance_qualifies
+
+    rows = [
+        {
+            "family": family,
+            "round": round_id,
+            "score": 0.8,
+            "manifest_sha256": family,
+            "conditions_sha256": family,
+            "harness_version": "v1",
+            "model_id": "model",
+            "summary": {"selected": 20, "finished": 20},
+        }
+        for family in ("objnav", "instruction", "goat")
+        for round_id in (1, 2)
+    ]
+    assert acceptance_qualifies(rows)
+    assert not acceptance_qualifies([dict(row, round=1) for row in rows])
+    rows[0]["summary"]["selected"] = 1
+    assert not acceptance_qualifies(rows)
+    rows[0]["summary"]["selected"] = 20
+    rows[0]["conditions_sha256"] = "different"
+    assert not acceptance_qualifies(rows)

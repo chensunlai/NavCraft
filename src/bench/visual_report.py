@@ -9,8 +9,7 @@ import os
 from pathlib import Path
 
 from ..common.config import ROOT, resolve_path
-from ..common.io import write_json
-from src.legacy.harness.trace import TraceReader
+from ..common.io import read_jsonl, write_json
 
 CACHE = "cache/visual-harness-v1"
 
@@ -58,7 +57,7 @@ def trace_costs(path: Path) -> dict:
     }
     pending = {}
     try:
-        for row in TraceReader(path).events():
+        for row in read_jsonl(path):
             event = row.get("event")
             if event == "model_request":
                 result["requests"] += 1
@@ -256,6 +255,31 @@ def collect_run(directory: Path) -> dict:
     }
 
 
+def acceptance_qualifies(rows):
+    if not rows or not all(row.get("valid", True) and row["score"] >= 0.8 for row in rows):
+        return False
+    if (
+        len({row.get("harness_version") for row in rows}) != 1
+        or len({row.get("model_id") for row in rows}) != 1
+    ):
+        return False
+    for family in ("objnav", "instruction", "goat"):
+        batch = [row for row in rows if row["family"] == family]
+        if (
+            len(batch) != 2
+            or {row.get("round") for row in batch} != {1, 2}
+            or len({row.get("manifest_sha256") for row in batch}) != 1
+            or len({row.get("conditions_sha256") for row in batch}) != 1
+        ):
+            return False
+        if any(
+            row["summary"]["selected"] != 20 or row["summary"]["finished"] != 20
+            for row in batch
+        ):
+            return False
+    return True
+
+
 def collect_report(
     runs: list[Path], *, cache: Path | None = None, suites: list[Path] | None = None
 ) -> dict:
@@ -270,8 +294,6 @@ def collect_report(
     for path in suites:
         raw = read_object(path if path.is_file() else path / "experiment.json", {})
         # An acceptance flag is necessary but not sufficient: re-check the saved evidence.
-        from .visual import acceptance_qualifies
-
         passed = bool(
             raw.get("acceptance_passed")
             and raw.get("stage") == "validate"

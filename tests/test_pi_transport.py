@@ -359,37 +359,6 @@ def test_worker_crash_cannot_be_reported_as_success_from_existing_result(tmp_pat
     assert result["answer"] == "partial"
 
 
-@pytest.mark.parametrize("order", ["new_first", "legacy_first"])
-def test_new_and_legacy_import_order_does_not_duplicate_registrations(order):
-    script = r'''
-import sys
-def new():
-    from src.harness import session, memory, tools, core_client, runner, worker, coding
-def legacy():
-    from src.legacy.harness.build import load_builtins
-    load_builtins()
-    load_builtins()
-if sys.argv[1] == "new_first":
-    new()
-    legacy()
-else:
-    legacy()
-    new()
-from src.common import register
-from src.common.map import MapCalibration
-from src.legacy.harness.map import MapCalibration as LegacyCalibration
-assert MapCalibration is LegacyCalibration
-assert register.runtime_registry.get("agent").__module__ == "src.legacy.harness.agent.loop"
-assert register.model_registry.get("responses").__module__ == "src.legacy.harness.agent.model"
-assert register.tool_registry.get("nav_step").__module__ == "src.legacy.harness.tools.navigation"
-assert register.env_registry.get("habitat").__module__ == "src.environment.habitat"
-assert register.task_registry.get("goat").__module__ == "src.environment.tasks.base"
-'''
-    result = subprocess.run([sys.executable, "-c", script, order], cwd=ROOT,
-                            capture_output=True, text=True, timeout=15)
-    assert result.returncode == 0, result.stderr
-
-
 def test_new_harness_imports_do_not_load_legacy_or_native_simulator():
     script = r'''
 import sys

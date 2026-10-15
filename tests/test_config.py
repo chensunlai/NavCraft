@@ -85,39 +85,3 @@ def test_invalid_protocol_and_budgets_fail_during_configuration(tmp_path, monkey
     (tmp_path / variables[role]).write_text(yaml.safe_dump(documents[role]))
     with pytest.raises(ValueError, match=expected):
         config_module.load_config(variables)
-
-
-def test_cli_paths_take_precedence_over_unrelated_shell_environment(tmp_path, monkeypatch):
-    from src.bench import run as run_module
-
-    variables, _ = files(tmp_path)
-    monkeypatch.setattr(config_module, "ROOT", tmp_path)
-    argv = ["navcraft"]
-    for role, path in variables.items():
-        monkeypatch.setenv(role, "does-not-exist.yaml")
-        argv.extend(["--" + role.lower().replace("_", "-"), path])
-    monkeypatch.setattr(run_module.sys, "argv", argv)
-    configs = []
-
-    def capture(config):
-        configs.append(config)
-        return tmp_path, {"statuses": {}}
-
-    monkeypatch.setattr(run_module, "run_experiment", capture)
-    run_module.main()
-    assert len(configs) == 1
-    assert configs[0].sources["TASK_CONFIG"] == str(tmp_path / variables["TASK_CONFIG"])
-    assert configs[0].run["max_requests"] == 4
-
-
-def test_cli_requires_explicit_config_paths_even_when_environment_has_them(tmp_path, monkeypatch):
-    from src.bench import run as run_module
-
-    variables, _ = files(tmp_path)
-    monkeypatch.setattr(config_module, "ROOT", tmp_path)
-    for role, path in variables.items():
-        monkeypatch.setenv(role, path)
-    monkeypatch.setattr(run_module.sys, "argv", ["navcraft"])
-    with pytest.raises(SystemExit) as error:
-        run_module.main()
-    assert error.value.code == 2
