@@ -2,6 +2,7 @@
 
 import math
 
+
 def inside(point, polygon):
     x, y = point
     hit = False
@@ -11,21 +12,56 @@ def inside(point, polygon):
     return hit
 
 
+def _local_room_side(point, normal, polygon):
+    """Find the room's side immediately beside the portal, in world XZ.
+
+    Room polygons use map X,-Z. Whole-room centers do not identify a local
+    doorway's side in a concave room. Small normal probes also tolerate minor
+    rounding gaps between the archived door and room boundaries. An overlapping
+    or unresolved boundary is not sufficient evidence for a directed crossing.
+    """
+    for distance in (0.0001, 0.001, 0.01, 0.05, 0.1):
+        membership = [inside([point[0] + sign * distance * normal[0],
+                              -(point[1] + sign * distance * normal[1])], polygon)
+                      for sign in (-1, 1)]
+        if all(membership):
+            return 0
+        if any(membership):
+            return 1 if membership[1] else -1
+    return 0
+
+
 def crosses(before, after, event, rooms):
     """Intersect designated segment in the requested direction, not nearby radius."""
     a, b = event['segment_xz']
     p, q = [before[0], before[2]], [after[0], after[2]]
     vx, vy = b[0] - a[0], b[1] - a[1]
+    length = math.hypot(vx, vy)
+    if length < 1e-8:
+        return False
     side = lambda t: vx * (t[1] - a[1]) - vy * (t[0] - a[0])
     ps, qs = side(p), side(q)
     if abs(ps - qs) < 1e-8 or ps * qs > 1e-8:
         return False
     t = ps / (ps - qs)
+    if not 0 <= t <= 1:
+        return False
     intersection = [p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])]
     projection = ((intersection[0] - a[0]) * vx + (intersection[1] - a[1]) * vy) / (vx * vx + vy * vy)
-    polygon = rooms[event['to_room']]['polygon']
-    centroid = [sum(c[0] for c in polygon) / len(polygon), sum(c[1] for c in polygon) / len(polygon)]
-    return -1e-6 <= projection <= 1 + 1e-6 and (qs - ps) * side([centroid[0], -centroid[1]]) > 1e-8
+    if not -1e-6 <= projection <= 1 + 1e-6:
+        return False
+    # Sample just inside the segment ends to avoid polygon-vertex ambiguity.
+    local_t = min(1 - 1e-4, max(1e-4, projection))
+    local_point = [a[0] + local_t * vx, a[1] + local_t * vy]
+    normal = [-vy / length, vx / length]
+    destination_side = _local_room_side(local_point, normal, rooms[event['to_room']]['polygon'])
+    if not destination_side:
+        return False
+    if event.get('from_room'):
+        origin_side = _local_room_side(local_point, normal, rooms[event['from_room']]['polygon'])
+        if origin_side != -destination_side:
+            return False
+    return (qs - ps) * destination_side > 1e-8
 
 
 def score_route(round_spec, trajectory, rooms):

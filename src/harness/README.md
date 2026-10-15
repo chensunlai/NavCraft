@@ -79,12 +79,18 @@ with open_session(repo, config, directory, workspace, system_prompt, tools,
 私有 sequence JSON 定义起点、环境、`rounds` 和核验资料；每轮含 `id`、`kind`、`instruction`、预算、私有目标视点、可选 `teleport` 与 `route_events`。模型只收到当前任务，全部后续任务、目标坐标、门坐标和评分都留在 `private/`。当前多轮条件为无地图：初始记忆为空，提供原生 Coding 工具、`view_images` 和三个导航工具，允许自行写记忆和绘图；不调用预建地图转换或自动定位。
 
 ```bash
+# 首次准备自建目标：需要 Habitat、原场景，以及已核验的 Qa NavMesh/grid。
+python -m src.bench.goal_viewpoints --output data/datasets/navcraft/qa_campaign_goals_v2.json
 python -m src.bench.astra_campaign --output cache/harness-pi/astra-campaign-v2/scenario.json
 python -m src.harness --config config/harness-pi/astra.yaml sequence \
   --scenario cache/harness-pi/astra-campaign-v2/scenario.json
 ```
 
 `src/bench/astra_campaign.py` 只准备这次已确认的 12 轮清单；通用运行器读取任意符合上述格式的清单，私有路线评分位于 `src/bench/sequence.py`。Astra 的凭据文件 `.env.harness-astra` 只在本地保存。每轮限额含摘要和失败尝试；轮间扩展累计请求上限，保留原账本条目。预算／动作耗尽后保留失败并从实际当前位置继续下一个任务；服务／协议错误中止整条链，避免在未知执行状态下重发运动。每轮独立结果、记忆版本及传送前后真实位姿均保存，整条链不作为独立样本的成功率评测。
+
+2026-10-15 起，新清单采用 `goal-catalog-v2`：床与两台指定电视使用各自完整官方视点，另外六类物体使用同相机、同机器人配置下实际渲染验证的自建视点；缺失数据会报错，不回退到证据照片的拍摄位置。目标名称、房间、实例集合、来源和证据保存在私有清单，双台盆记录台面与两个盆。餐桌途经事件复用餐桌目标集合。普通指令、1 m 到达阈值和 1.5 m 途经阈值不变；门方向改为门边局部房间几何判断。
+
+`python -m src.bench.goal_audit` 使用已存轨迹和匹配 NavMesh 离线复评，写入独立目录，不调用模型或覆盖历史分数。逐项目标图、生成依据和复评见[目标核对图册](../../outputs/goal-completion-20261015/index.html)。
 
 ## 提示词入口
 

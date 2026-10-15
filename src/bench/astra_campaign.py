@@ -8,8 +8,10 @@ import json
 import math
 from pathlib import Path
 
+from src.bench.goal_catalog import complete_scenario, load_goal_catalog
 
-def build_scenario(repo):
+
+def build_scenario(repo, goal_catalog=None):
     repo = Path(repo)
     draft = json.loads((repo / 'cache/harness-pi/astra-campaign-preflight/scenario.json').read_text())
     by_id = {r['id']: r for r in draft['rounds']}
@@ -55,12 +57,13 @@ def build_scenario(repo):
                              for portal in r.get('private_verification', {}).get('ordered_portals', [])]
     rounds[10]['route_events'].insert(1, {'kind': 'waypoint', 'id': 'dining_table',
                                        'positions': rounds[3]['positions'], 'radius': 1.5})
-    return {'schema_version': 2, 'protocol': 'navcraft-map-free-12-round-exploratory-campaign',
+    scenario = {'schema_version': 2, 'protocol': 'navcraft-map-free-12-round-exploratory-campaign',
             'scene_id': draft['scene_id'], 'environment': draft['environment'],
             'start_position': [-.7, draft['start_position'][1], -.5],
             'start_rotation': [0, math.sin(math.pi / 4), 0, math.cos(math.pi / 4)],
             'rounds': rounds, 'private_rooms': rooms, 'seconds': sum(r['seconds'] for r in rounds) + 120,
             'limitations': 'One continuous exploratory chain; no benchmark SR, no prebuilt map/memory or live pose/depth provided. STOP and geodesic distance to accepted evidence viewpoints <1m; exact ordered directional portal crossings and dining waypoint scored offline. Exploration scope scored separately.'}
+    return complete_scenario(scenario, goal_catalog or load_goal_catalog(repo))
 
 
 
