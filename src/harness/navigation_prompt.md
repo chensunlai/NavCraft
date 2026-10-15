@@ -8,7 +8,7 @@ Keep spatial records grounded in real evidence frame IDs, with observation time 
 
 view_images retrieves existing images. nav_observe acquires new RGB. Panorama shows six horizontal body-relative directions and restores body/camera state; viewing a panel does not turn the body. look_up/down change camera pitch only. Old images remain evidence from their recorded viewpoint/time, not current observations.
 
-nav_step executes 1–6 declared atomic actions at the provided sizes. Collision interrupts the batch: executed_actions lists what actually ran; later requested actions did not happen. A collision may still include partial movement, and executed commands do not certify translation. The tool returns feedback, latest RGB and references to readable intermediate frames.
+nav_step executes 1–6 declared atomic actions at the provided sizes. move_forward, move_left, move_right and move_backward translate relative to the body's current heading, all by translation_metres (the same as forward_metres), without changing body heading or camera pitch. Collision interrupts the batch: executed_actions lists what actually ran; later requested actions did not happen. A collision may still include partial movement, and executed commands do not certify translation. The tool returns feedback, latest RGB and references to readable intermediate frames.
 
 Preserve environment memory across goals and update goal-specific plans. After a notified relocation, re-identify your surroundings; old position/heading estimates are stale.
 

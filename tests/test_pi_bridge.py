@@ -91,9 +91,10 @@ def test_fresh_observation_and_panorama_preserve_state(initialized):
     assert fresh["steps"] == 1
 
 
-def test_entire_batch_prevalidated_and_id_retries_do_not_move(initialized):
+@pytest.mark.parametrize("action", ["move_forward", "move_left", "move_right", "move_backward"])
+def test_entire_batch_prevalidated_and_id_retries_do_not_move(initialized, action):
     bridge, _, _ = initialized
-    bad = bridge.dispatch({"id": "bad", "op": "step", "args": {"actions": ["move_forward", "teleport"]}})
+    bad = bridge.dispatch({"id": "bad", "op": "step", "args": {"actions": [action, "teleport"]}})
     assert not bad["ok"] and bridge.env.task.steps == 0
     assert bridge.execution_uncertain is False
     request = {"id": "step", "op": "step", "args": {"actions": ["move_forward", "move_forward"]}}
@@ -104,6 +105,27 @@ def test_entire_batch_prevalidated_and_id_retries_do_not_move(initialized):
     changed = bridge.dispatch({**request, "args": {"actions": ["turn_left"]}})
     assert not changed["ok"] and bridge.env.task.steps == 2
     assert bridge.env.sim.position() == [0, 0, -.5]
+
+
+def test_translations_are_exposed_logged_counted_and_not_repeated(initialized):
+    bridge, initial, root = initialized
+    actions = ["move_left", "move_right", "move_backward"]
+    assert set(actions) <= set(initial["actions"]["allowed"])
+    request = {"id": "translations", "op": "step", "args": {"actions": actions}}
+    response = bridge.dispatch(request)
+    assert response["ok"]
+    result = response["data"]
+    assert [event["action"] for event in result["executed_actions"]] == actions
+    assert result["steps"] == 3
+    assert bridge.env.sim.position() == pytest.approx([0, 0, .25])
+    assert bridge.env.task.path_length == pytest.approx(.75)
+    assert bridge.dispatch(request) == response
+    assert bridge.env.task.steps == 3
+    records = [json.loads(line) for line in
+               (root / "workspace/observations/actions.jsonl").read_text().splitlines()]
+    assert [record["action"] for record in records] == actions
+    assert all(record["before_frame"] != record["after_frame"] for record in records)
+    assert "position" not in json.dumps(records)
 
 
 @pytest.mark.parametrize("failure_point", ["_save_private_frame", "_publish", "_save_result"])
@@ -148,15 +170,18 @@ def test_finish_precheck_and_failed_publication_keep_correct_uncertainty(initial
         assert "execution_uncertain" not in json.dumps(failed)
 
 
-def test_collision_interrupts_batch_and_records_actual_actions(initialized, monkeypatch):
+@pytest.mark.parametrize("action", ["move_forward", "move_left", "move_right", "move_backward"])
+def test_collision_interrupts_batch_and_records_actual_actions(initialized, monkeypatch, action):
     bridge, _, root = initialized
     monkeypatch.setattr(bridge.env.sim, "step", lambda action: True)
-    result = call(bridge, "collision", "step", actions=["move_forward"] * 6)
+    result = call(bridge, "collision", "step", actions=[action] * 6)
     assert result["interruption"] == "collision"
     assert len(result["executed_actions"]) == 1 and result["steps"] == 1
     actions = [json.loads(line) for line in (root / "workspace/observations/actions.jsonl").read_text().splitlines()]
     assert actions[0]["collision"] and actions[0]["before_frame"] != actions[0]["after_frame"]
     assert "position" not in json.dumps(actions)
+    assert actions[0]["action"] == action
+    assert bridge.env.task.path_length == 0
 
 
 def test_goat_switch_interrupts_batch_and_stale_finish_is_rejected(tmp_path):
@@ -244,6 +269,25 @@ def test_mapping_seed_does_not_end_on_old_ia_event(tmp_path):
     assert "local_event_complete" not in result
     assert not bridge.dispatch({"id": "finish", "op": "finish", "args": {"goal_id": 0}})["ok"]
     bridge.close()
+
+
+@pytest.mark.parametrize("mapping", [False, True])
+@pytest.mark.parametrize("action", ["move_left", "move_right", "move_backward"])
+def test_atomic_translation_respects_four_metre_budget(tmp_path, mapping, action):
+    args = atomic_args(tmp_path, mapping=mapping)
+    args["env_config"]["forward_step"] = .3
+    bridge = Bridge()
+    try:
+        call(bridge, "init", "init", **args)
+        call(bridge, "first", "step", actions=[action] * 6)
+        call(bridge, "second", "step", actions=[action] * 6)
+        result = call(bridge, "third", "step", actions=[action] * 6)
+        assert result["truncated"] and result["interruption"] == "travel_budget"
+        assert len(result["executed_actions"]) == 1
+        assert bridge.env.task.steps == 13
+        assert bridge.env.task.path_length == pytest.approx(3.9)
+    finally:
+        bridge.close()
 
 
 def test_mapping_instruction_override_persists_after_observing_and_moving(tmp_path):

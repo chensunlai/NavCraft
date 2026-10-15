@@ -90,6 +90,7 @@ class SequenceSession(NavigationSession):
         value = self._transition(transition)
         value.update(actions={'allowed': list(self.env.movement_actions),
                               'forward_metres': self.config['forward_step'],
+                              'translation_metres': self.config['forward_step'],
                               'turn_degrees': self.config['turn_angle'], 'look_degrees': self.config['turn_angle']},
                      round_number=index + 1, relocated=bool(spec.get('teleport')))
         self.boundaries.append({'round': index + 1, 'before': before, 'after': transition.observation.pose,

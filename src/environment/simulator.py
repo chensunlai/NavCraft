@@ -12,7 +12,7 @@ from PIL import Image
 from habitat_sim.utils.common import quat_from_coeffs, quat_to_coeffs
 import quaternion
 
-from src.environment.base import Observation
+from src.environment.base import Observation, TRANSLATION_ACTIONS
 
 
 @dataclass(frozen=True)
@@ -109,13 +109,12 @@ class HabitatSimulator:
                 habitat_sim.agent.ActuationSpec(
                     amount=(
                         self.config.forward_step
-                        if action == "move_forward"
+                        if action in TRANSLATION_ACTIONS
                         else self.config.turn_angle
                     )
                 ),
             )
-            for action in (
-                "move_forward",
+            for action in TRANSLATION_ACTIONS + (
                 "turn_left",
                 "turn_right",
                 "look_up",

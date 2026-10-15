@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Protocol
 
 AtomicAction = str
+TRANSLATION_ACTIONS = ("move_forward", "move_left", "move_right", "move_backward")
 
 
 @dataclass(frozen=True)

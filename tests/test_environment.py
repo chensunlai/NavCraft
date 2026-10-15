@@ -39,6 +39,33 @@ def test_stop_is_counted_and_strict_objectnav_score(tmp_path):
     env.close()
 
 
+@pytest.mark.parametrize("yaw,action,expected", [
+    (0, "move_left", [-.4, 0, 0]),
+    (0, "move_right", [.4, 0, 0]),
+    (0, "move_backward", [0, 0, .4]),
+    (90, "move_left", [0, 0, .4]),
+    (90, "move_right", [0, 0, -.4]),
+    (90, "move_backward", [.4, 0, 0]),
+])
+def test_body_translation_preserves_heading_and_pitch(tmp_path, yaw, action, expected):
+    angle = np.deg2rad(yaw)
+    spec = episode()
+    spec.start_rotation = [0, np.sin(angle / 2), 0, np.cos(angle / 2)]
+    env = FakeEnvironment({"forward_step": .4}, ObjectNavTask({}), tmp_path)
+    try:
+        env.reset(spec)
+        env.step("look_up")
+        before_yaw, before_pitch = env.sim.yaw, env.sim.pitch
+        transition = env.step(action)
+        assert env.sim.position() == pytest.approx(expected)
+        assert (env.sim.yaw, env.sim.pitch) == (before_yaw, before_pitch)
+        assert transition.feedback["action"] == action
+        assert transition.feedback["steps"] == 2
+        assert env.task.path_length == pytest.approx(.4)
+    finally:
+        env.close()
+
+
 @pytest.mark.parametrize("task_type,benchmark", [(ObjectNavTask, "objnav"), (GOATTask, "goat")])
 @pytest.mark.parametrize("distance,success", [(0.99, 1), (1.0, 0), (1.01, 0)])
 def test_objectnav_and_goat_strict_one_metre_boundary(tmp_path, task_type, benchmark, distance, success):

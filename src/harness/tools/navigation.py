@@ -46,7 +46,9 @@ class ObserveTool(NavigationTool):
 
 class StepTool(NavigationTool):
     name, operation = "nav_step", "step"
-    description = ("Execute 1–6 allowed atomic actions in sequence. Collision, goal change or task "
+    description = ("Execute 1–6 allowed atomic actions in sequence. move_forward, move_left, move_right "
+                   "and move_backward translate relative to body heading by translation_metres "
+                   "(same as forward_metres), preserving orientation. Collision, goal change or task "
                    "completion interrupts the batch. Returns actual feedback, last RGB and references "
                    "to intermediate frames; no true pose.")
     parameters = object_schema({"actions": {"type": "array", "items": {"type": "string"},

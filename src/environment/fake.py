@@ -7,7 +7,7 @@ import numpy as np
 from PIL import Image
 
 from src.common.register import env_registry
-from src.environment.base import Observation
+from src.environment.base import Observation, TRANSLATION_ACTIONS
 from src.environment.habitat import HabitatEnvironment
 
 
@@ -38,10 +38,12 @@ class FakeSimulator:
 
     def step(self, action: str) -> bool:
         angle = math.radians(self.config.get("turn_angle", 30))
-        if action == "move_forward":
-            self.point += self.config.get("forward_step", 0.25) * np.array(
-                [-math.sin(self.yaw), 0, -math.cos(self.yaw)]
-            )
+        if action in TRANSLATION_ACTIONS:
+            forward = np.array([-math.sin(self.yaw), 0, -math.cos(self.yaw)])
+            right = np.array([math.cos(self.yaw), 0, -math.sin(self.yaw)])
+            direction = {"move_forward": forward, "move_backward": -forward,
+                         "move_left": -right, "move_right": right}[action]
+            self.point += self.config.get("forward_step", 0.25) * direction
         elif action == "turn_left":
             self.yaw += angle
         elif action == "turn_right":

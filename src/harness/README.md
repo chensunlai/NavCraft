@@ -37,6 +37,10 @@ python -m src.harness run --case objnav --max-requests 32 --seconds 1800
 
 查询任务只读取固定资料；局部 IA 按真实事件结束；完整导航需要 `nav_finish`，GOAT 切换目标后重新决策。模型自主决定工具顺序，程序不自动定位或规划。
 
+`nav_step` 支持 `move_forward`、`move_left`、`move_right`、`move_backward` 四个机体相对方向的平移动作，以及 `turn_left`／`turn_right`；允许俯仰的任务还提供 `look_up`／`look_down`。四个平移动作共用配置 `forward_step`（默认 0.25 m），公开状态用 `translation_metres` 声明，并保留原 `forward_metres` 字段。左右、后退保持机体朝向和相机俯仰；碰撞可导致部分位移并中断批次，动作数与实际路程照常计入任务预算。例如：`nav_step({"actions":["move_left","move_backward"]})`。扩展动作集合与先前只有前进／转向的实验应分开记录。
+
+2026-10-15 平移验收：Python 全量 248 项通过；真实 Qa Habitat 场景检查两个机体朝向下的四方向位移、俯仰保持及三种新动作的碰撞，共 11 项通过，无模型请求。[验收记录](../../cache/harness-pi/translation-actions-20261015/result.json)
+
 工作空间为 `scene/observations/memory/scratch`，前两者只读、后两者可写。私有评分、Core 会话、请求账本和 audit 放在相邻 `private/`，模型不可访问。每次运行有独立请求账本，本轮无全局请求总限额；单 episode 限额包含摘要及失败尝试。
 
 2026-10-15 暂时移除 `src/legacy/` 及依赖它的旧批量评测、模型探测、原子数据采集／重放入口和旧启动脚本。当前运行统一使用 `python -m src.harness`。已有场景、样例与实验结果保留；原子数据 schema、几何判定、导出和旧结果离线报告仍可使用。旧实现及配套测试可从 Git 提交 `92ae3e0` 恢复；暂不将旧数据采集器迁移到 Pi。

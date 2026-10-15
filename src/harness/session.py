@@ -19,7 +19,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from src.dataset.episodes.base import EpisodeSpec
-from src.environment.base import NavigationInputError
+from src.environment.base import NavigationInputError, TRANSLATION_ACTIONS
 from src.environment.tasks.base import TaskAdapter, TaskUpdate
 
 
@@ -57,7 +57,7 @@ class AtomicTaskAdapter(TaskAdapter):
 
     @property
     def movement_actions(self):
-        return ("move_forward", "turn_left", "turn_right")
+        return TRANSLATION_ACTIONS + ("turn_left", "turn_right")
 
     def event(self):
         from src.dataset.atomic.geometry import local_event
@@ -243,6 +243,7 @@ class NavigationSession:
             result = self._transition(transition)
             result["actions"] = {"allowed": list(env.movement_actions),
                                  "forward_metres": self.config.get("forward_step", .25),
+                                 "translation_metres": self.config.get("forward_step", .25),
                                  "turn_degrees": self.config.get("turn_angle", 15),
                                  "look_degrees": self.config.get("turn_angle", 15)}
             result["mode"] = self.mode
@@ -355,7 +356,7 @@ class NavigationSession:
             if self.cancel_event is not None and self.cancel_event.is_set():
                 interruption = "cancelled"
                 break
-            if self.mode in {"atomic_ia", "mapping"} and action == "move_forward":
+            if self.mode in {"atomic_ia", "mapping"} and action in TRANSLATION_ACTIONS:
                 if self.env.task.path_length + self.config.get("forward_step", .25) > 4.0001:
                     self.env.finalize("travel_budget")
                     interruption = "travel_budget"

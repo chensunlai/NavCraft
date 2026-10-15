@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import math
 
 from src.common.register import task_registry
-from src.environment.base import NavigationInputError
+from src.environment.base import NavigationInputError, TRANSLATION_ACTIONS
 from src.environment.tasks.metrics import goat_metrics, spl, vln_metrics
 
 
@@ -62,7 +62,7 @@ class TaskAdapter:
 
     @property
     def movement_actions(self) -> tuple[str, ...]:
-        actions = ("move_forward", "turn_left", "turn_right")
+        actions = TRANSLATION_ACTIONS + ("turn_left", "turn_right")
         return (
             actions
             if self.episode.benchmark == "r2r"
