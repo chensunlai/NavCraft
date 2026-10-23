@@ -1,0 +1,23 @@
+# Local documentation and runtime assets (including symlink roots).
+/docs/
+/data
+/model
+/runs
+/cache/
+/outputs/
+
+# Credentials and local environments.
+.env*
+!.env.example
+!.env.*.example
+.venv/
+venv/
+
+# Python build and test artifacts.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+/build/
+/dist/
