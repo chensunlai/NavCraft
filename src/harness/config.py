@@ -33,6 +33,9 @@ def core_options(config, repo, directory, workspace, tools, checkpoint):
     if not 0 < threshold <= context - 8192:
         raise ValueError("Context must reserve at least 8192 output tokens")
     prompt_path = Path(repo) / "config/prompts/navigation.md"
+    system_prompt = prompt_path.read_text()
+    if config.get("tool_tier", "basic") == "super":
+        system_prompt += "\nSuper tools are enabled. Depth is private to geometric tools. locate uses original individual-frame pixel coordinates, including after crops or panoramas; map pixels use the saved m_ view ID. nav_face/nav_goto act on your selected point; reached is not task success. map_view with view={ego:6} is heading-up; other views remain map-up. Use memory_edit fields.at to record a selected visual point. Geometry cannot reliably recognize mirrors or glass.\n"
     return {"workspace": str(workspace), "directory": str(directory),
             "budgetFile": str(Path(directory) / "private/requests.json"),
             "maxRequests": 150, "totalLimit": None,
@@ -41,7 +44,7 @@ def core_options(config, repo, directory, workspace, tools, checkpoint):
             "python": config.get("python", PYTHON), "thinkingLevel": effort,
             "contextWindow": context, "compact": True,
             "compaction": {"reserveTokens": context - threshold, "keepRecentTokens": 4096},
-            "systemPrompt": prompt_path.read_text(), "tools": tools,
+            "systemPrompt": system_prompt, "tools": tools,
             "checkpoint": checkpoint, "tracePersist": False,
             "executionPolicy": {"readOnly": ["scene", "observations", "memory"],
                                 "readWrite": ["scratch"]}}

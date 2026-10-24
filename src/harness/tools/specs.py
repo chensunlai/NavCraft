@@ -9,7 +9,9 @@ def definition(name, description, properties, required=()):
                            "required": list(required), "additionalProperties": False}}
 
 
-def specifications():
+def specifications(tool_tier="basic"):
+    if tool_tier not in {"basic", "super"}:
+        raise ValueError("tool_tier must be basic or super")
     string = {"type": "string"}
     ids = {"type": "array", "items": string}
     room_id = {"type": ["string", "null"], "pattern": "^R[0-9]{2,4}$",
@@ -33,7 +35,7 @@ def specifications():
         "category": {"type": ["string", "null"]}, "room": room_id,
         "size": {"type": ["string", "null"], "enum": ["small", "medium", "large", None]},
     }}
-    return [
+    tools = [
         definition("nav_observe", "Capture a fresh current RGB or a six-view panorama. The body heading is restored after panorama; yaw offsets turn right-positive.",
                    {"mode": {"type": "string", "enum": ["current", "panorama"]}}),
         definition("nav_step", "Execute 1–6 atomic actions sequentially. Translate 0.25m or turn 30deg. Translation may slide and auto-turn by at most 15deg per action. The returned pose and RGB describe actual motion; blocked stops the batch.",
@@ -62,3 +64,7 @@ def specifications():
                            "required": ["op"], "additionalProperties": False}}}, ["operations"]),
         definition("submit", "Submit completion of the current request. If the user asked a question, provide answer. This acknowledgement does not reveal an evaluation outcome.", {"answer": string}),
     ]
+    if tool_tier == "super":
+        from .super_specs import extend
+        extend(tools)
+    return tools

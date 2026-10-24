@@ -62,6 +62,9 @@ class HarnessSession:
         self.private = self.directory / "private"
         self.environment = environment
         self.config = config
+        self.tool_tier = config.get("tool_tier", "basic")
+        self.tool_specs = specifications(self.tool_tier)
+        self.super_tools = None
         self.client = None
         self.trace = None
         self._busy = self._closed = self._broken = False
@@ -92,10 +95,13 @@ class HarnessSession:
             self.observations = Observations(self.workspace, self.transform)
             self.memory = MemoryStore(self.workspace, self.private)
             self.renderer = MapRenderer(self.workspace, self.memory)
-            self.current = self.observations.capture(environment.observe(), environment.steps)
+            if self.tool_tier == "super":
+                from .super_tools import SuperTools
+                self.super_tools = SuperTools(self)
+            self.current = self._capture(environment.observe())
             self._publish_state()
             options = core_options(config, self.repo, self.directory, self.workspace,
-                                   specifications(), self.checkpoint())
+                                   self.tool_specs, self.checkpoint())
             if state.get("history"):
                 options["initialMessages"] = state["history"]
             self.trace = TraceWriter(self.private, [options["auth"]["apiKey"]])
@@ -113,6 +119,8 @@ class HarnessSession:
                 "prompt_sha256": hashlib.sha256(options["systemPrompt"].encode()).hexdigest(),
                 "map_sha256": hashlib.sha256(Path(scene_map).read_bytes()).hexdigest(),
                 "memory_source": state.get("memory_source", "empty"),
+                "tool_tier": self.tool_tier,
+                "goto_planner": self.super_tools.planner if self.super_tools else None,
             })
             self.client = client_factory(self.repo, self.private)
             receipt = self.client.request("init", options, timeout=120)
@@ -144,6 +152,30 @@ class HarnessSession:
     def register_target(self, image):
         return self.observations.add(image, kind="target")["frame"]
 
+    def _capture(self, observation, body_pose=None, **metadata):
+        row = self.observations.capture(observation, self.environment.steps, **metadata)
+        if self.super_tools:
+            self.super_tools.record_frame(observation, row, body_pose)
+        return row
+
+    def _perform_motion(self, action, degrees=None):
+        if self._cancel.is_set() or (self._action_end is not None and self.environment.steps >= self._action_end):
+            self._stop_reason = "aborted" if self._cancel.is_set() else "action_budget"
+            return None
+        try:
+            motion, observation = self.environment.step(action) if degrees is None else self.environment.turn(degrees)
+            self.current = self._capture(observation)
+        except BaseException:
+            self._broken = True
+            self._stop_reason = "execution_uncertain"
+            raise
+        self.trace.emit("motion", {"action": action, "samples": motion.samples,
+                        "blocked": motion.blocked, "frame": self.current["frame"],
+                        **({"turn_degrees": degrees} if degrees is not None else {})})
+        if self._action_end is not None and self.environment.steps >= self._action_end:
+            self._stop_reason = "action_budget"
+        return motion
+
     def _reply(self, value, refs=(), labels=(), *, error=False, end=False):
         result = {"content": [{"type": "text", "text": json.dumps(value, ensure_ascii=False, separators=(",", ":"))}],
                   "images": list(refs), "image_labels": list(labels), "isError": error}
@@ -152,24 +184,39 @@ class HarnessSession:
             reply["control"] = {"stop_remaining_tools": True, "end_run": True}
         return reply
 
-    def _observe(self, mode="current"):
+    def _observe(self, mode="current", grid=False, project=False):
+        if type(grid) is not bool or type(project) is not bool:
+            raise ValueError("grid and project must be boolean")
         if mode not in {"current", "panorama"}:
             raise ValueError("mode must be current or panorama")
         if mode == "current":
-            self.current = self.observations.capture(self.environment.observe(), self.environment.steps)
+            self.current = self._capture(self.environment.observe())
             self._publish_state()
             value = {key: self.current[key] for key in ("frame", "step", "pose")}
-            return self._reply(value, [self.current["path"]], [f"[CURRENT {self.current['frame']}]"])
-        body_pose = map_pose(self.environment.pose(), self.transform)
-        group = "p_" + uuid.uuid4().hex[:8]
-        views = [self.observations.capture(obs, self.environment.steps, group=group, yaw=i * 60)
-                 for i, obs in enumerate(self.environment.panorama())]
-        self.current = views[0]
-        self._publish_state()
-        image = self.observations.collage([v["path"] for v in views], f"observations/{group}.jpg",
-                    [f"{v['frame']} | right {v['yaw']} deg" for v in views])
-        return self._reply({"group": group, "views": [{"frame": v["frame"], "yaw": v["yaw"]} for v in views],
-                            "step": self.environment.steps, "pose": body_pose}, [image], [f"[CURRENT {group}]"])
+            refs, labels = [self.current["path"]], [f"[CURRENT {self.current['frame']}]"]
+            if grid:
+                self._image_counter += 1
+                refs = [self.observations.grid_image(refs[0], f"observations/derived/t_{self._image_counter:04d}.jpg")]
+            views = [self.current]
+        else:
+            captured_pose = self.environment.pose()
+            body_pose = map_pose(captured_pose, self.transform)
+            group = "p_" + uuid.uuid4().hex[:8]
+            views = [self._capture(obs, body_pose=captured_pose, group=group, yaw=i * 60)
+                     for i, obs in enumerate(self.environment.panorama())]
+            self.current = views[0]
+            self._publish_state()
+            image = self.observations.collage([v["path"] for v in views], f"observations/{group}.jpg",
+                        [f"{v['frame']} | right {v['yaw']} deg" for v in views], grid=grid)
+            value = {"group": group, "views": [{"frame": v["frame"], "yaw": v["yaw"]} for v in views],
+                     "step": self.environment.steps, "pose": body_pose}
+            refs, labels = [image], [f"[CURRENT {group}]"]
+        if project:
+            mapped = self._render_map(view={"ego": 6}, overlay=[v["frame"] for v in views])
+            value["projection"] = mapped
+            refs.append(mapped["map"])
+            labels.append(f"[MAP {mapped['view_id']}]")
+        return self._reply(value, refs, labels)
 
     def _step(self, actions):
         if (not isinstance(actions, list) or not 1 <= len(actions) <= 6
@@ -177,17 +224,10 @@ class HarnessSession:
             raise ValueError("actions must contain 1–6 valid atomic actions")
         done, events, stop = [], [], "completed"
         for i, action in enumerate(actions, 1):
-            if self._cancel.is_set() or (self._action_end is not None and self.environment.steps >= self._action_end):
-                self._stop_reason = "aborted" if self._cancel.is_set() else "action_budget"
+            motion = self._perform_motion(action)
+            if motion is None:
                 stop = "interrupted"
                 break
-            try:
-                motion, observation = self.environment.step(action)
-            except BaseException:
-                self._broken = True
-                self._stop_reason = "execution_uncertain"
-                raise
-            self.current = self.observations.capture(observation, self.environment.steps)
             if done and done[-1][0] == action:
                 done[-1][1] += 1
             else:
@@ -197,8 +237,6 @@ class HarnessSession:
                 if motion.auto_yaw_delta_degrees:
                     event["auto_yaw"] = round(-motion.auto_yaw_delta_degrees, 2)
                 events.append(event)
-            self.trace.emit("motion", {"action": action, "samples": motion.samples,
-                            "blocked": motion.blocked, "frame": self.current["frame"]})
             if motion.blocked:
                 stop = "blocked"
                 break
@@ -211,7 +249,9 @@ class HarnessSession:
             self._stop_reason = "action_budget"
         return self._reply(value, [self.current["path"]], [f"[CURRENT {self.current['frame']}]"], end=bool(self._stop_reason))
 
-    def _images(self, frames, layout="separate"):
+    def _images(self, frames, layout="separate", grid=False):
+        if type(grid) is not bool:
+            raise ValueError("grid must be boolean")
         if not isinstance(frames, list) or not 1 <= len(frames) <= 6 or layout not in {"separate", "grid"}:
             raise ValueError("Expected 1–6 frames and separate/grid layout")
         rows, refs, labels = [], [], []
@@ -229,6 +269,7 @@ class HarnessSession:
         public = []
         for row, crop in rows:
             ref = row["path"]
+            bounds = None
             metadata = {k: row[k] for k in ("frame", "step", "pose", "group", "yaw") if k in row}
             if crop is not None:
                 self._image_counter += 1
@@ -237,9 +278,13 @@ class HarnessSession:
                 destination.parent.mkdir(exist_ok=True)
                 with Image.open(self.workspace / row["path"]) as source:
                     w, h = source.size
-                    source.crop((int(crop[0] * w), int(crop[1] * h), max(int(crop[2] * w), int(crop[0] * w) + 1),
-                                 max(int(crop[3] * h), int(crop[1] * h) + 1))).save(destination, quality=85)
+                    bounds = [int(crop[0] * w), int(crop[1] * h), max(int(crop[2] * w), int(crop[0] * w) + 1),
+                              max(int(crop[3] * h), int(crop[1] * h) + 1)]
+                    source.crop(bounds).save(destination, quality=85)
                 metadata["crop"] = crop
+            if grid:
+                self._image_counter += 1
+                ref = self.observations.grid_image(ref, f"observations/derived/t_{self._image_counter:04d}.jpg", source_bounds=bounds)
             refs.append(ref)
             labels.append(f"[{'TARGET' if row['kind'] == 'target' else 'HISTORY'} {row['frame']}]")
             public.append(metadata)
@@ -249,7 +294,25 @@ class HarnessSession:
             labels = ["[HISTORY grid: " + ", ".join(row[0]["frame"] for row in rows) + "]"]
         return self._reply({"frames": public}, refs, labels)
 
+    def _render_map(self, overlay=None, **args):
+        if not self.super_tools and isinstance(args.get("view"), dict) and "ego" in args["view"]:
+            raise ValueError("ego maps require tool_tier=super")
+        if overlay is not None and not isinstance(overlay, list):
+            raise ValueError("overlay must be an array of frame IDs")
+        points = self.super_tools.geometry.overlay(overlay) if overlay else None
+        origin, size = self.transform["origin"], self.transform["size_m"]
+        trajectory = [[(p[0] - origin[0]) / size, (p[2] - origin[1]) / size] for p in self.environment.trajectory]
+        value = self.renderer.render(self.current["pose"], trajectory, overlay_points=points, **args)
+        return value if self.super_tools else {key: value[key] for key in ("map", "bounds", "warnings")}
+
     def _execute(self, name, args):
+        definition = next((tool for tool in self.tool_specs if tool["name"] == name), None)
+        if definition is None or not isinstance(args, dict) or set(args) - definition["parameters"]["properties"].keys():
+            raise ValueError("Unknown tool or unsupported arguments for this tool tier")
+        if name == "locate":
+            return self._reply(self.super_tools.geometry.locate(**args))
+        if name in {"nav_face", "nav_goto"}:
+            return self.super_tools.move(**args, face=name == "nav_face")
         if name == "nav_observe":
             return self._observe(**args)
         if name == "nav_step":
@@ -257,20 +320,20 @@ class HarnessSession:
         if name == "view_images":
             return self._images(**args)
         if name == "memory_read":
-            result = self.memory.read(**args)
+            result = self.super_tools.near(**args) if "near" in args else self.memory.read(**args)
             return self._reply(result, error="error" in result)
         if name == "memory_edit":
             before = self.trace.store(self.memory.entities)
-            result = self.memory.edit(**args)
+            operations, sources = self.super_tools.prepare_edits(args.get("operations")) if self.super_tools else (args.get("operations"), {})
+            result = self.memory.edit(operations)
             if "error" not in result:
+                if self.super_tools:
+                    self.super_tools.remember_sources(operations, sources)
                 self._revision += 1
                 self.trace.emit("memory_changed", {"before": before, "after": self.trace.store(self.memory.entities)})
             return self._reply(result, error="error" in result)
         if name == "map_view":
-            origin, size = self.transform["origin"], self.transform["size_m"]
-            trajectory = [[(p[0] - origin[0]) / size, (p[2] - origin[1]) / size]
-                          for p in self.environment.trajectory]
-            value = self.renderer.render(self.current["pose"], trajectory, **args)
+            value = self._render_map(**args)
             return self._reply(value, [value["map"]], ["[MAP " + Path(value["map"]).stem + "]"])
         if name == "submit":
             if set(args) - {"answer"} or ("answer" in args and not isinstance(args["answer"], str)):

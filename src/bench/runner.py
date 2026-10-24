@@ -99,7 +99,8 @@ def run_episode(repo, model_config, episode, environment_config, scene_map, dire
     try:
         if not Path(scene_map).is_file():
             raise FileNotFoundError(f"Prepare the wall map before running: {scene_map}")
-        environment = Environment(episode, environment_config, directory / "private/environment")
+        environment = Environment(episode, {**environment_config, "tool_tier": model_config.get("tool_tier", "basic")},
+                                  directory / "private/environment")
         preflight = validate_single_floor(environment, episode)
         write_json(directory / "private/preflight.json", preflight)
         if not preflight["passed"]:
