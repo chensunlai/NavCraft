@@ -38,12 +38,12 @@ def extend(tools):
     for name in ("point", "anchor"):
         geometry = operation["fields"]["properties"][name]["anyOf"][1]
         geometry["items"] = {"type": "number"}
-    by_name["memory_edit"]["description"] += " fields.at={frame:f_0042,pixel:[x,y]} sets point for a door/object or anchor for a room. This adds the source frame as evidence. Do not also supply geometry. coordinate_ref=m_0007 instead interprets explicit point/anchor as pixels in that saved map view, including ego views. Stored memory always uses global UV."
+    by_name["memory_edit"]["description"] += " fields.at={frame:f_0042,pixel:[x,y]} projects the visible surface to point or anchor and adds frame evidence. A pixel inside an open doorway may hit a distant surface; place entrances on the projected 2D map instead. Do not also supply geometry. coordinate_ref=m_0007 interprets point/anchor as pixels in that saved map view, including ego views. Stored memory always uses global UV."
     def tool(name, description, properties, required):
         return {"name": name, "description": description, "parameters": {"type": "object",
                 "properties": deepcopy(properties), "required": required, "additionalProperties": False}}
     tools.extend([
-        tool("locate", "Convert 1-10 original frame or map-view pixels to global UV. Frame results include geometric distance, body-relative bearing and floor-relative height. valid measures depth/geometry availability; it cannot detect mirrors, glass or object identity.",
+        tool("locate", "Project 1-10 original frame or map-view pixels onto the 2D map. Returns P1/P2 labels and global UV plus one map image; invalid points return an error. Purple markers are temporary and do not edit memory. RGB pixels locate the surface at their depth, not empty doorways; use the projected 2D map to place entrances. Geometry cannot identify mirrors, glass or objects.",
              {"source": string, "points": {"type": "array", "minItems": 1, "maxItems": 10, "items": pixel}}, ["source", "points"]),
         tool("nav_face", "Turn in place toward your selected frame pixel, global UV or remembered entity. Uses budgeted turns of at most 30 degrees; reports bearing_after. Does not select targets or submit.",
              {"target": target}, ["target"]),

@@ -307,12 +307,29 @@ class HarnessSession:
                                      trajectory_breaks=getattr(self.environment, "trajectory_breaks", ()), **args)
         return value if self.super_tools else {key: value[key] for key in ("map", "bounds", "warnings")}
 
+    def _locate(self, source, points):
+        resolved = self.super_tools.geometry.locate(source, points)
+        value = {"source": source, "points": []}
+        located = []
+        for index, point in enumerate(resolved["points"], 1):
+            label = f"P{index}"
+            if point.get("valid", True) and "uv" in point:
+                value["points"].append({"label": label, "uv": point["uv"]})
+                located.append({"label": label, "uv": point["uv"]})
+            else:
+                value["points"].append({"label": label, "error": point["reason"]})
+        if not located:
+            return self._reply(value)
+        mapped = self._render_map(view="explored", located_points=located)
+        value["view_id"] = mapped["view_id"]
+        return self._reply(value, [mapped["map"]], [f"[MAP {mapped['view_id']} | locate points]"])
+
     def _execute(self, name, args):
         definition = next((tool for tool in self.tool_specs if tool["name"] == name), None)
         if definition is None or not isinstance(args, dict) or set(args) - definition["parameters"]["properties"].keys():
             raise ValueError("Unknown tool or unsupported arguments for this tool tier")
         if name == "locate":
-            return self._reply(self.super_tools.geometry.locate(**args))
+            return self._locate(**args)
         if name in {"nav_face", "nav_goto"}:
             return self.super_tools.move(**args, face=name == "nav_face")
         if name == "nav_observe":

@@ -241,4 +241,6 @@ class SuperTools:
             result["bearing_after"] = round(bearing, 2)
         else:
             result.update(reached=reached, remaining=round(remaining, 3), planner=planner)
-        return session._reply(result, [session.current["path"]], [f"[CURRENT {session.current['frame']}]"], end=bool(session._stop_reason))
+        images = [session.current["path"]] if done else []
+        labels = [f"[CURRENT {session.current['frame']}]"] if done else []
+        return session._reply(result, images, labels, end=bool(session._stop_reason))

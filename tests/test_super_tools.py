@@ -75,7 +75,34 @@ def test_private_depth_and_panorama_capture_bearing(session):
     assert all((session.workspace / p).is_file() for p in receipt["result"]["images"])
     target = session.register_target(session.environment.observe().rgb)
     _, located = call(session, "locate", {"source": target, "points": [[320, 240]]})
-    assert located["points"][0] == {"pixel": [320, 240], "valid": False, "reason": "depth_unavailable"}
+    assert located["points"][0] == {"label": "P1", "error": "depth_unavailable"}
+
+
+def test_locate_returns_numbered_map_without_motion_or_memory_edits(session):
+    before = session.memory.path.read_bytes()
+    receipt, value = call(session, "locate", {"source": session.current["frame"],
+                                             "points": [[280, 240], [-1, 0], [360, 240]]})
+    assert not receipt["result"]["isError"]
+    assert [point["label"] for point in value["points"]] == ["P1", "P2", "P3"]
+    assert value["points"][1] == {"label": "P2", "error": "pixel_out_of_bounds"}
+    assert len(receipt["result"]["images"]) == 1
+    assert (session.workspace / receipt["result"]["images"][0]).is_file()
+    assert set(value) == {"source", "points", "view_id"}
+    assert set(value["points"][0]) == {"label", "uv"}
+    labels = {item["id"] for item in session.renderer.last_label_layout}
+    assert {"P1", "P3"} <= labels and "P2" not in labels
+    assert session.memory.path.read_bytes() == before and session.environment.steps == 0
+    # The returned annotated view remains a usable map pixel source.
+    _, mapped = call(session, "locate", {"source": value["view_id"], "points": [[384, 380]]})
+    assert "uv" in mapped["points"][0]
+    assert mapped["view_id"] != value["view_id"]
+
+
+def test_locate_all_invalid_preserves_failure_reasons_without_empty_map(session):
+    receipt, value = call(session, "locate", {"source": session.current["frame"], "points": [[-1, 0]]})
+    assert not receipt["result"]["isError"]
+    assert value["points"] == [{"label": "P1", "error": "pixel_out_of_bounds"}]
+    assert not receipt["result"]["images"] and "view_id" not in value
 
 
 def test_at_edit_is_atomic_and_provenance_cannot_be_reused_for_other_coordinates(session):
@@ -209,9 +236,16 @@ def test_local_planning_refuses_remote_and_cross_floor_routes(session):
         "fields": {"name": "point", "at": {"frame": frame, "pixel": [320, 240]}}}]})
     assert "error" not in result
     session.environment.shortest_path = lambda *args: [[0, 0, 0], [0, 1, -2]]
-    _, result = call(session, "nav_goto", {"target": {"entity": "O01"}})
+    receipt, result = call(session, "nav_goto", {"target": {"entity": "O01"}})
     assert result["stop"] == "outside_local_scope" and session.environment.steps == 0
     assert not result["reached"]
+    assert receipt["result"]["images"] == []
+
+
+def test_already_aligned_face_does_not_repeat_the_same_rgb(session):
+    receipt, result = call(session, "nav_face", {"target": {"uv": [.5, .4]}})
+    assert result["stop"] == "aligned" and result["done"] == []
+    assert receipt["result"]["images"] == [] and session.environment.steps == 0
 
 
 def test_motion_limits_are_validated_before_action(session):

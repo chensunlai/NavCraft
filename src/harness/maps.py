@@ -10,7 +10,7 @@ from .memory import MemoryStore, location
 from .map_labels import layout_labels
 
 
-COLORS = {"room": "#2563eb", "door": "#c57813", "object": "#748096"}
+COLORS = {"room": "#2563eb", "door": "#c57813", "object": "#748096", "locate": "#9333ea"}
 
 
 def _font(size, bold=False):
@@ -30,9 +30,14 @@ class MapRenderer:
         self.memory = memory if memory is not None else MemoryStore(self.workspace)
 
     def render(self, pose, trajectory, view="explored", labels="id", highlight=None, *, overlay_points=None,
-               trajectory_breaks=()):
+               trajectory_breaks=(), located_points=()):
         if labels not in {"id", "name", "both", "none"}:
             raise ValueError("labels must be id, name, both, or none")
+        for point in located_points:
+            if (not isinstance(point, dict) or not isinstance(point.get("label"), str) or not point["label"]
+                    or not isinstance(point.get("uv"), (list, tuple)) or len(point["uv"]) != 2
+                    or any(type(v) not in (int, float) or not math.isfinite(v) or not 0 <= v <= 1 for v in point["uv"])):
+                raise ValueError("located_points require a label and finite uv in [0,1]")
         data = json.loads((self.workspace / "scene/map.json").read_text())
         size = float(data["size_m"])
         if not math.isfinite(size) or size <= 0:
@@ -69,7 +74,7 @@ class MapRenderer:
             bounds = [0., 0., 1., 1.]
         else:
             if view == "explored":
-                points = list(trajectory or []) + [pose["pos"]]
+                points = list(trajectory or []) + [pose["pos"]] + [p["uv"] for p in located_points]
             elif isinstance(view, dict) and set(view) == {"around"}:
                 ids = view["around"]
                 if not isinstance(ids, list) or not ids:
@@ -153,8 +158,8 @@ class MapRenderer:
                 continue
             px, py = pixel(point)
             structural = entity["type"] != "object"
-            radius = 6 if structural else 3
-            markers.append({"point": [px, py], "radius": radius, "entity": entity})
+            marker_radius = 6 if structural else 3
+            markers.append({"point": [px, py], "radius": marker_radius, "id": entity["id"], "type": entity["type"]})
             label = {"id": entity["id"], "name": entity["name"],
                      "both": f"{entity['id']} {entity['name']}", "none": ""}[labels]
             if not label:
@@ -164,9 +169,18 @@ class MapRenderer:
             label_items.append({"id": entity["id"], "type": entity["type"], "text": label,
                                 "point": [px, py], "size": [box[2] - box[0] + 6, box[3] - box[1] + 4],
                                 "priority": 0 if structural else 1})
+        for point in located_points:
+            if not inside(point["uv"]):
+                continue
+            px, py = pixel(point["uv"])
+            markers.append({"point": [px, py], "radius": 9, "id": point["label"], "type": "locate"})
+            box = draw.textbbox((0, 0), point["label"], font=bold)
+            label_items.append({"id": point["label"], "type": "locate", "text": point["label"],
+                                "point": [px, py], "size": [box[2] - box[0] + 6, box[3] - box[1] + 4],
+                                "priority": -1})
         obstacles = [[m["point"][0] - r, m["point"][1] - r,
                       m["point"][0] + r, m["point"][1] + r]
-                     for m in markers for r in [10 if m["entity"]["id"] in highlights else m["radius"] + 1]]
+                     for m in markers for r in [10 if m["id"] in highlights else m["radius"] + 1]]
         if inside(pose["pos"]):
             px, py = pixel(pose["pos"])
             obstacles.append([px - 15, py - 15, px + 15, py + 15])
@@ -185,17 +199,19 @@ class MapRenderer:
                       fill=COLORS[label["type"]], font=selected_font)
         for marker in markers:
             px, py = marker["point"]
-            radius, entity = marker["radius"], marker["entity"]
-            color = COLORS[entity["type"]]
-            if entity["type"] == "room":
-                draw.rectangle((px - radius, py - radius, px + radius, py + radius),
+            marker_radius, kind = marker["radius"], marker["type"]
+            color = COLORS[kind]
+            if kind == "locate":
+                continue
+            if kind == "room":
+                draw.rectangle((px - marker_radius, py - marker_radius, px + marker_radius, py + marker_radius),
                                fill=color, outline="white", width=1)
-            elif entity["type"] == "door":
-                draw.polygon([(px, py - radius - 1), (px + radius + 1, py),
-                              (px, py + radius + 1), (px - radius - 1, py)], fill=color)
+            elif kind == "door":
+                draw.polygon([(px, py - marker_radius - 1), (px + marker_radius + 1, py),
+                              (px, py + marker_radius + 1), (px - marker_radius - 1, py)], fill=color)
             else:
-                draw.ellipse((px - radius, py - radius, px + radius, py + radius), fill=color)
-            if entity["id"] in highlights:
+                draw.ellipse((px - marker_radius, py - marker_radius, px + marker_radius, py + marker_radius), fill=color)
+            if marker["id"] in highlights:
                 draw.ellipse((px - 10, py - 10, px + 10, py + 10), outline="#e65045", width=2)
         if inside(pose["pos"]):
             px, py = pixel(pose["pos"])
@@ -203,6 +219,12 @@ class MapRenderer:
             points = [(px + math.sin(angle + offset) * radius, py - math.cos(angle + offset) * radius)
                       for offset, radius in ((0, 12), (2.5, 8), (-2.5, 8))]
             draw.polygon(points, fill="#e53935")
+        for marker in markers:
+            if marker["type"] == "locate":
+                px, py = marker["point"]
+                draw.ellipse((px - 6, py - 6, px + 6, py + 6), outline=COLORS["locate"], width=2)
+                draw.line((px - 9, py, px + 9, py), fill=COLORS["locate"], width=2)
+                draw.line((px, py - 9, px, py + 9), fill=COLORS["locate"], width=2)
         # Keep geometry outside the requested crop from leaking into margins.
         draw.rectangle((0, 0, 37, height), fill="white")
         draw.rectangle((width - 37, 0, width, height), fill="white")

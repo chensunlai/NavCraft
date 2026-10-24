@@ -84,3 +84,5 @@ Super depth is stored privately as uint16 PNG with 0.001 metres per integer. A v
 "$NAVCRAFT_PYTHON" scripts/check_super_tools.py --gpu 1 \
   --output cache/validation/super-tools-check
 ```
+
+`locate` returns a single annotated map with temporary purple P1/P2 markers and compact UV results; it does not write memory. Doorway pixels can hit surfaces beyond the opening, so use the projected 2D map to place entrances. No-motion geometric navigation replies do not repeat the current RGB.
