@@ -2,7 +2,9 @@
 
 from pathlib import Path
 
-from .base import EpisodeSource, EpisodeSpec, read_json
+from src.common.io import read_json
+
+from .base import EpisodeSource, EpisodeSpec
 
 
 class VLNCEEpisodeSource(EpisodeSource):

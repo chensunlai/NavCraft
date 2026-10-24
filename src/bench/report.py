@@ -119,7 +119,10 @@ def write_report(directory):
               "|---|---|---:|---:|---:|---:|---:|---|"]
     for group in report["groups"]:
         totals = group["totals"]
-        display = lambda key: totals[key] if totals[key] is not None else "missing"
+
+        def display(key):
+            return totals[key] if totals[key] is not None else "missing"
+
         lines.append(f"| {group['model']} | {group['benchmark']} | {display('requests')} | "
                      f"{display('charged_requests')} | {display('service_errors')} | {display('actions')} | "
                      f"{totals['episodes_with_actions']} / {group['selected']} | missing |")
