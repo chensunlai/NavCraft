@@ -1,5 +1,7 @@
 import hashlib
 import json
+from pathlib import Path
+import subprocess
 
 from PIL import Image
 import pytest
@@ -150,3 +152,67 @@ def test_explicit_empty_initial_memory_is_known_before_the_first_edit(tmp_path):
     first = json.loads((output / "data/rounds/sol-01.json").read_text())
     assert first["memory_before"] == first["memory_after"] == []
     assert "Inherited" in first["memory_status"]
+
+
+def viewer_javascript(check):
+    source = Path(__file__).resolve().parents[1] / "src/viewer/web/app.js"
+    script = """
+import fs from 'node:fs';
+import vm from 'node:vm';
+const source=fs.readFileSync(process.argv[1],'utf8').split("$('#overview-btn').onclick=")[0];
+const elements=new Map();
+const document={querySelector:key=>{if(!elements.has(key))elements.set(key,{innerHTML:'',textContent:'',disabled:false});return elements.get(key);},querySelectorAll:()=>[]};
+const context=vm.createContext({document,console});
+vm.runInContext(source,context);
+console.log(JSON.stringify(vm.runInContext(process.argv[2],context)));
+"""
+    result = subprocess.run(["node", "--input-type=module", "-e", script, str(source), check],
+                            check=True, capture_output=True, text=True)
+    return json.loads(result.stdout)
+
+
+def test_viewer_door_points_and_legacy_midpoints_do_not_change_records():
+    result = viewer_javascript("""(()=>{
+const old={id:'D01',type:'door',segment:[[.2,.3],[.4,.5]]};
+const snapshot=JSON.stringify(old);
+return {legacy:entityPoint(old),fresh:entityPoint({type:'door',point:[.1,.2]}),
+  unchanged:snapshot===JSON.stringify(old),colors:entityColors};
+})()""")
+    assert result["legacy"] == pytest.approx([.3, .4])
+    assert result["fresh"] == [.1, .2] and result["unchanged"]
+    assert result["colors"] == {"room": "#2563eb", "door": "#c57813", "object": "#748096"}
+
+
+def test_viewer_labels_avoid_each_other_markers_pose_and_edges():
+    result = viewer_javascript("""(()=>{
+const markers=Array.from({length:12},(_,i)=>({id:(i<2?'R':'O')+i,type:i<2?'room':'object',x:150+(i%3)*3,y:120+(i%2)*3,r:i<2?5.5:3}));
+const pose={x:190,y:90,r:15};
+return {markers,pose,labels:placeMapLabels({measureText:t=>({width:t.length*6})},markers,pose,[7,25,313,213])};
+})()""")
+    labels = result["labels"]
+    assert len(labels) == 12
+    for index, label in enumerate(labels):
+        assert 7 <= label["x"] and label["x"] + label["w"] <= 313
+        assert 25 <= label["y"] and label["y"] + label["h"] <= 213
+        for other in labels[index + 1:]:
+            assert (label["x"] + label["w"] <= other["x"] or other["x"] + other["w"] <= label["x"]
+                    or label["y"] + label["h"] <= other["y"] or other["y"] + other["h"] <= label["y"])
+        for circle in result["markers"] + [result["pose"]]:
+            nearest = [max(label["x"], min(circle["x"], label["x"] + label["w"])),
+                       max(label["y"], min(circle["y"], label["y"] + label["h"]))]
+            assert ((circle["x"] - nearest[0]) ** 2 + (circle["y"] - nearest[1]) ** 2) ** .5 >= circle["r"] + 3
+    assert labels[0]["bold"] and labels[1]["bold"]
+
+
+def test_viewer_single_model_partial_rounds_do_not_show_four_model_conclusions():
+    result = viewer_javascript("""(()=>{
+state.index={models:[{id:'astra',label:'Astra',effort:'high',status:'running',successes:1,navigation_total:11,first_entities:2,final_entities:3,memory_reads:1,memory_writes:2,rounds:[{number:1,id:'explore',kind:'explore',success:null,entities:2},{number:2,id:'find_bed',kind:'navigation',success:true,entities:3}]}]};
+state.model='astra';overview();
+return {html:$('#main').innerHTML,first:adjacentRounds(model(),1),last:adjacentRounds(model(),2),
+  numbers:availableRounds([...state.index.models,{rounds:[{number:3}]}]).map(r=>r.number),history:historicalComparison(state.index.models)};
+})()""")
+    assert not result["history"]
+    assert "Sol、Astra、Qwen 都" not in result["html"] and "四个模型" not in result["html"]
+    assert "Astra · 连续任务记录" in result["html"] and "进行中" in result["html"]
+    assert result["first"] == {"next": 2} and result["last"] == {"previous": 1}
+    assert result["numbers"] == [1, 2, 3]

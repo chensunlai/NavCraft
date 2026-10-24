@@ -3,13 +3,19 @@ const $$ = (q, root = document) => [...root.querySelectorAll(q)];
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const number = (value, digits = 0) => Number.isFinite(value) ? Number(value).toFixed(digits) : '—';
 const colors = ['#16836c', '#6783a1', '#bd9565', '#9b77a6'];
+const entityColors = {room:'#2563eb',door:'#c57813',object:'#748096'};
 const titles = ['初步探索与建档','找到床','找到浴缸','找到餐桌','卧室中床对面的电视','备餐区水槽','独立卫生间洗手盆','浴室双台盆','客餐厅电视','衣帽间 → 浴缸','走廊 → 餐桌 → 床','浴室 → 卧室 → 茶几'];
 const reasonText = {submitted:'已提交',request_budget:'请求预算耗尽',action_budget:'动作预算耗尽',unsubmitted:'未提交',output_limit:'输出达到上限',timeout:'超时',model_error:'模型接口异常',no_action_output:'无可执行输出'};
 const state = {index:null,model:'sol',round:0,detail:null,frame:0,playing:false,timer:null,speed:1,roundFilter:'all',tab:'events',eventFilter:'all',search:'',memory:'after',kind:'all',request:0,showPath:true,showEntities:true};
 const cache = new Map();
 function model() {return state.index.models.find(m => m.id === state.model) ?? state.index.models[0];}
-function outcome(row) {return row.kind === 'explore' || row.success === null ? 'neutral' : row.success ? 'good' : 'bad';}
-function label(row) {return outcome(row) === 'neutral' ? '探索建档' : row.success ? '成功' : '失败';}
+function outcome(row) {return !row || row.kind === 'explore' || row.success === null || row.success === undefined ? 'neutral' : row.success ? 'good' : 'bad';}
+function label(row) {return !row ? '待完成' : row.kind === 'explore' ? '探索建档' : row.success == null ? '待判定' : row.success ? '成功' : '失败';}
+function availableRounds(models) {return [...new Map(models.flatMap(m=>m.rounds).map(r=>[r.number,r])).values()].sort((a,b)=>a.number-b.number);}
+function adjacentRounds(m,number) {const rows=m.rounds.map(r=>r.number).sort((a,b)=>a-b);return {previous:rows.filter(n=>n<number).at(-1),next:rows.find(n=>n>number)};}
+function evaluatedCount(m) {return m.status==='completed'?m.navigation_total:m.rounds.filter(r=>r.kind==='navigation'&&r.status!=='infrastructure_error'&&typeof r.success==='boolean').length;}
+function successPercent(m) {const count=evaluatedCount(m);return count?m.successes/count*100:NaN;}
+function historicalComparison(models) {return models.length===4&&['sol','astra','qwen27','deepseek'].every(id=>models.some(m=>m.id===id&&m.status==='completed'&&m.rounds.length===12));}
 function toast(text) {$('#toast').textContent=text;$('#toast').classList.add('show');setTimeout(()=>$('#toast').classList.remove('show'),2000);}
 function stop() {state.playing=false;clearTimeout(state.timer);const b=$('#play-btn');if(b)b.textContent='▶ 播放';}
 function route(modelId, round=0) {stop();location.hash=round ? `${modelId}/${round}` : 'overview';}
@@ -22,24 +28,25 @@ function sidebar() {
   $$('.sidebar-filter button').forEach(b=>b.classList.toggle('active',b.dataset.roundFilter===state.roundFilter));
 }
 function overview() {
-  const models=state.index.models;
+  const models=state.index.models,rounds=availableRounds(models),historical=historicalComparison(models);
   $('#breadcrumbs').textContent='连续导航 / 实验总览';
-  $('#main').innerHTML=`<div class="page-heading"><div><div class="eyebrow">CONTINUOUS NAVIGATION · MEMORY</div><h1>一次探索，十二轮导航交互</h1><p class="intro">四个模型在同一场景中完成连续任务。从空记忆开始，记录空间、寻找目标，再从不同位置回访。点击任意结果，查看它实际看到了什么、怎么走、记住了什么。</p></div><button class="outline-btn" id="open-first">查看逐轮回放 ↗</button></div>
-  <section class="model-grid">${models.map((m,i)=>`<article class="model-card" data-model="${esc(m.id)}"><div class="model-name"><span class="small-dot" style="background:${colors[i]}"></span>${esc(shortName(m))}<span class="effort">${esc(m.effort)}</span></div><div class="score"><strong>${number(m.successes/m.navigation_total*100,1)}<span style="font-size:18px">%</span></strong><span>${m.successes} / ${m.navigation_total} 成功</span></div><div class="progress-track"><div class="progress-fill" style="width:${m.successes/m.navigation_total*100}%;background:${colors[i]}"></div></div><div class="model-meta"><span>首轮 / 最终实体</span><b>${m.first_entities} → ${m.final_entities}</b></div><div class="model-meta"><span>记忆读取 / 编辑调用</span><b>${m.memory_reads} / ${m.memory_writes}</b></div></article>`).join('')}</section>
-  <section class="panel"><div class="panel-head"><div><h2>逐轮结果对比</h2><p>第 1 轮为探索，不计入导航成功率。其余 11 轮均要求提交，并满足到达与指定路线条件。</p></div><div class="legend"><span><i style="background:var(--accent)"></i>成功</span><span><i style="background:var(--red)"></i>失败</span><span><i style="background:#a6aeaa"></i>探索</span></div></div><div class="table-wrap"><table class="heat-table"><thead><tr><th>任务 / 轮次</th>${models.map(m=>`<th>${esc(shortName(m))}</th>`).join('')}</tr></thead><tbody>${models[0].rounds.map((r,j)=>`<tr><td><span>${String(r.number).padStart(2,'0')}</span>${esc(titles[j]||r.id)}${r.number>=10?' <small style="color:#a5ada8">↪ 传送</small>':''}</td>${models.map(m=>{const row=m.rounds.find(x=>x.number===r.number);return `<td><button class="result-cell ${outcome(row)}" data-cell="${m.id}/${r.number}" title="${esc(reasonText[row.reason]||row.reason)} · ${row.actions} 动作">${label(row)} ↗</button></td>`;}).join('')}</tr>`).join('')}</tbody></table></div></section>
-  <div class="overview-bottom"><section class="panel"><div class="panel-head"><div><h2>记忆是否持续增长</h2><p>每轮结束时的实体数；数量不等于内容正确，也不证明记忆被有效使用。</p></div></div><div class="chart">${memoryChart(models)}</div><div class="legend chart-legend">${models.map((m,i)=>`<span><i style="background:${colors[i]}"></i>${esc(shortName(m))}</span>`).join('')}</div></section><section class="panel"><div class="panel-head"><h2>这轮实验看到了什么</h2></div><div class="insight"><div class="insight-item"><span class="insight-number">01</span><div><h3>会建档，不代表会持续维护</h3><p>Sol、Astra、Qwen 都在首轮建立了 11 个实体。Sol 后续持续补充；Qwen 的新增与修订集中在少数轮次。</p></div></div><div class="insight-item"><span class="insight-number">02</span><div><h3>到达、提交、路线分别检查</h3><p>部分失败轮次结束时已在目标范围内，但未提交。含途经要求的任务还要检查真实穿门方向与顺序。</p></div></div><div class="insight-item"><span class="insight-number">03</span><div><h3>记忆的质量仍需看内容</h3><p>可以逐条查看实体的坐标、房间归属、连接与证据。可打开的证据不等于物体识别或空间关系正确。</p></div></div></div></section></div><p class="footnote">开发检查 · 单场景、每模型一次连续任务链，12 轮并非 12 个独立样本。SuperTools 使用私有 RGB-D 几何辅助，模型持续获得地图位姿；本页的路径叠图用于离线核验。记忆编辑次数包含失败调用，详情中另列实际成功的操作。</p>`;
-  $('#open-first').onclick=()=>route(state.model,1);
-  $$('.model-card').forEach(e=>e.onclick=()=>route(e.dataset.model,1));
+  $('#main').innerHTML=`<div class="page-heading"><div><div class="eyebrow">CONTINUOUS NAVIGATION · MEMORY</div><h1>${models.length===1?esc(shortName(models[0]))+' · 连续任务记录':'连续任务与模型对比'}</h1><p class="intro">${models.length} 个模型，已保存最多 ${rounds.length} 轮交互。从空记忆开始，记录空间、寻找目标，再从不同位置回访。点击已有结果，查看实际观察、行动和记忆；未完成轮次不显示为失败。</p></div><button class="outline-btn" id="open-first">查看逐轮回放 ↗</button></div>
+  <section class="model-grid">${models.map((m,i)=>`<article class="model-card" data-model="${esc(m.id)}"><div class="model-name"><span class="small-dot" style="background:${colors[i]}"></span>${esc(shortName(m))}<span class="effort">${esc(m.effort)}</span></div><div class="score"><strong>${number(successPercent(m),1)}<span style="font-size:18px">${evaluatedCount(m)?'%':''}</span></strong><span>${m.successes} / ${evaluatedCount(m)} 成功${m.status==='completed'?'':' · 进行中'}</span></div><div class="progress-track"><div class="progress-fill" style="width:${Number.isFinite(successPercent(m))?successPercent(m):0}%;background:${colors[i]}"></div></div><div class="model-meta"><span>首轮 / 最终实体</span><b>${m.first_entities} → ${m.final_entities}</b></div><div class="model-meta"><span>记忆读取 / 编辑调用</span><b>${m.memory_reads} / ${m.memory_writes}</b></div></article>`).join('')}</section>
+  <section class="panel"><div class="panel-head"><div><h2>逐轮结果对比</h2><p>探索轮不计入导航成功率。导航轮要求提交，并满足到达与指定路线条件；未完成格保留为空。</p></div><div class="legend"><span><i style="background:var(--accent)"></i>成功</span><span><i style="background:var(--red)"></i>失败</span><span><i style="background:#a6aeaa"></i>探索</span></div></div><div class="table-wrap"><table class="heat-table"><thead><tr><th>任务 / 轮次</th>${models.map(m=>`<th>${esc(shortName(m))}</th>`).join('')}</tr></thead><tbody>${rounds.map(r=>`<tr><td><span>${String(r.number).padStart(2,'0')}</span>${esc(titles[r.number-1]||r.id)}${r.number>=10?' <small style="color:#a5ada8">↪ 传送</small>':''}</td>${models.map(m=>{const row=m.rounds.find(x=>x.number===r.number);return !row?'<td><span class="pending-cell">待完成</span></td>':`<td><button class="result-cell ${outcome(row)}" data-cell="${m.id}/${r.number}" title="${esc(reasonText[row.reason]||row.reason)} · ${row.actions} 动作">${label(row)} ↗</button></td>`;}).join('')}</tr>`).join('')}</tbody></table></div></section>
+  <div class="overview-bottom"><section class="panel"><div class="panel-head"><div><h2>记忆是否持续增长</h2><p>每轮结束时的实体数；数量不等于内容正确，也不证明记忆被有效使用。</p></div></div><div class="chart">${memoryChart(models)}</div><div class="legend chart-legend">${models.map((m,i)=>`<span><i style="background:${colors[i]}"></i>${esc(shortName(m))}</span>`).join('')}</div></section><section class="panel"><div class="panel-head"><h2>这轮实验看到了什么</h2></div><div class="insight"><div class="insight-item"><span class="insight-number">01</span><div><h3>${historical?'会建档，不代表会持续维护':'逐轮检查记忆变化'}</h3><p>${historical?'Sol、Astra、Qwen 都在首轮建立了 11 个实体。Sol 后续持续补充；Qwen 的新增与修订集中在少数轮次。':'查看每轮的新增、修订和证据关联；当前结果只说明已保存的执行行为，不自动推断记忆是否正确。'}</p></div></div><div class="insight-item"><span class="insight-number">02</span><div><h3>到达、提交、路线分别检查</h3><p>${historical?'部分失败轮次结束时已在目标范围内，但未提交。含途经要求的任务还要检查真实穿门方向与顺序。':'分别查看终点是否进入目标范围、模型是否提交，以及实际穿门的方向与顺序；到达工具选定的点不代表任务成功。'}</p></div></div><div class="insight-item"><span class="insight-number">03</span><div><h3>记忆的质量仍需看内容</h3><p>可以逐条查看实体的坐标、房间归属、连接与证据。可打开的证据不等于物体识别或空间关系正确。</p></div></div></div></section></div><p class="footnote">开发检查 · 单场景、每模型一次连续任务链，各轮不是独立样本。SuperTools 使用私有 RGB-D 几何辅助，模型持续获得地图位姿；本页的路径叠图用于离线核验。记忆编辑次数包含失败调用，详情中另列实际成功的操作。</p>`;
+  $('#open-first').disabled=!model().rounds.length;$('#open-first').onclick=()=>route(state.model,model().rounds[0]?.number||0);
+  $$('.model-card').forEach(e=>e.onclick=()=>route(e.dataset.model,state.index.models.find(m=>m.id===e.dataset.model).rounds[0]?.number||0));
   $$('[data-cell]').forEach(e=>e.onclick=()=>{location.hash=e.dataset.cell;});
 }
 function shortName(m) {return ({sol:'Sol',astra:'Astra',deepseek:'DeepSeek 1017',qwen27:'Qwen 27B'})[m.id]||m.label;}
 function memoryChart(models) {
   const w=620,h=215,left=32,right=18,top=16,bottom=30;
   const maximum=Math.max(5,...models.flatMap(m=>m.rounds.map(r=>r.entities||0)));
-  const ceiling=Math.ceil(maximum/5)*5;const x=n=>left+(n-1)*(w-left-right)/11,y=n=>h-bottom-n/ceiling*(h-top-bottom);
-  let out=`<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="四个模型每轮结束时的实体数量">`;
+  const count=Math.max(1,...models.flatMap(m=>m.rounds.map(r=>r.number)));
+  const ceiling=Math.ceil(maximum/5)*5;const x=n=>left+(n-1)*(w-left-right)/Math.max(1,count-1),y=n=>h-bottom-n/ceiling*(h-top-bottom);
+  let out=`<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="每轮结束时的实体数量">`;
   for(let n=0;n<=ceiling;n+=5)out+=`<line x1="${left}" x2="${w-right}" y1="${y(n)}" y2="${y(n)}" stroke="#edf0ee"/><text x="22" y="${y(n)+3}" text-anchor="end" fill="#9aa29e" font-size="10">${n}</text>`;
-  for(let n=1;n<=12;n++)out+=`<text x="${x(n)}" y="${h-9}" text-anchor="middle" fill="#9aa29e" font-size="10">${n}</text>`;
+  for(let n=1;n<=count;n++)out+=`<text x="${x(n)}" y="${h-9}" text-anchor="middle" fill="#9aa29e" font-size="10">${n}</text>`;
   models.forEach((m,i)=>{out+=`<polyline points="${m.rounds.map(r=>`${x(r.number)},${y(r.entities||0)}`).join(' ')}" fill="none" stroke="${colors[i]}" stroke-width="2"/>`;m.rounds.forEach(r=>out+=`<circle cx="${x(r.number)}" cy="${y(r.entities||0)}" r="3" fill="${colors[i]}"><title>${esc(shortName(m))} · 第${r.number}轮 · ${r.entities}个实体</title></circle>`);});return out+'</svg>';
 }
 async function detailPage() {
@@ -51,13 +58,13 @@ async function detailPage() {
     if(!cache.has(summary.detail)){const response=await fetch(summary.detail);if(!response.ok)throw Error(`HTTP ${response.status}`);cache.set(summary.detail,await response.json());}
     if(ticket!==state.request)return;
     state.detail=cache.get(summary.detail);state.frame=0;state.tab='events';state.eventFilter='all';state.search='';state.memory='after';state.kind='all';
-    const d=state.detail,s=d.summary||summary,frames=d.frames||[];
+    const d=state.detail,s=d.summary||summary,frames=d.frames||[],neighbors=adjacentRounds(model(),state.round);
     $('#breadcrumbs').textContent=`连续导航 / ${shortName(model())} / 第 ${state.round} 轮`;
-    $('#main').innerHTML=`<div class="page-heading detail-heading"><div><div class="eyebrow">${esc(shortName(model()))} · ${esc(model().effort.toUpperCase())} · ROUND ${String(state.round).padStart(2,'0')}</div><span class="result-badge ${outcome(summary)}">${label(summary)}${summary.kind==='navigation'?' · '+esc(reasonText[s.reason]||s.reason):''}</span><h1>${esc(d.instruction||summary.instruction)}</h1><p class="intro">${s.teleported?'本轮开始前显式传送；保留此前会话和空间记忆。':'沿用上轮的环境位置、会话和空间记忆。'}${state.round===1?' 初始记忆为空。':''}</p></div><div class="round-switch"><button id="prev-round" ${state.round===1?'disabled':''}>← 上一轮</button><button id="next-round" ${state.round===12?'disabled':''}>下一轮 →</button></div></div>
+    $('#main').innerHTML=`<div class="page-heading detail-heading"><div><div class="eyebrow">${esc(shortName(model()))} · ${esc(model().effort.toUpperCase())} · ROUND ${String(state.round).padStart(2,'0')}</div><span class="result-badge ${outcome(summary)}">${label(summary)}${summary.kind==='navigation'?' · '+esc(reasonText[s.reason]||s.reason):''}</span><h1>${esc(d.instruction||summary.instruction)}</h1><p class="intro">${s.teleported?'本轮开始前显式传送；保留此前会话和空间记忆。':'沿用上轮的环境位置、会话和空间记忆。'}${state.round===1?' 初始记忆为空。':''}</p></div><div class="round-switch"><button id="prev-round" ${neighbors.previous===undefined?'disabled':''}>← 上一轮</button><button id="next-round" ${neighbors.next===undefined?'disabled':''}>下一轮 →</button></div></div>
       <div class="metric-strip">${metric('实际动作',s.actions,'步')}${metric('模型请求',s.requests,'次')}${metric('实际路程',number(s.path_length,2),'m')}${metric('终点至成功区域',s.navigation_error===undefined?'—':number(s.navigation_error,3),'m')}${metric('结束时实体',s.memory?.entities??summary.entities,'个')}${metric('工具错误',s.memory?.tool_errors??summary.tool_errors??0,'次')}</div>
-      <div class="media-grid"><section class="media-panel"><div class="media-title"><span>第一视角回放</span><small>已保存的真实 RGB · 点击放大</small></div><div class="observation-stage"><img id="current-image" alt="模型观察画面"><span class="frame-label" id="frame-label"></span></div><div class="playback"><input id="frame-slider" aria-label="观察帧进度" type="range" min="0" max="${Math.max(0,frames.length-1)}" value="0"><div class="playback-row"><button class="step-btn" id="prev-frame" aria-label="上一帧">‹</button><button id="play-btn" class="play-btn">▶ 播放</button><button class="step-btn" id="next-frame" aria-label="下一帧">›</button><select id="speed" class="speed-select" aria-label="播放速度">${[.5,1,2,4,8].map(v=>`<option value="${v}" ${v===state.speed?'selected':''}>${v}×</option>`).join('')}</select><span class="frame-count" id="frame-count"></span></div></div><div class="pose-row" id="pose-row"></div></section><section class="media-panel"><div class="media-title"><span>地图与空间记忆</span><small>墙体 + 当前帧位姿</small></div><div class="map-stage"><canvas id="map-canvas" aria-label="墙体、位姿、轨迹与记忆实体"></canvas><span class="map-note">本轮完整轨迹：私有核验；实体：本轮结束时的模型记录</span></div><div class="map-options"><label><input id="show-path" type="checkbox" checked>轨迹</label><label><input id="show-entities" type="checkbox" checked>本轮结束记忆</label><span style="margin-left:auto">红色箭头为当前图片拍摄朝向</span></div><div class="pose-row"><span><b>●</b> 房间</span><span><b style="color:#9c7757">●</b> 物体</span><span><b style="color:#d19a42">━</b> 门</span><span>空白不代表可通行</span></div></section></div>
+      <div class="media-grid"><section class="media-panel"><div class="media-title"><span>第一视角回放</span><small>已保存的真实 RGB · 点击放大</small></div><div class="observation-stage"><img id="current-image" alt="模型观察画面"><span class="frame-label" id="frame-label"></span></div><div class="playback"><input id="frame-slider" aria-label="观察帧进度" type="range" min="0" max="${Math.max(0,frames.length-1)}" value="0"><div class="playback-row"><button class="step-btn" id="prev-frame" aria-label="上一帧">‹</button><button id="play-btn" class="play-btn">▶ 播放</button><button class="step-btn" id="next-frame" aria-label="下一帧">›</button><select id="speed" class="speed-select" aria-label="播放速度">${[.5,1,2,4,8].map(v=>`<option value="${v}" ${v===state.speed?'selected':''}>${v}×</option>`).join('')}</select><span class="frame-count" id="frame-count"></span></div></div><div class="pose-row" id="pose-row"></div></section><section class="media-panel"><div class="media-title"><span>地图与空间记忆</span><small>墙体 + 当前帧位姿</small></div><div class="map-stage"><canvas id="map-canvas" aria-label="墙体、位姿、轨迹与记忆实体"></canvas><span class="map-note">本轮完整轨迹：私有核验；实体：本轮结束时的模型记录</span></div><div class="map-options"><label><input id="show-path" type="checkbox" checked>轨迹</label><label><input id="show-entities" type="checkbox" checked>本轮结束记忆</label><span style="margin-left:auto">红色箭头为当前图片拍摄朝向</span></div><div class="pose-row"><span class="map-legend-room"><b>●</b> 房间</span><span class="map-legend-door"><b>●</b> 门</span><span class="map-legend-object"><b>●</b> 物体</span><span>空白不代表可通行</span></div></section></div>
       <section class="lower-section"><div class="tab-bar"><button data-tab="events" class="active">执行过程<span class="tab-count">${d.events?.length||0}</span></button><button data-tab="memory">空间记忆<span class="tab-count">${d.memory_after?.length||0}</span></button><button data-tab="verdict">判定详情</button></div><div id="tab-content"></div></section>`;
-    $('#prev-round').onclick=()=>route(state.model,state.round-1);$('#next-round').onclick=()=>route(state.model,state.round+1);
+    $('#prev-round').onclick=()=>{if(neighbors.previous!==undefined)route(state.model,neighbors.previous);};$('#next-round').onclick=()=>{if(neighbors.next!==undefined)route(state.model,neighbors.next);};
     $('#frame-slider').oninput=e=>{stop();setFrame(+e.target.value);};$('#prev-frame').onclick=()=>{stop();setFrame(state.frame-1);};$('#next-frame').onclick=()=>{stop();setFrame(state.frame+1);};
     $('#play-btn').onclick=()=>{if(state.playing)stop();else{if(state.frame>=frames.length-1)state.frame=0;state.playing=true;$('#play-btn').textContent='❚❚ 暂停';play();}};
     $('#speed').onchange=e=>{state.speed=+e.target.value;};$('#current-image').onclick=()=>{const f=frames[state.frame];if(f)openImage(f.url,f.id);};
@@ -78,11 +85,42 @@ function setFrame(index) {
   drawMap();
 }
 function play() {if(!state.playing)return;setFrame(state.frame);if(state.frame>=state.detail.frames.length-1){stop();return;}state.timer=setTimeout(()=>{state.frame++;play();},650/state.speed);}
+function entityPoint(entity) {
+  if(entity.point||entity.anchor)return entity.point||entity.anchor;
+  // Historical viewer only: keep original records intact and display an old
+  // door segment by its midpoint. New runtime memory contains point directly.
+  if(entity.type==='door'&&entity.segment?.length===2)return entity.segment[0].map((v,i)=>(v+entity.segment[1][i])/2);
+  return null;
+}
+function placeMapLabels(ctx,markers,pose,bounds) {
+  const placed=[];
+  const overlaps=(a,b)=>a.x<b.x+b.w+3&&a.x+a.w+3>b.x&&a.y<b.y+b.h+3&&a.y+a.h+3>b.y;
+  const hitsCircle=(box,circle)=>Math.hypot(circle.x-Math.max(box.x,Math.min(circle.x,box.x+box.w)),circle.y-Math.max(box.y,Math.min(circle.y,box.y+box.h)))<circle.r+3;
+  const ordered=[...markers].sort((a,b)=>(a.type==='object')-(b.type==='object'));
+  for(const marker of ordered){
+    const bold=marker.type!=='object';ctx.font=`${bold?'700':'400'} ${bold?11:10}px sans-serif`;
+    const w=ctx.measureText(marker.id).width+8,h=bold?19:17;
+    let chosen=null;
+    for(const radius of [14,24,38,54,74,100,134]){
+      for(let direction=0;direction<16;direction++){
+        const angle=direction*Math.PI/8,dx=Math.cos(angle),dy=Math.sin(angle);
+        const box={x:marker.x+dx*radius-(dx<0?w:0),y:marker.y+dy*radius-h/2,w,h};
+        if(box.x<bounds[0]||box.y<bounds[1]||box.x+w>bounds[2]||box.y+h>bounds[3])continue;
+        if(placed.some(label=>overlaps(box,label))||markers.some(other=>hitsCircle(box,other))||(pose&&hitsCircle(box,pose)))continue;
+        chosen={...box,anchor:[marker.x,marker.y],id:marker.id,type:marker.type,bold};break;
+      }
+      if(chosen)break;
+    }
+    if(chosen)placed.push(chosen);
+  }
+  return placed;
+}
 function drawMap() {
   const canvas=$('#map-canvas');if(!canvas||!state.index.map)return;
   const width=canvas.clientWidth||500,height=canvas.clientHeight||375,ratio=window.devicePixelRatio||1;canvas.width=width*ratio;canvas.height=height*ratio;
   const ctx=canvas.getContext('2d');ctx.scale(ratio,ratio);ctx.fillStyle='#fcfdfc';ctx.fillRect(0,0,width,height);
   const map=state.index.map,all=map.walls.flat(),uv=p=>[(p[0]-map.origin[0])/map.size_m,(p[1]-map.origin[1])/map.size_m];
+  if(!all.length)return;
   const points=all.map(uv);const minX=Math.min(...points.map(p=>p[0]))-.025,maxX=Math.max(...points.map(p=>p[0]))+.025,minY=Math.min(...points.map(p=>p[1]))-.025,maxY=Math.max(...points.map(p=>p[1]))+.025;
   const scale=Math.min((width-35)/(maxX-minX),(height-35)/(maxY-minY));const ox=(width-(maxX-minX)*scale)/2,oy=(height-(maxY-minY)*scale)/2;
   const pixel=p=>[ox+(p[0]-minX)*scale,oy+(p[1]-minY)*scale];
@@ -91,13 +129,15 @@ function drawMap() {
   for(let v=Math.ceil(minY*map.size_m)/map.size_m;v<maxY;v+=1/map.size_m){const [,y]=pixel([minX,v]);ctx.beginPath();ctx.moveTo(ox,y);ctx.lineTo(width-ox,y);ctx.stroke();}
   if(state.showPath){const path=state.detail.trajectory||[];ctx.strokeStyle='#a8c9bd';ctx.lineWidth=2;ctx.beginPath();path.forEach((p,i)=>{const [x,y]=pixel(uv([p[0],p[2]]));i?ctx.lineTo(x,y):ctx.moveTo(x,y);});ctx.stroke();}
   ctx.strokeStyle='#515e58';ctx.lineWidth=2;for(const segment of map.walls){ctx.beginPath();segment.forEach((p,i)=>{const [x,y]=pixel(uv(p));i?ctx.lineTo(x,y):ctx.moveTo(x,y);});ctx.stroke();}
+  const frame=state.detail.frames[state.frame],pose=frame?.pose?.pos?{x:pixel(frame.pose.pos)[0],y:pixel(frame.pose.pos)[1],r:15}:null;
   if(state.showEntities){const entities=(state.memory==='before'&&state.tab==='memory'?state.detail.memory_before:state.detail.memory_after)||[];
-    for(const entity of entities){if(entity.type==='door'&&entity.segment){ctx.strokeStyle='#d19a42';ctx.lineWidth=3;ctx.beginPath();entity.segment.forEach((p,i)=>{const [x,y]=pixel(p);i?ctx.lineTo(x,y):ctx.moveTo(x,y);});ctx.stroke();}
-      const point=entity.point||entity.anchor||(entity.segment?.length?[(entity.segment[0][0]+entity.segment[1][0])/2,(entity.segment[0][1]+entity.segment[1][1])/2]:null);if(!point)continue;
-      const [x,y]=pixel(point);ctx.fillStyle=entity.type==='room'?'#468a71':entity.type==='door'?'#bd8e43':'#9c7757';ctx.beginPath();ctx.arc(x,y,entity.type==='room'?4:2.6,0,2*Math.PI);ctx.fill();ctx.font='9px sans-serif';ctx.fillText(entity.id,x+5,y-4);
-    }
+    const markers=entities.flatMap(entity=>{const point=entityPoint(entity);if(!point)return [];const [x,y]=pixel(point);return [{id:entity.id,type:entity.type,x,y,r:entity.type==='object'?3:5.5}];});
+    for(const marker of markers){ctx.fillStyle=entityColors[marker.type]||entityColors.object;ctx.strokeStyle='white';ctx.lineWidth=1.4;ctx.beginPath();ctx.arc(marker.x,marker.y,marker.r,0,2*Math.PI);ctx.fill();ctx.stroke();}
+    const labels=placeMapLabels(ctx,markers,pose,[7,25,width-7,height-27]);
+    for(const item of labels){const [x,y]=item.anchor;ctx.strokeStyle=entityColors[item.type]||entityColors.object;ctx.globalAlpha=.55;ctx.lineWidth=.8;ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(Math.max(item.x,Math.min(x,item.x+item.w)),Math.max(item.y,Math.min(y,item.y+item.h)));ctx.stroke();ctx.globalAlpha=1;ctx.fillStyle='#ffffffeb';ctx.fillRect(item.x,item.y,item.w,item.h);ctx.fillStyle=entityColors[item.type]||entityColors.object;ctx.font=`${item.bold?'700':'400'} ${item.bold?11:10}px sans-serif`;ctx.fillText(item.id,item.x+4,item.y+item.h-5);}
+    if(labels.length<markers.length){ctx.font='9px sans-serif';ctx.fillStyle='#8b9590';ctx.fillText(`${markers.length-labels.length} 个标签因拥挤隐藏`,8,17);}
   }
-  const frame=state.detail.frames[state.frame];if(frame?.pose?.pos){const [x,y]=pixel(frame.pose.pos),angle=frame.pose.heading*Math.PI/180;ctx.save();ctx.translate(x,y);ctx.rotate(angle);ctx.fillStyle='#c4554f';ctx.strokeStyle='white';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(0,-11);ctx.lineTo(6,7);ctx.lineTo(0,4);ctx.lineTo(-6,7);ctx.closePath();ctx.fill();ctx.stroke();ctx.restore();}
+  if(pose){const {x,y}=pose,angle=frame.pose.heading*Math.PI/180;ctx.save();ctx.translate(x,y);ctx.rotate(angle);ctx.fillStyle='#c4554f';ctx.strokeStyle='white';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(0,-11);ctx.lineTo(6,7);ctx.lineTo(0,4);ctx.lineTo(-6,7);ctx.closePath();ctx.fill();ctx.stroke();ctx.restore();}
   ctx.font='9px sans-serif';ctx.fillStyle='#9ba69f';ctx.fillText('地图上方 ↑',width-67,17);
 }
 function renderTab() {
@@ -128,13 +168,13 @@ function renderMemory() {
 function entityCard(e) {
   const changes=state.detail.memory_changes||{},mark=(changes.created||[]).includes(e.id)?'新增':(changes.revised||[]).includes(e.id)?'修订':'';
   const location=e.point||e.anchor||e.segment;
-  const fields=[`类型 <span>${({room:'房间',door:'门',object:'物体'})[e.type]||esc(e.type)}</span>`,location?`位置 <span>${esc(JSON.stringify(location))}</span>`:'位置 <span>未定位</span>'];
+  const fields=[`类型 <span>${({room:'房间',door:'门',object:'物体'})[e.type]||esc(e.type)}</span>`,location?`${e.type==='door'&&!e.point&&e.segment?'位置（旧格式 segment，仅显示时取中点）':'位置'} <span>${esc(JSON.stringify(location))}</span>`:'位置 <span>未定位</span>'];
   if(e.room)fields.push(`所属房间 <span>${esc(e.room)}</span>`);
   if(e.connects)fields.push(`连接 <span>${e.connects.map(x=>esc(x||'未知')).join(' ↔ ')}</span>`);
   if(e.passage)fields.push(`通行状态 <span>${esc(e.passage)}</span>`);
   if(e.category)fields.push(`类别 <span>${esc(e.category)}</span>`);
   const evidence=(e.evidence||[]).map(id=>{const f=state.detail.evidence?.[id]||state.detail.frames.find(f=>f.id===id);return `<button class="evidence-btn" ${f?`data-image="${esc(f.url||f)}" data-caption="${esc(e.name+' · '+id)}"`:'disabled'}>${esc(id)} ↗</button>`;}).join('');
-  return `<article class="entity-card"><div class="entity-head"><span class="entity-id">${esc(e.id)}</span>${esc(e.name)}${mark&&state.memory==='after'?`<span class="entity-change">${mark}</span>`:''}</div><p>${esc(e.description||'没有文字描述')}</p><div class="entity-fields">${fields.join('<br>')}</div><div class="entity-evidence">${evidence}</div></article>`;
+  return `<article class="entity-card entity-${esc(e.type)}"><div class="entity-head"><span class="entity-id">${esc(e.id)}</span>${esc(e.name)}${mark&&state.memory==='after'?`<span class="entity-change">${mark}</span>`:''}</div><p>${esc(e.description||'没有文字描述')}</p><div class="entity-fields">${fields.join('<br>')}</div><div class="entity-evidence">${evidence}</div></article>`;
 }
 function renderVerdict() {
   const s=state.detail.summary,route=s.route;const status=x=>x===undefined||x===null?'不适用':x?'满足':'不满足';
@@ -145,7 +185,7 @@ function openImage(url,caption) {$('#large-image').src=url;$('#large-caption').t
 function bindImages(root) {$$('[data-image]',root).forEach(e=>e.onclick=()=>openImage(e.dataset.image,e.dataset.caption));}
 function navigate() {
   stop();const [id,n]=location.hash.slice(1).split('/');
-  if(id&&state.index.models.some(m=>m.id===id)){state.model=id;state.round=Math.min(12,Math.max(1,+n||1));}else state.round=0;
+  if(id&&state.index.models.some(m=>m.id===id)){state.model=id;const rows=model().rounds;state.round=rows.find(r=>r.number===+n)?.number??rows[0]?.number??0;}else state.round=0;
   sidebar();document.body.classList.remove('sidebar-open');if(state.round)detailPage();else{state.request++;overview();}window.scrollTo(0,0);
 }
 $('#overview-btn').onclick=()=>route(state.model);$('#model-select').onchange=e=>{state.model=e.target.value;if(state.round)route(state.model,state.round);else{sidebar();overview();}};
@@ -154,4 +194,4 @@ $('#menu-btn').onclick=()=>document.body.classList.toggle('sidebar-open');$('#mo
 $('#close-image').onclick=()=>$('#image-dialog').close();$('#image-dialog').onclick=e=>{if(e.target===$('#image-dialog'))$('#image-dialog').close();};
 window.addEventListener('hashchange',navigate);window.addEventListener('resize',()=>{if(state.round)drawMap();});
 window.addEventListener('keydown',e=>{if(!state.round||!state.detail||['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName)||$('#image-dialog').open)return;if(e.key==='ArrowLeft'){e.preventDefault();stop();setFrame(state.frame-1);}else if(e.key==='ArrowRight'){e.preventDefault();stop();setFrame(state.frame+1);}else if(e.key===' '){e.preventDefault();$('#play-btn').click();}});
-try {const response=await fetch('data/index.json');if(!response.ok)throw Error(`HTTP ${response.status}`);state.index=await response.json();state.index.models.sort((a,b)=>['sol','astra','qwen27','deepseek'].indexOf(a.id)-['sol','astra','qwen27','deepseek'].indexOf(b.id));$('#model-select').innerHTML=state.index.models.map(m=>`<option value="${esc(m.id)}">${esc(shortName(m))} · ${esc(m.effort)}</option>`).join('');navigate();}catch(error){$('#main').innerHTML=`<div class="empty">无法加载实验：${esc(error.message)}。请从网页服务地址打开。</div>`;}
+try {const response=await fetch('data/index.json');if(!response.ok)throw Error(`HTTP ${response.status}`);state.index=await response.json();if(!state.index.models.some(m=>m.id===state.model))state.model=state.index.models[0]?.id;state.index.models.sort((a,b)=>['sol','astra','qwen27','deepseek'].indexOf(a.id)-['sol','astra','qwen27','deepseek'].indexOf(b.id));$('#model-select').innerHTML=state.index.models.map(m=>`<option value="${esc(m.id)}">${esc(shortName(m))} · ${esc(m.effort)}</option>`).join('');navigate();}catch(error){$('#main').innerHTML=`<div class="empty">无法加载实验：${esc(error.message)}。请从网页服务地址打开。</div>`;}

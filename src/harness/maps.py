@@ -1,6 +1,5 @@
 """Public wall/memory views with reversible image-to-map coordinates."""
 
-import hashlib
 import json
 import math
 from pathlib import Path
@@ -8,10 +7,16 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 from .memory import MemoryStore, location
+from .map_labels import layout_labels
 
 
-def _font(size):
-    for candidate in ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+COLORS = {"room": "#2563eb", "door": "#c57813", "object": "#748096"}
+
+
+def _font(size, bold=False):
+    candidates = (("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+                   "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf") if bold else ())
+    for candidate in (*candidates, "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
                       "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
                       "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"):
         if Path(candidate).exists():
@@ -51,7 +56,7 @@ class MapRenderer:
                       [sine / scale, cosine / scale,
                        pose["pos"][1] - (sine * cx + cosine * cy) / scale]]
 
-            def pixel(point):
+            def ego_pixel(point):
                 du, dv = point[0] - pose["pos"][0], point[1] - pose["pos"][1]
                 return (cx + scale * (cosine * du + sine * dv),
                         cy + scale * (-sine * du + cosine * dv))
@@ -73,8 +78,7 @@ class MapRenderer:
                     if identifier not in indexed:
                         warnings.append(f"{identifier} does not exist")
                     elif location(indexed[identifier]) is not None:
-                        entity = indexed[identifier]
-                        points.extend(entity["segment"] if entity["type"] == "door" else [location(entity)])
+                        points.append(location(indexed[identifier]))
                 if not points:
                     raise ValueError("around contains no located entities")
             elif isinstance(view, dict) and set(view) == {"around_self"}:
@@ -97,14 +101,15 @@ class MapRenderer:
             affine = [[1 / scale, 0., bounds[0] - 38 / scale],
                       [0., 1 / scale, bounds[1] - 34 / scale]]
 
-            def pixel(point):
+            def north_pixel(point):
                 return (38 + (point[0] - bounds[0]) * scale,
                         34 + (point[1] - bounds[1]) * scale)
 
+        pixel = ego_pixel if ego else north_pixel
         plot_bounds = [38., 34., float(width - 38), float(height - 42)]
         image = Image.new("RGB", (width, height), "#ffffff")
         draw = ImageDraw.Draw(image)
-        font, small = _font(13), _font(11)
+        font, bold, small = _font(13), _font(14, bold=True), _font(11)
 
         def inside(point):
             x, y = pixel(point)
@@ -138,44 +143,60 @@ class MapRenderer:
             for index, (a, b) in enumerate(zip(trajectory, trajectory[1:]), 1):
                 if index not in breaks:
                     draw.line([pixel(a), pixel(b)], fill="#8fc6ed", width=2)
-        occupied = []
-        colors = ["#276cbd", "#4d8953", "#8e57b1", "#bc6a36", "#2c8992", "#bd5887"]
         highlights = set(highlight or [])
         for identifier in highlights - indexed.keys():
             warnings.append(f"{identifier} does not exist")
+        markers, label_items = [], []
         for entity in entities:
             point = location(entity)
             if point is None or not inside(point):
                 continue
             px, py = pixel(point)
-            color_key = entity.get("room") or (entity["id"] if entity["type"] == "room" else "unknown")
-            color = colors[int(hashlib.sha256(color_key.encode()).hexdigest()[:8], 16) % len(colors)] if color_key != "unknown" else "#79818a"
-            if entity["type"] == "door":
-                draw.line([pixel(p) for p in entity["segment"]], fill="#eb8d25", width=5)
-            elif entity["type"] == "object":
-                draw.ellipse((px - 4, py - 4, px + 4, py + 4), fill=color)
-            if entity["id"] in highlights:
-                draw.ellipse((px - 10, py - 10, px + 10, py + 10), outline="#e65045", width=2)
+            structural = entity["type"] != "object"
+            radius = 6 if structural else 3
+            markers.append({"point": [px, py], "radius": radius, "entity": entity})
             label = {"id": entity["id"], "name": entity["name"],
                      "both": f"{entity['id']} {entity['name']}", "none": ""}[labels]
             if not label:
                 continue
-            box = draw.textbbox((0, 0), label, font=font)
-            tw, th = box[2] - box[0], box[3] - box[1]
-            placed = False
-            for dx, dy in ((7, -8), (7, 8), (-tw - 7, -8), (-tw / 2, -th - 9)):
-                rect = [px + dx, py + dy, px + dx + tw + 2, py + dy + th + 3]
-                if rect[0] < 38 or rect[1] < 34 or rect[2] > width - 38 or rect[3] > height - 42:
-                    continue
-                if any(rect[0] < other[2] and rect[2] > other[0] and rect[1] < other[3] and rect[3] > other[1] for other in occupied):
-                    continue
-                draw.rectangle(rect, fill="white")
-                draw.text((rect[0], rect[1] - box[1]), label, fill=color, font=font)
-                occupied.append(rect)
-                placed = True
-                break
-            if not placed:
-                warnings.append(f"{entity['id']} label could not be placed")
+            selected_font = bold if structural else font
+            box = draw.textbbox((0, 0), label, font=selected_font)
+            label_items.append({"id": entity["id"], "type": entity["type"], "text": label,
+                                "point": [px, py], "size": [box[2] - box[0] + 6, box[3] - box[1] + 4],
+                                "priority": 0 if structural else 1})
+        obstacles = [[m["point"][0] - r, m["point"][1] - r,
+                      m["point"][0] + r, m["point"][1] + r]
+                     for m in markers for r in [10 if m["entity"]["id"] in highlights else m["radius"] + 1]]
+        if inside(pose["pos"]):
+            px, py = pixel(pose["pos"])
+            obstacles.append([px - 15, py - 15, px + 15, py + 15])
+        if ego:
+            obstacles.append([width - 110, 34, width - 38, 110])
+        self.last_label_layout, missing = layout_labels(label_items, plot_bounds, obstacles)
+        warnings.extend(f"{identifier} label could not be placed" for identifier in missing)
+        for label in self.last_label_layout:
+            draw.line([tuple(point) for point in label["leader"]], fill=COLORS[label["type"]], width=1)
+        for label in self.last_label_layout:
+            selected_font = bold if label["type"] != "object" else font
+            rect = label["rect"]
+            box = draw.textbbox((0, 0), label["text"], font=selected_font)
+            draw.rectangle(rect, fill="white")
+            draw.text((rect[0] + 3 - box[0], rect[1] + 2 - box[1]), label["text"],
+                      fill=COLORS[label["type"]], font=selected_font)
+        for marker in markers:
+            px, py = marker["point"]
+            radius, entity = marker["radius"], marker["entity"]
+            color = COLORS[entity["type"]]
+            if entity["type"] == "room":
+                draw.rectangle((px - radius, py - radius, px + radius, py + radius),
+                               fill=color, outline="white", width=1)
+            elif entity["type"] == "door":
+                draw.polygon([(px, py - radius - 1), (px + radius + 1, py),
+                              (px, py + radius + 1), (px - radius - 1, py)], fill=color)
+            else:
+                draw.ellipse((px - radius, py - radius, px + radius, py + radius), fill=color)
+            if entity["id"] in highlights:
+                draw.ellipse((px - 10, py - 10, px + 10, py + 10), outline="#e65045", width=2)
         if inside(pose["pos"]):
             px, py = pixel(pose["pos"])
             angle = 0. if ego else math.radians(pose["heading"])

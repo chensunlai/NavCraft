@@ -75,7 +75,7 @@ Integration probes and program-assisted physical references are recorded separat
 
 ## Optional geometric tools
 
-Set `tool_tier: super` in a model YAML to add `locate`, `nav_face`, and `nav_goto`, plus pixel grids, ego maps, RGB-D overlays and pixel-based memory edits. Default `basic` keeps the existing seven tools and RGB sensor condition. Bench passes the same tier to Environment and Harness; programmatic callers must do so too.
+Set `tool_tier: super` in a model YAML to add `locate`, `nav_face`, and `nav_goto`, plus ego maps, RGB-D overlays and pixel-based memory edits. Door locations use one point, like objects; room anchors remain distinct. Room and door markers and labels are emphasized, and map labels avoid overlap with leader lines. Observation images have no pixel-grid overlay. Default `basic` keeps the existing seven tools and RGB sensor condition. Bench passes the same tier to Environment and Harness; programmatic callers must do so too.
 
 Super depth is stored privately as uint16 PNG with 0.001 metres per integer. A valid projection means geometric data is available; it does not certify object identity, mirrors or glass. `goto_planner: local` uses a same-floor NavMesh route within 8m only for points originating from observations; arbitrary UV uses straight motion. `goto_planner: straight` disables route planning. Arrival feedback refers only to the model-selected point, and does not submit the task or reveal its score.
 
