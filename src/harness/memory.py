@@ -105,7 +105,8 @@ class MemoryStore:
                     if identifier in indexed:
                         entity = deepcopy(indexed[identifier])
                         entity["evidence"] = [
-                            {"frame": fid, "step": frames[fid].get("step"), "pose": frames[fid].get("pose")}
+                            {"frame": fid, "step": frames[fid].get("step"), "pose": frames[fid].get("pose"),
+                             **{key: frames[fid][key] for key in ("group", "yaw") if key in frames[fid]}}
                             for fid in entity.get("evidence", []) if fid in frames
                         ]
                         found.append(entity)

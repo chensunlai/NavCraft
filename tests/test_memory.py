@@ -32,6 +32,16 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(self.store.read(filter={"room": "R01"})["total"], 1)
         self.assertEqual(self.store.read(filter={"room": None})["total"], 0)
 
+    def test_evidence_preserves_panorama_camera_direction(self):
+        with (self.root / "observations/index.jsonl").open("a") as stream:
+            stream.write(json.dumps({"frame": "f_0003", "step": 3,
+                                    "pose": {"pos": [.5, .5], "heading": 90},
+                                    "group": "p_one", "yaw": 120}) + "\n")
+        self.store.edit([self.create("R01", "room", evidence=["f_0003"])])
+        evidence = self.store.read(ids=["R01"])["entities"][0]["evidence"][0]
+        self.assertEqual(evidence["group"], "p_one")
+        self.assertEqual(evidence["yaw"], 120)
+
     def test_failed_batch_never_partially_writes_or_reserves_ids(self):
         original = self.store.path.read_bytes()
         result = self.store.edit([self.create("R01", "room"), self.create("O01", "object", room="R09")])
