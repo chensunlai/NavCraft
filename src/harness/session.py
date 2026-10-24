@@ -331,6 +331,7 @@ class HarnessSession:
         self._action_end = action_start + limits.max_actions
         model_text = text + "\nCurrent map pose: " + json.dumps(self.current["pose"]) + "\n" + "\n".join(captions)
         settled = {"reason": "runtime_error"}
+        reason = "runtime_error"
         error_text = None
         try:
             self.trace.emit("prompt_start", {"prompt_id": prompt_id, "text": text,
