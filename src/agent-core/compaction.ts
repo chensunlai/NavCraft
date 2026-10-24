@@ -37,6 +37,7 @@ export function completeRoundStarts(messages: AgentMessage[]): number[] {
 export function pruneImages(messages: AgentMessage[]): AgentMessage[] {
   const starts = completeRoundStarts(messages);
   const cutoff = starts.length > 3 ? starts[starts.length - 3] : 0;
+  let checkpointCurrent = '';
   let latestCurrent = '';
   let latestImage = '';
   for (let m = 0; m < messages.length; m++) {
@@ -47,10 +48,14 @@ export function pruneImages(messages: AgentMessage[]): AgentMessage[] {
       if (block.type !== 'image') continue;
       latestImage = `${m}:${i}`;
       const label = message.content[i - 1];
-      if (label?.type === 'text' && /\[CURRENT\b/.test(label.text)) latestCurrent = latestImage;
+      if (label?.type === 'text' && /\[CURRENT\b/.test(label.text)) {
+        latestCurrent = latestImage;
+        // The refreshed factual head precedes history but contains the newest observation.
+        if (message.role === 'custom' && message.customType === 'public_checkpoint') checkpointCurrent = latestImage;
+      }
     }
   }
-  const keep = latestCurrent || latestImage;
+  const keep = checkpointCurrent || latestCurrent || latestImage;
   return messages.map((message, index) => {
     if (index >= cutoff || !('content' in message) || !Array.isArray(message.content)) return message;
     const content = message.content;

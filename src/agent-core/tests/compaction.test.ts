@@ -42,6 +42,26 @@ test('image projection retains three complete multi-tool rounds and the latest c
   assert.equal(completeRoundStarts(messages).length, 5);
 });
 
+test('a leading checkpoint retains its latest image over an older panorama after three further rounds', () => {
+  const checkpoint: AgentMessage = { role: 'custom', customType: 'public_checkpoint', display: false,
+    timestamp: 10, details: { revision: 14 }, content: [
+      { type: 'text', text: 'Public facts: frame=f_latest' },
+      { type: 'text', text: '[CURRENT f_latest]' },
+      { type: 'image', data: 'latest-image', mimeType: 'image/png' },
+    ] };
+  const panorama = round(1, true);
+  const receipt = panorama[2] as Extract<AgentMessage, { role: 'toolResult' }>;
+  receipt.content[0] = { type: 'text', text: '[CURRENT p_older]' };
+  const messages = [checkpoint, ...round(0), ...panorama, ...round(2), ...round(3), ...round(4)];
+  const before = JSON.stringify(messages);
+  const projected = pruneImages(messages);
+  const images = projected.flatMap(message => 'content' in message && Array.isArray(message.content)
+    ? message.content.filter(block => block.type === 'image').map(block => block.data) : []);
+  assert.deepEqual(images, ['latest-image', 'image-2', 'image-3', 'image-4']);
+  assert.equal(completeRoundStarts(projected).length, 5);
+  assert.equal(JSON.stringify(messages), before);
+});
+
 test('incomplete tool batches are kept and never counted as a completed round', () => {
   const messages = [...round(0), ...round(1), ...round(2), ...round(3).slice(0, 2)];
   assert.equal(completeRoundStarts(messages).length, 3);
