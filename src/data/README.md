@@ -27,10 +27,13 @@ candidate's opening/region records and saves the previous records alongside it.
 
 - `map_instances.py`: instance-level architectural semantic priors and sources.
 - `map_wall_fit.py`: supported lines/arcs without forcing axis-aligned walls.
-- `map_wall_structure.py`: evidence-gated joins, junction graph, PNG/SVG rendering.
+- `map_wall_structure.py`: evidence-gated line/arc joins, junction graph and
+  PNG/SVG rendering; a straight wall can meet a curve without flattening it.
 - `map_wall_recovery.py`: strict, aligned raw support for missing straight spans.
-- `map_window_boundaries.py`: raw sill/header/jamb evidence for inset window
-  boundaries; partial support stays a separate candidate, not a solid wall.
+- `map_window_boundaries.py`: reconstruct raised-window wall continuity from
+  independent sill/header/jamb geometry. Structural inference is recorded
+  separately from measured wall surfaces; observed passage or walkable-space
+  conflicts reject the proposed boundary.
 - `map_floorplan.py`: one-scene fitting, independent raw checks and real-RGB overlay.
 - `map_gap_audit.py`: contiguous raw clearance, actual robot-width crossing,
   paired views and compressed depth evidence; unresolved gaps are retained.
@@ -38,8 +41,10 @@ candidate's opening/region records and saves the previous records alongside it.
 
 All outputs remain development candidates until structural and visual review.
 Door lintels alone do not establish a wall at body height. Window or semantic
-labels alone do not justify filling scan holes. Missing wall thickness is not
-invented by widening the rendered line.
+labels alone do not justify filling scan holes. A supported rectangular window
+surround can justify continuity through scan damage without claiming that every
+point on the inferred boundary was directly measured. Missing wall thickness is
+stored as null and is not invented by widening the rendered line.
 
 Use the `vln` Python environment and a fresh worker on physical GPU 0 or 1:
 

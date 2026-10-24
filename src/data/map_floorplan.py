@@ -161,6 +161,7 @@ def fit_scene(source, output):
     from .map_wall_fit import fit_wall_primitives
     from .map_wall_structure import reconnect_primitives, rasterize_primitives, structure_svg
     from .map_wall_recovery import recover_collinear_gaps, raw_gap_support
+    from .map_window_boundaries import build_window_boundaries
     from .map_openings import region_partition
     from .map_leaks import review_leak_pairs
 
@@ -232,10 +233,24 @@ def fit_scene(source, output):
                     semantic_priors=priors, portals=portals)
     write_json(output / "gap_recovery.json", recovery)
     accepted = recovery["primitives"]
+    windows = build_window_boundaries(geometry.triangles, accepted,
+                    [instance for instance in instances if instance.category == "window"],
+                    floor_height=floor,
+                    passage=lambda segment: {"pass": False, "probes": [],
+                        "reason": "robot_crossing_not_probed_in_offline_frame_reconstruction"},
+                    not_blocks_navmesh=evidence.not_blocks_navmesh)
+    write_json(output / "window_reconstruction.json", windows)
+    accepted = windows["primitives"]
     structure = reconnect_primitives(accepted, raw_support=evidence.support,
                     not_blocks_navmesh=evidence.not_blocks_navmesh, portals=portals,
                     max_shift_m=.15, collinear_gap_m=.4)
     primitives = structure["primitives"]
+    for primitive in primitives:
+        primitive.setdefault("thickness_m", None)
+        primitive.setdefault("evidence_kind", "raw_surface_verified")
+        primitive.setdefault("representation", "reconstructed_wall_alignment"
+                             if primitive["evidence_kind"] == "structural_inference"
+                             else "fitted_wall_surface_line")
     walls = rasterize_primitives(primitives, origin, side, resolution=.05)
     points = np.concatenate([primitive_points(primitive) for primitive in primitives])
     pairs = [pair for pair in json.loads((source / "geodesic_pairs.json").read_text())
@@ -270,12 +285,15 @@ def fit_scene(source, output):
             "wall_sha256": hashlib.sha256((output / "walls.png").read_bytes()).hexdigest(),
             "implementation_sha256": {name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
                         for name in ("map_floorplan.py", "map_wall_fit.py", "map_wall_structure.py",
-                                     "map_wall_recovery.py", "map_instances.py", "map_geometry.py")},
+                                     "map_wall_recovery.py", "map_window_boundaries.py",
+                                     "map_instances.py", "map_geometry.py", "map_openings.py")},
             "status": "development_pending_structural_review", "quality": quality,
             "counts": {"input_segments": len(segments), "fitted_primitives": len(fit["primitives"]),
                 "verified_primitives": len(accepted), "final_primitives": len(primitives),
                 "junctions": len(structure["nodes"]), "connections": len(structure["connections"]),
-                "unexplained_endpoints": len(structure["unexplained_endpoints"]), "region_candidates": len(regions)},
+                "unexplained_endpoints": len(structure["unexplained_endpoints"]), "region_candidates": len(regions),
+                "reconstructed_window_boundaries": len(windows["accepted"]),
+                "window_candidates_pending": sum(item["status"] == "needs_review" for item in windows["candidates"])},
             "seconds": time.monotonic() - started}
     write_json(output / "meta.json", meta)
     before = source / "raw_vote/walls.png"

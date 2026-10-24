@@ -7,6 +7,7 @@ tool never fills an uncertain gap and never edits the source scene.
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import json
 import math
 from pathlib import Path
@@ -127,6 +128,72 @@ def same_opening(first, second):
     return overlap >= .6 * min(length, hi - lo)
 
 
+def passed_probe_count(passage, segment):
+    """Count distinct, complete successful crossings of this measured span."""
+    if passage.get("pass") is not True:
+        return 0
+    a, b = np.asarray(segment, dtype=float)
+    tangent = b - a
+    width = np.linalg.norm(tangent)
+    if width <= 1e-8:
+        return 0
+    tangent /= width
+    normal = np.array([-tangent[1], tangent[0]])
+    crossings = set()
+    for probe in passage.get("probes", []):
+        if probe.get("pass") is not True:
+            continue
+        points = [np.asarray(probe.get(key, []), dtype=float)
+                  for key in ("start", "requested_end", "actual_end")]
+        if any(point.shape != (3,) or not np.isfinite(point).all() for point in points):
+            continue
+        start, end, actual = [point[[0, 2]] for point in points]
+        if np.linalg.norm(actual - end) >= .06:
+            continue
+        sides = np.array([(start - a) @ normal, (end - a) @ normal])
+        if sides.prod() >= 0:
+            continue
+        crossing = start + sides[0] / (sides[0] - sides[1]) * (end - start)
+        if not -1e-8 <= (crossing - a) @ tangent <= width + 1e-8:
+            continue
+        crossings.add(tuple(sorted((tuple(np.round(points[0], 6)), tuple(np.round(points[1], 6))))))
+    return len(crossings)
+
+
+def merge_audited_openings(existing, audited, audit_path):
+    """Retain prior records and attach repeated checks to one opening ID."""
+    result = deepcopy(existing)
+    identifiers = {item["id"] for item in result}
+    added = 0
+    for item in audited:
+        if item["status"] != "accepted":
+            continue
+        opening = {**item, "candidate_segment": item["segment"],
+                   "segment": item["evidence"]["clear_segment"],
+                   "width_m": item["evidence"]["clear_width_m"]}
+        duplicate = next((old for old in result if old.get("status") == "accepted"
+                          and same_opening(old, opening)), None)
+        if duplicate is not None:
+            item["duplicate_of"] = duplicate["id"]
+            target = duplicate
+        else:
+            index = 1
+            while f"A{index:03d}" in identifiers:
+                index += 1
+            opening["id"] = f"A{index:03d}"
+            opening["sources"] = [{"kind": "fitted_gap"}, {"kind": "raw_mesh"},
+                                  {"kind": "actual_robot_width_probe"}]
+            identifiers.add(opening["id"])
+            result.append(opening)
+            target = opening
+            added += 1
+        item["opening_id"] = target["id"]
+        target.setdefault("gap_audit_evidence", []).append({
+            "path": str(audit_path), "candidate_id": item["id"],
+            "segment": opening["segment"], "evidence": deepcopy(item["evidence"])})
+    return result, added
+
+
 def audit_scene(source, fitted, output, *, gpu=0):
     source, fitted, output = Path(source).resolve(), Path(fitted).resolve(), Path(output).resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -145,7 +212,7 @@ def audit_scene(source, fitted, output, *, gpu=0):
             clearance = clear_gap_interval(candidate["segment"], evidence)
             probe_segment = clearance["clear_segment"] or candidate["segment"]
             passage = scene.passage(probe_segment, baseline["floor_height"])
-            passed_probes = sum(bool(item.get("pass")) for item in passage.get("probes", []))
+            passed_probes = passed_probe_count(passage, probe_segment)
             accepted = clearance["clear_width_m"] >= .4 and passed_probes >= 2
             record = {**candidate, "status": "accepted" if accepted else "needs_review",
                       "evidence": {**clearance,
@@ -154,8 +221,8 @@ def audit_scene(source, fitted, output, *, gpu=0):
                                    "acceptance": "contiguous_raw_clear_interval_ge_0.4m_and_two_real_probes",
                                    "width_is_candidate_span_not_measured_door_width": True}}
             if accepted:
-                centre = np.mean(candidate["segment"], axis=0)
-                direction = np.diff(np.asarray(candidate["segment"]), axis=0)[0]
+                centre = np.mean(probe_segment, axis=0)
+                direction = np.diff(np.asarray(probe_segment), axis=0)[0]
                 direction /= np.linalg.norm(direction)
                 normal = np.array([-direction[1], direction[0]])
                 for side in (-1, 1):
@@ -174,27 +241,21 @@ def audit_scene(source, fitted, output, *, gpu=0):
             audited.append(record)
 
     existing = json.loads((fitted / "openings.json").read_text())
-    accepted = [item for item in existing if item.get("status") == "accepted"]
-    for item in audited:
-        if item["status"] == "accepted":
-            duplicate = next((old for old in accepted if same_opening(old, item)), None)
-            if duplicate is not None:
-                item["duplicate_of"] = duplicate["id"]
-                continue
-            accepted.append({**item, "id": f"A{len(accepted) + 1:03d}",
-                             "sources": [{"kind": "fitted_gap"}, {"kind": "raw_mesh"},
-                                         {"kind": "actual_robot_width_probe"}]})
+    combined, added = merge_audited_openings(existing, audited, output / "gap_audit.json")
+    accepted = [item for item in combined if item.get("status") == "accepted"]
     write_json(output / "gap_audit.json", {"source": str(source), "fitted": str(fitted),
                                             "candidates": audited,
-                                            "accepted_count": len(accepted) - len(existing)})
+                                            "accepted_count": added,
+                                            "accepted_total_count": len(accepted)})
     write_json(fitted / "openings.before_gap_audit.json", existing)
-    write_json(fitted / "openings.json", accepted)
 
     domain, _ = floor_domain(raw.triangles, baseline["floor_height"], baseline["origin"],
                               baseline["side_m"], baseline.get("floor_height_range"))
     walls = np.asarray(Image.open(fitted / "walls.png")) < 128
     labels, regions, openings = region_partition(domain, walls, accepted,
                                                   baseline["origin"], .05)
+    partitioned = {item["id"]: item for item in openings}
+    write_json(fitted / "openings.json", [partitioned.get(item["id"], item) for item in combined])
     for item in regions:
         item["source"] = "floor_domain_partitioned_by_fitted_walls_and_audited_openings"
     write_json(fitted / "regions.before_gap_audit.json", json.loads((fitted / "regions.json").read_text()))
@@ -207,7 +268,8 @@ def audit_scene(source, fitted, output, *, gpu=0):
         meta.setdefault("counts", {})["audited_openings"] = len(accepted)
         meta["counts"]["region_candidates"] = len(regions)
         meta["gap_audit"] = {"path": str(output / "gap_audit.json"),
-                             "accepted_count": len(accepted),
+                             "accepted_count": added,
+                             "accepted_total_count": len(accepted),
                              "status": "development_pending_structural_review"}
         write_json(meta_path, meta)
     return audited

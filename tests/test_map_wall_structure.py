@@ -82,7 +82,8 @@ def test_arc_shape_is_immutable_and_rendered_as_a_curve():
            "start_angle_degrees": 0., "end_angle_degrees": 90., "sweep_degrees": 90.}
     result = reconnect([arc, line("A", [2, 0], [1.05, 0])])
     assert {key: result["primitives"][0][key] for key in arc} == arc
-    assert result["primitives"][1]["end"] == [1.05, 0]
+    np.testing.assert_allclose(result["primitives"][1]["end"], [1, 0], atol=1e-12)
+    assert result["primitives"][0]["start_node"] == result["primitives"][1]["end_node"]
     mask = rasterize_primitives([arc], [-.5, -.5], 3.)
     assert mask.shape == (60, 60)
     for point in ([1., 0.], [0., 1.], [2 ** -.5, 2 ** -.5]):
@@ -239,3 +240,43 @@ def test_zero_length_input_is_rejected_but_closed_circle_is_valid():
     result = reconnect([circle])
     assert len(result["nodes"]) == 1
     assert not result["unexplained_endpoints"]
+
+
+@pytest.mark.parametrize("sweep, sign", [(180, 1), (-180, -1)])
+def test_line_can_join_arc_interior_without_replacing_curve_by_a_chord(sweep, sign):
+    arc = {"id": "arc", "type": "arc", "center": [0, 0], "radius_m": 1.,
+           "start_angle_degrees": 0., "end_angle_degrees": sweep, "sweep_degrees": sweep}
+    result = reconnect([arc, line("branch", [0, 2 * sign], [0, 1.08 * sign])])
+    curved, branch = result["primitives"]
+    assert {key: curved[key] for key in arc} == arc
+    np.testing.assert_allclose(branch["end"], [0, sign], atol=1e-12)
+    assert curved["interior_nodes"] == [branch["end_node"]]
+    assert len(result["edges"]) == 3
+    assert result["connections"][0]["kind"] == "endpoint_to_arc"
+
+
+def test_circle_not_actual_arc_sweep_cannot_be_used_as_a_connection():
+    arc = {"id": "arc", "type": "arc", "center": [0, 0], "radius_m": 1.,
+           "start_angle_degrees": 0., "end_angle_degrees": 90.}
+    result = reconnect([arc, line("branch", [-2, 0], [-1.05, 0])])
+    assert not result["connections"]
+    assert result["primitives"][1]["end"] == [-1.05, 0]
+
+
+def test_arc_connection_requires_support_and_respects_a_protected_opening():
+    arc = {"id": "arc", "type": "arc", "center": [0, 0], "radius_m": 1.,
+           "start_angle_degrees": 0., "end_angle_degrees": 90.}
+    items = [arc, line("branch", [2, 0], [1.08, 0])]
+    unsupported = reconnect_primitives(items, raw_support=lambda _: {"pass": False},
+                                       not_blocks_navmesh=support)
+    assert not unsupported["connections"]
+    assert unsupported["rejected"][0]["reason"] == "independent_evidence_failed"
+    protected = reconnect(items, portals=[{"segment": [[1.04, -.1], [1.04, .1]]}])
+    assert not protected["connections"]
+    assert protected["rejected"][0]["reason"] == "protected_portal_interior"
+
+
+def test_unmeasured_thickness_is_explicitly_null_and_still_renders():
+    item = {**line("wall", [0, 0], [1, 0]), "thickness_m": None}
+    assert rasterize_primitives([item], [-1, -1], 3).any()
+    assert 'stroke-width="0.05"' in structure_svg([item], [-1, -1], 3)

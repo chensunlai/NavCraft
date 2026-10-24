@@ -189,6 +189,70 @@ def verify_openings(candidates, raw_slices, passable):
     return result
 
 
+def _partition_closure(item, walls, origin, resolution):
+    """Anchor an internal seal to existing walls without widening the portal."""
+    segment, width = _segment(item["segment"])
+    tangent = (segment[1] - segment[0]) / width
+    normal = np.array([-tangent[1], tangent[0]])
+    maximum, raster_tolerance = .20, .75 * resolution
+    targets = np.array([0., width])
+    evidence = {"method": "bounded_collinear_existing_wall_anchors",
+                "rasterization": "rint((world-origin)/resolution-.5)",
+                "max_endpoint_extension_m": maximum,
+                "max_normal_offset_m": raster_tolerance,
+                "candidate_segment_used": False,
+                "extent_verification_scope": "existing_wall_raster_anchors_only",
+                "physical_door_width_inferred": False,
+                "wall_raster_modified": False}
+    if item.get("candidate_segment") is not None:
+        try:
+            candidate, candidate_width = _segment(item["candidate_segment"])
+            positions = np.sort((candidate - segment[0]) @ tangent)
+            aligned = (abs(tangent @ ((candidate[1] - candidate[0]) / candidate_width))
+                       >= math.cos(math.radians(5)))
+            contains = positions[0] <= 1e-8 and positions[1] >= width - 1e-8
+            bounded = positions[0] >= -maximum - 1e-8 and positions[1] <= width + maximum + 1e-8
+            collinear = np.abs((candidate - segment[0]) @ normal).max() <= resolution / 2
+            if aligned and contains and bounded and collinear:
+                targets = positions
+                evidence["candidate_segment_used"] = True
+            else:
+                evidence["candidate_segment_ignored_reason"] = "not_collinear_containing_and_bounded"
+        except (ValueError, TypeError):
+            evidence["candidate_segment_ignored_reason"] = "invalid_segment"
+
+    anchors, offsets = [], []
+    for index, endpoint in enumerate(segment):
+        radius = math.ceil((maximum + raster_tolerance) / resolution) + 1
+        col, row = np.rint((endpoint - origin) / resolution - .5).astype(int)
+        left, right = max(0, col - radius), min(walls.shape[1], col + radius + 1)
+        top, bottom = max(0, row - radius), min(walls.shape[0], row + radius + 1)
+        cells = (np.argwhere(walls[top:bottom, left:right]) + [top, left])[:, ::-1]
+        world = origin + (cells + .5) * resolution
+        along, across = (world - segment[0]) @ tangent, (world - segment[0]) @ normal
+        # A rasterized wall centre may fall up to one pixel inside the stated
+        # endpoint. The outward extension is bounded in world metres.
+        low, high = (-maximum, raster_tolerance) if index == 0 else (width - raster_tolerance, width + maximum)
+        eligible = ((along >= low - 1e-8) & (along <= high + 1e-8)
+                    & (np.abs(across) <= raster_tolerance + 1e-8))
+        if not eligible.any():
+            evidence.update(reason="missing_existing_wall_anchor", anchored_endpoint_count=len(anchors))
+            return {"partition_segment": None, "partition_extent_verified": False,
+                    "partition_evidence": evidence}, None
+        selected = np.flatnonzero(eligible)
+        best = selected[np.lexsort((np.abs(across[selected]), np.abs(along[selected] - targets[index])))[0]]
+        anchors.append(cells[best])
+        offsets.append([float(along[best]), float(across[best])])
+    anchors = np.asarray(anchors)
+    extent = origin + (anchors + .5) * resolution
+    evidence.update(reason="both_ends_anchored_to_existing_wall_pixels",
+                    anchor_pixels=anchors.tolist(),
+                    endpoint_extension_m=[max(0., -offsets[0][0]), max(0., offsets[1][0] - width)],
+                    normal_offsets_m=[value[1] for value in offsets])
+    return {"partition_segment": extent.tolist(), "partition_extent_verified": True,
+            "partition_evidence": evidence}, anchors
+
+
 def region_partition(domain, walls, accepted_openings, origin, resolution, *, min_area_m2=.1):
     """Temporarily close verified portals to partition a building-floor domain.
 
@@ -197,6 +261,9 @@ def region_partition(domain, walls, accepted_openings, origin, resolution, *, mi
     regions. Components below ``min_area_m2`` become zero, without being merged
     into neighbors; surviving IDs are continuous geometry-region candidates.
     An open-plan bypass keeps both portal sides in one region.
+    Virtual seals require bounded collinear anchors on the original wall
+    raster. Their recorded extent is an internal partition aid, never a change
+    to ``opening.segment`` or a measurement of physical door width.
     Origin is the world-XZ upper-left *pixel corner*, with rows increasing Z.
     """
     domain, walls = np.asarray(domain, dtype=bool), np.asarray(walls, dtype=bool)
@@ -209,11 +276,14 @@ def region_partition(domain, walls, accepted_openings, origin, resolution, *, mi
         raise ValueError("min_area_m2 must be finite and nonnegative")
     barrier = Image.fromarray(walls.astype(np.uint8) * 255)
     draw = ImageDraw.Draw(barrier)
-    accepted = [item for item in accepted_openings if item.get("status") == "accepted"]
-    for item in accepted:
-        segment, _ = _segment(item["segment"])
-        pixels = np.floor((segment - origin) / resolution).astype(int)
-        draw.line([tuple(point) for point in pixels], fill=255, width=1)
+    accepted = []
+    for item in accepted_openings:
+        if item.get("status") != "accepted":
+            continue
+        extent, anchors = _partition_closure(item, walls, origin, resolution)
+        accepted.append({**item, **extent})
+        if anchors is not None:
+            draw.line([tuple(point) for point in anchors], fill=255, width=1)
     free = domain & ~np.asarray(barrier, dtype=bool)
     components, count = ndimage.label(free, structure=ndimage.generate_binary_structure(2, 1))
     sizes = np.bincount(components.reshape(-1), minlength=count + 1)

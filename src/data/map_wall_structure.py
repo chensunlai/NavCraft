@@ -69,6 +69,43 @@ def _endpoints(primitive):
     return points
 
 
+def _arc_parameter(primitive, point):
+    """Position on a directed circular arc, or None outside its actual sweep."""
+    relative = np.asarray(point) - _point(primitive["center"])
+    radius = float(primitive["radius_m"])
+    if abs(np.linalg.norm(relative) - radius) > NODE_TOLERANCE_M:
+        return None
+    start = float(primitive["start_angle_degrees"])
+    sweep = float(primitive.get("sweep_degrees", primitive["end_angle_degrees"] - start))
+    angle = math.degrees(math.atan2(relative[1], relative[0]))
+    delta = ((angle - start) if sweep > 0 else (start - angle)) % 360
+    tolerance = math.degrees(NODE_TOLERANCE_M / radius)
+    if 360 - delta <= tolerance:
+        delta = 0.
+    if delta > abs(sweep) + tolerance:
+        return None
+    return min(1., delta / abs(sweep))
+
+
+def _line_arc_junctions(segment, primitive):
+    """Analytic intersections; neither the circle nor its angular extent moves."""
+    a, b = segment
+    direction = b - a
+    relative = a - _point(primitive["center"])
+    aa, bb = float(direction @ direction), 2 * float(relative @ direction)
+    cc = float(relative @ relative) - float(primitive["radius_m"]) ** 2
+    discriminant = bb * bb - 4 * aa * cc
+    if discriminant < -1e-10:
+        return []
+    values = []
+    for t in sorted({(-bb - math.sqrt(max(0., discriminant))) / (2 * aa),
+                     (-bb + math.sqrt(max(0., discriminant))) / (2 * aa)}):
+        point = a + t * direction
+        if _arc_parameter(primitive, point) is not None:
+            values.append(point)
+    return values
+
+
 def _portal_intersection(segment, portal):
     """Protect the portal interior; touching its jamb endpoint is allowed."""
     a, b = np.asarray(segment), np.asarray(portal)
@@ -137,6 +174,15 @@ def _candidates(primitives, max_shift, collinear_gap):
             if 1e-6 < u < 1 - 1e-6 and NODE_TOLERANCE_M < shift <= max_shift + 1e-9:
                 candidates.append({"kind": "endpoint_to_interior", "ends": [(index, endpoint)],
                                    "carrier": carrier_index, "junction": junction, "maximum_shift_m": shift})
+        for carrier_index, carrier in enumerate(primitives):
+            if carrier["type"] != "arc":
+                continue
+            for junction in _line_arc_junctions(prior, carrier):
+                shift = float(np.linalg.norm(junction - point))
+                if NODE_TOLERANCE_M < shift <= max_shift + 1e-9:
+                    candidates.append({"kind": "endpoint_to_arc", "ends": [(index, endpoint)],
+                                       "carrier": carrier_index, "junction": junction,
+                                       "maximum_shift_m": shift})
     return sorted(candidates, key=lambda item: (item["maximum_shift_m"], item["kind"], item["ends"]))
 
 
@@ -190,14 +236,18 @@ def _graph(primitives, portals):
         if primitive["type"] == "line":
             a, b = _endpoints(primitive)
             direction = b - a
-            for node in nodes:
+        for node in nodes:
+            if primitive["type"] == "line":
                 point = np.asarray(node["point"])
                 t = float((point - a) @ direction / (direction @ direction))
-                if (1e-6 < t < 1 - 1e-6
-                        and np.linalg.norm(point - a - t * direction) <= NODE_TOLERANCE_M):
-                    ordered.append((t, node["id"]))
-                    primitive["interior_nodes"].append(node["id"])
-                    node["incidences"].append({"primitive_id": primitive["id"], "at": "interior", "parameter": t})
+                on_curve = np.linalg.norm(point - a - t * direction) <= NODE_TOLERANCE_M
+            else:
+                t = _arc_parameter(primitive, node["point"])
+                on_curve = t is not None
+            if on_curve and 1e-6 < t < 1 - 1e-6:
+                ordered.append((t, node["id"]))
+                primitive["interior_nodes"].append(node["id"])
+                node["incidences"].append({"primitive_id": primitive["id"], "at": "interior", "parameter": t})
         ordered.sort()
         edges.extend({"primitive_id": primitive["id"], "start_node": a[1], "end_node": b[1]}
                      for a, b in zip(ordered, ordered[1:]) if a[1] != b[1])
@@ -216,7 +266,7 @@ def _graph(primitives, portals):
 def reconnect_primitives(primitives, *, raw_support, not_blocks_navmesh,
                          portals=(), max_shift_m=.15, collinear_gap_m=.4,
                          min_line_length_m=.05, endpoint_merge_tolerance_m=.05):
-    """Connect fitted straight walls only after two independent checks pass.
+    """Connect straight walls to lines or fixed arcs after independent checks.
 
     Callbacks receive a proposed world-XZ connector and must return
     ``{"pass": bool, ...evidence}``. Larger collinear gaps are explicit rejected
@@ -326,6 +376,10 @@ def reconnect_primitives(primitives, *, raw_support, not_blocks_navmesh,
         lines = [_endpoints(result[index]) for index, _ in candidate["ends"]]
         if candidate["kind"] == "collinear_gap":
             junction = np.mean([line[endpoint] for line, (_, endpoint) in zip(lines, candidate["ends"])], axis=0)
+        elif candidate["kind"] == "endpoint_to_arc":
+            carrier_primitive = result[candidate["carrier"]]
+            intersections = _line_arc_junctions(lines[0], carrier_primitive)
+            junction = min(intersections, key=lambda point: np.linalg.norm(point - candidate["junction"])) if intersections else None
         else:
             carrier = _endpoints(result[candidate["carrier"]]) if "carrier" in candidate else lines[1]
             junction = _intersection(lines[0], carrier)
@@ -350,7 +404,8 @@ def reconnect_primitives(primitives, *, raw_support, not_blocks_navmesh,
             reason = "protected_portal_interior"
         elif maximum_shift > max_shift_m + 1e-9:
             reason = "endpoint_displacement_limit"
-        elif "carrier" in candidate and not _on_segment(junction, carrier):
+        elif ("carrier" in candidate and candidate["kind"] != "endpoint_to_arc"
+              and not _on_segment(junction, carrier)):
             reason = "carrier_no_longer_contains_junction"
         for index, endpoint in candidate["ends"]:
             proposed = _endpoints(result[index])
@@ -400,7 +455,8 @@ def rasterize_primitives(primitives, origin, side_m, resolution=.05):
     draw = ImageDraw.Draw(image)
     for item in primitives:
         points = _arc_points(item, resolution / 2) if item["type"] == "arc" else _endpoints(item)
-        thickness = float(item.get("thickness_m", resolution))
+        measured = item.get("thickness_m")
+        thickness = float(resolution if measured is None else measured)
         if not math.isfinite(thickness) or thickness <= 0:
             raise ValueError("Measured thickness_m must be positive and finite")
         pixels = np.rint((points - origin) / resolution - .5).astype(int)
@@ -414,7 +470,8 @@ def structure_svg(primitives, origin, side_m, resolution=.05):
     elements = []
     for item in primitives:
         start, end = _endpoints(item) - origin
-        width = float(item.get("thickness_m", resolution))
+        measured = item.get("thickness_m")
+        width = float(resolution if measured is None else measured)
         identifier = html.escape(str(item["id"]), quote=True)
         style = f'id="{identifier}" fill="none" stroke="black" stroke-width="{width:g}"'
         if item["type"] == "line":
