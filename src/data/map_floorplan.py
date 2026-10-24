@@ -185,7 +185,7 @@ def split_primitive(primitive, points, selected):
     result = []
     for start, end in zip(starts, ends):
         length = float(np.linalg.norm(np.diff(points[start:end + 1], axis=0), axis=1).sum())
-        if length < .12:
+        if length <= 1e-6:
             continue
         value = copy.deepcopy(primitive)
         value["id"] = primitive["id"] + f"-part{len(result)}"
@@ -238,6 +238,14 @@ def verify_primitive(primitive, evidence):
                 "carved_passages": intervals, "unsupported_sample_count": int((~supported & retained).sum()),
                 "semantic_alone_accepted": False}
     values = split_primitive(primitive, points, retained) if accepted else []
+    # Real short jambs and corner returns must not disappear merely because a
+    # doorway carve leaves less than the original candidate's minimum length.
+    # Check each retained piece against wall-body evidence instead of deleting
+    # it with a generic length cutoff.
+    values = [value for value in values if (evidence.profile(primitive_points(value))[:,
+                      evidence.body_heights].sum(1) >= 2).mean() >= .65]
+    decision["accepted"] = bool(values)
+    decision["retained_piece_count"] = len(values)
     for value in values:
         value["evidence"] = decision
     return values, decision
@@ -278,7 +286,9 @@ def fit_scene(source, output, *, pair_reviews=None):
     from .map_window_boundaries import build_window_boundaries
     from .map_wall_axes import merge_wall_faces
     from .map_wall_cad import canonicalize_walls
+    from .map_wall_planes import refit_wall_planes
     from .map_wall_refit import refit_overlapping_lines
+    from .map_wall_completion import complete_wall_gaps
     from .map_openings import region_partition
     from .map_leaks import review_leak_pairs
 
@@ -286,7 +296,7 @@ def fit_scene(source, output, *, pair_reviews=None):
                       for name in ("map_floorplan.py", "map_wall_fit.py", "map_wall_structure.py",
                                    "map_wall_recovery.py", "map_window_boundaries.py", "map_wall_axes.py",
                                    "map_wall_cad.py", "map_cad_review.py", "map_instances.py", "map_geometry.py",
-                                   "map_wall_refit.py",
+                                   "map_wall_refit.py", "map_wall_planes.py", "map_wall_completion.py",
                                    "map_openings.py", "map_quality.py", "map_leaks.py", "map_exploration.py")}
     started = time.monotonic()
     source, output = Path(source).resolve(), Path(output).resolve()
@@ -329,8 +339,8 @@ def fit_scene(source, output, *, pair_reviews=None):
         accepted.extend(values)
         decisions.append(checked)
     write_json(output / "geometry_decisions.json", decisions)
-    portals = json.loads((source / "opening_candidates.json").read_text())
-    portals = [p for p in portals if p["status"] == "accepted"]
+    opening_candidates = json.loads((source / "opening_candidates.json").read_text())
+    portals = [p for p in opening_candidates if p["status"] == "accepted"]
     priors = []
     for instance in instances:
         if instance.category not in {"door", "window"}:
@@ -381,14 +391,24 @@ def fit_scene(source, output, *, pair_reviews=None):
     axis_cad = canonicalize_walls(wall_axes["primitives"], not_blocks_navmesh=evidence.not_blocks_navmesh,
                                   same_surface=evidence.same_surface)
     write_json(output / "cad_axes.json", axis_cad)
-    refitted = refit_overlapping_lines(axis_cad["primitives"], segments,
+    source_heights = np.asarray([floor + row["relative_height_m"] for row in provenance])
+    plane_refitted = refit_wall_planes(axis_cad["primitives"], geometry.triangles, segments, source_heights,
+                    floor_height=floor, not_blocks_navmesh=evidence.not_blocks_navmesh,
+                    portals=opening_candidates)
+    write_json(output / "wall_planes.json", plane_refitted)
+    refitted = refit_overlapping_lines(plane_refitted["primitives"], segments,
                     same_surface=evidence.same_surface, not_blocks_navmesh=evidence.not_blocks_navmesh)
     write_json(output / "surface_refit.json", refitted)
     structure = reconnect_primitives(refitted["primitives"],
                     raw_support=lambda segment: support_with_wall_axes(segment, evidence, measured_axes),
                     not_blocks_navmesh=evidence.not_blocks_navmesh, portals=portals,
                     max_shift_m=.15, collinear_gap_m=.4)
-    final_cad = canonicalize_walls(structure["primitives"], junctions=structure["nodes"],
+    write_json(output / "reconnected_geometry.json", structure)
+    completed = complete_wall_gaps(structure["primitives"], geometry.triangles, floor_height=floor,
+                    not_blocks_navmesh=evidence.not_blocks_navmesh, source_segments=segments,
+                    portals=opening_candidates, semantic_priors=priors)
+    write_json(output / "wall_completion.json", completed)
+    final_cad = canonicalize_walls(completed["primitives"], junctions=completed["nodes"],
                                   not_blocks_navmesh=evidence.not_blocks_navmesh,
                                   same_surface=evidence.same_surface)
     write_json(output / "cad_geometry.json", final_cad)
@@ -435,6 +455,12 @@ def fit_scene(source, output, *, pair_reviews=None):
             "pixel_size_m": .05, "method": "fitted_architectural_walls", "parameters": PARAMETERS,
             "wall_sha256": hashlib.sha256((output / "walls.png").read_bytes()).hexdigest(),
             "implementation_sha256": implementation,
+            "pipeline_order": ["axis_cad", "wall_planes", "surface_refit", "reconnect",
+                               "wall_completion", "final_cad"],
+            "stage_primitive_counts": {"axis_cad": len(axis_cad["primitives"]),
+                "wall_planes": len(plane_refitted["primitives"]), "surface_refit": len(refitted["primitives"]),
+                "reconnect": len(structure["primitives"]), "wall_completion": len(completed["primitives"]),
+                "final_cad": len(primitives)},
             "status": "development_pending_structural_review", "quality": quality,
             "cad_consistency": final_cad["metrics"],
             "wall_pair_review": {"path": str(Path(pair_reviews).resolve()),
@@ -444,6 +470,10 @@ def fit_scene(source, output, *, pair_reviews=None):
                 "junctions": len(nodes), "connections": len(structure["connections"]),
                 "unexplained_endpoints": len(unexplained), "region_candidates": len(regions),
                 "wall_axis_groups": len(wall_axes["merged"]),
+                "plane_refit_groups": len(plane_refitted["accepted"]),
+                "surface_refit_groups": len(refitted["accepted"]),
+                "wall_completion_groups": len(completed["accepted"]),
+                "wall_completion_rejected": len(completed["rejected"]),
                 "reconstructed_window_boundaries": len(windows["accepted"]),
                 "window_candidates_pending": sum(item["status"] == "needs_review" for item in windows["candidates"])},
             "seconds": time.monotonic() - started}

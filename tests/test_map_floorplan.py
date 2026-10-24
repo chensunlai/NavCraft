@@ -144,3 +144,71 @@ def test_one_height_or_unobserved_gap_does_not_establish_same_surface():
     evidence = RawWallEvidence(raw, 0, [-1, -1], 5, np.zeros((100, 100), bool))
     assert not evidence.same_surface(line([0, 0], [3, 0]), line([.5, .01], [2, .01]))["pass"]
     assert not evidence.same_surface(line([0, 0], [1, 0]), line([2, .01], [3, .01]))["pass"]
+
+
+def test_scene_pipeline_uses_absolute_source_heights_protected_openings_and_completion_nodes(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+    from PIL import Image
+    import src.data.map_floorplan as floorplan
+    import src.data.map_wall_cad as cad
+    import src.data.map_wall_planes as planes
+    import src.data.map_wall_refit as refit
+    import src.data.map_wall_structure as structure
+    import src.data.map_wall_completion as completion
+
+    source, output = tmp_path / "source", tmp_path / "output"
+    (source / "raw_vote").mkdir(parents=True)
+    floor = .37
+    raw_wall = wall(0, 3, 0) + [0, floor, 0]
+    raw_floor = np.array([[[-1, floor, -1], [4, floor, -1], [4, floor, 4]],
+                          [[-1, floor, -1], [4, floor, 4], [-1, floor, 4]]])
+    raw = np.concatenate([raw_wall, raw_floor])
+    instances = [SimpleNamespace(category="wall", id=1, region_id=1, triangles=raw_wall),
+                 SimpleNamespace(category="door", id=2, region_id=1, triangles=wall(1, 2, .2) + [0, floor, 0])]
+    monkeypatch.setattr(floorplan, "load_scene_geometry", lambda *_args, **_kwargs:
+                        SimpleNamespace(triangles=raw, metadata={"source": "local fixture"}))
+    monkeypatch.setattr(floorplan, "load_semantic_instances", lambda *_args, **_kwargs:
+                        (instances, {"source": "local fixture"}))
+    baseline = {"scene": str(tmp_path / "fixture.basis.glb"), "floor_height": floor,
+                "origin": [-1, -1], "side_m": 5,
+                "quality": {"rgb_alignment": {"pass": True}}}
+    (source / "raw_vote/meta.json").write_text(json.dumps(baseline))
+    openings = [{"id": "known", "status": "accepted", "segment": [[1, 0], [1.5, 0]]},
+                {"id": "undecided", "status": "needs_review", "segment": [[2, 0], [2.5, 0]]}]
+    (source / "opening_candidates.json").write_text(json.dumps(openings))
+    (source / "geodesic_pairs.json").write_text("[]")
+    Image.new("L", (100, 100), 0).save(source / "navmesh.png")
+    Image.new("RGB", (100, 100), "white").save(source / "topdown.png")
+    Image.new("L", (100, 100), 255).save(source / "raw_vote/walls.png")
+    events, calls, finished = [], {}, {}
+
+    def wrap(module, attribute, stage):
+        original = getattr(module, attribute)
+
+        def spy(*args, **kwargs):
+            events.append(stage)
+            calls[stage] = (args, kwargs)
+            value = original(*args, **kwargs)
+            finished[stage] = value
+            return value
+
+        monkeypatch.setattr(module, attribute, spy)
+
+    wrap(planes, "refit_wall_planes", "planes")
+    wrap(refit, "refit_overlapping_lines", "refit")
+    wrap(structure, "reconnect_primitives", "reconnect")
+    wrap(completion, "complete_wall_gaps", "completion")
+    wrap(cad, "canonicalize_walls", "cad")
+    meta = floorplan.fit_scene(source, output)
+    assert events == ["cad", "cad", "planes", "refit", "reconnect", "completion", "cad"]
+    np.testing.assert_allclose(np.unique(calls["planes"][0][3]), floor + np.array([.5, .9, 1.3, 1.7, 2., 2.3]))
+    assert calls["planes"][1]["portals"] == openings
+    assert calls["completion"][1]["portals"] == openings
+    assert calls["completion"][1]["semantic_priors"][0]["category"] == "door"
+    np.testing.assert_array_equal(calls["completion"][1]["source_segments"], calls["planes"][0][2])
+    assert calls["cad"][1]["junctions"] == finished["completion"]["nodes"]
+    for filename in ("wall_planes.json", "surface_refit.json", "reconnected_geometry.json", "wall_completion.json"):
+        assert (output / filename).is_file()
+    assert {"map_wall_planes.py", "map_wall_completion.py"} <= meta["implementation_sha256"].keys()
+    assert meta["stage_primitive_counts"]["final_cad"] == meta["counts"]["final_primitives"]
