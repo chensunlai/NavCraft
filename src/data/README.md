@@ -1,8 +1,45 @@
-# Wall-map exploration
+# Architectural wall-map reconstruction
 
 This builder reads raw HM3D/MP3D meshes and optional semantic priors. It does not
 import Harness or modify scene assets. Geometry, render evidence, rejected
 proposals and model-call audits remain separate.
+
+The current target is a connected architectural floor plan, not a raw wall
+projection. Start with one saved development scene; final bulk generation is
+outside the current scope:
+
+```bash
+python -m src.data.map_floorplan \
+  --source runs/map-exploration-20261024-geometric/final/00-hm3d-DNWbUAJYsPy \
+  --output runs/my-wall-fit/DNWbUAJYsPy
+python -m src.data.map_structure_audit \
+  --fitted runs/my-wall-fit/DNWbUAJYsPy --output runs/my-wall-fit/audit.json
+CUDA_VISIBLE_DEVICES=0 CUDA_DEVICE_ORDER=PCI_BUS_ID \
+  python -m src.data.map_gap_audit \
+  --source runs/map-exploration-20261024-geometric/final/00-hm3d-DNWbUAJYsPy \
+  --fitted runs/my-wall-fit/DNWbUAJYsPy --output runs/my-wall-fit/opening-audit --gpu 0
+```
+
+Use the `vln` Python for these commands. Fitting and structural auditing are
+CPU-only; gap auditing creates one real Habitat instance on the selected GPU.
+Each new output directory must be empty. Opening auditing updates that fitted
+candidate's opening/region records and saves the previous records alongside it.
+
+- `map_instances.py`: instance-level architectural semantic priors and sources.
+- `map_wall_fit.py`: supported lines/arcs without forcing axis-aligned walls.
+- `map_wall_structure.py`: evidence-gated joins, junction graph, PNG/SVG rendering.
+- `map_wall_recovery.py`: strict, aligned raw support for missing straight spans.
+- `map_window_boundaries.py`: raw sill/header/jamb evidence for inset window
+  boundaries; partial support stays a separate candidate, not a solid wall.
+- `map_floorplan.py`: one-scene fitting, independent raw checks and real-RGB overlay.
+- `map_gap_audit.py`: contiguous raw clearance, actual robot-width crossing,
+  paired views and compressed depth evidence; unresolved gaps are retained.
+- `map_structure_audit.py`: unresolved endpoints/gaps, without repairing the map.
+
+All outputs remain development candidates until structural and visual review.
+Door lintels alone do not establish a wall at body height. Window or semantic
+labels alone do not justify filling scan holes. Missing wall thickness is not
+invented by widening the rendered line.
 
 Use the `vln` Python environment and a fresh worker on physical GPU 0 or 1:
 
