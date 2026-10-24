@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>NavCraft · 连续导航实验</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%230d806a'/%3E%3Cpath d='m16 6 10 20-10-5-10 5z' fill='white'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<aside id="sidebar"><a class="brand" href="#"><span class="brand-mark">↟</span><span>NavCraft<small>实验浏览器</small></span></a><button class="nav-overview active" id="overview-btn">◫ <span>实验总览</span></button><div class="sidebar-label">连续任务 · QA 场景</div><label class="sr-only" for="model-select">模型</label><select id="model-select"></select><div class="sidebar-filter"><button data-round-filter="all" class="active">全部轮次</button><button data-round-filter="failure">仅失败</button></div><nav id="round-list"></nav><div class="sidebar-bottom"><span class="status-dot"></span>离线记录 · 不调用模型<br><small>相同墙图 · 空初始记忆 · 独立会话</small></div></aside>
+<div class="mobile-shade" id="mobile-shade"></div>
+<div class="app"><header><button id="menu-btn" class="icon-btn" aria-label="打开侧栏">☰</button><div id="breadcrumbs">连续导航 / 实验总览</div><div class="header-end"><span class="scene-tag">QaLdnwvtxbs · L1</span><span class="read-only">只读</span></div></header><main id="main"><div class="loading">正在读取实验记录…</div></main></div>
+<dialog id="image-dialog"><button id="close-image" class="icon-btn" aria-label="关闭图片">✕</button><img id="large-image" alt="放大观察图片"><div id="large-caption"></div></dialog>
+<div id="toast" role="status"></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
