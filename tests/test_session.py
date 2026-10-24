@@ -66,7 +66,9 @@ def session(tmp_path):
     scene = tmp_path / "map.json"
     scene.write_text(json.dumps({"origin": [0, 0], "size_m": 10,
                                 "walls": [[[1, 1], [9, 1]]], "floor_height": 0}))
-    result = HarnessSession(repo, {"model": "fixture", "reasoning_effort": "medium"},
+    credentials = tmp_path / "fixture.env"
+    credentials.write_text("NAVCRAFT_TEST_BASE_URL=http://fixture.invalid\nNAVCRAFT_TEST_API_KEY=fixture-key\n")
+    result = HarnessSession(repo, {"model": "fixture", "reasoning_effort": "medium", "credentials": str(credentials)},
                             tmp_path / "run", FakeEnvironment(tmp_path), scene,
                             client_factory=FakeClient)
     yield result
@@ -132,6 +134,9 @@ def test_map_heading_and_bounds():
     transform = {"origin": [0, 0], "size_m": 10}
     assert map_pose({"position": [5, 1, 5], "rotation_xyzw": [0, 0, 0, 1]}, transform) == {"pos": [.5, .5], "heading": 0}
     assert map_pose({"position": [5, 1, 5], "rotation_xyzw": [0, -.70710678, 0, .70710678]}, transform)["heading"] == 90
+    precise = {"position": [4.123456, 1, 5.876543], "rotation_xyzw": [0, 0, 0, 1]}
+    assert map_pose(precise, transform) == {"pos": [.4123, .5877], "heading": 0}
+    assert precise["position"] == [4.123456, 1, 5.876543]
 
 
 def test_prompt_limits_reject_invalid_numbers():

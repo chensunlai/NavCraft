@@ -61,7 +61,7 @@ export function pruneImages(messages: AgentMessage[]): AgentMessage[] {
       if (block.type !== 'image' || `${index}:${i}` === keep) return block;
       const previous = content[i - 1];
       const label = previous?.type === 'text' ? previous.text.match(/\[(?:CURRENT|HISTORY|MAP|TARGET)[^\]]*\]/)?.[0] : undefined;
-      return { type: 'text' as const, text: `${label ?? 'Earlier image'} 已移出上下文，可用 view_images 重新打开。` };
+      return { type: 'text' as const, text: `${label ?? 'Earlier image'} Removed from context. Reopen the source image if needed.` };
     }) } as AgentMessage;
   });
 }

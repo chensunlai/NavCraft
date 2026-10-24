@@ -91,13 +91,13 @@ class MemoryStore:
     def read(self, ids=None, filter=None, limit=30, offset=0):
         try:
             if ids is not None and filter is not None:
-                raise ValueError("ids 与 filter 不能同时使用")
+                raise ValueError("ids and filter cannot be used together")
             if type(limit) is not int or not 1 <= limit <= 300 or type(offset) is not int or offset < 0:
-                raise ValueError("limit 必须为 1–300，offset 必须为非负整数")
+                raise ValueError("limit must be 1-300; offset must be a nonnegative integer")
             entities = self.entities
             if ids is not None:
                 if not isinstance(ids, list) or any(not isinstance(i, str) for i in ids):
-                    raise ValueError("ids 必须为 ID 数组")
+                    raise ValueError("ids must be an array of IDs")
                 indexed = {e["id"]: e for e in entities}
                 frames = observation_index(self.workspace)
                 found = []
@@ -113,9 +113,9 @@ class MemoryStore:
                 return {"entities": found, "missing": [i for i in ids if i not in indexed]}
             if filter is not None:
                 if not isinstance(filter, dict) or set(filter) - {"type", "room", "category", "located"}:
-                    raise ValueError("filter 只支持 type、room、category、located")
+                    raise ValueError("filter supports only type, room, category and located")
                 if "located" in filter and type(filter["located"]) is not bool:
-                    raise ValueError("located 必须为布尔值")
+                    raise ValueError("located must be a boolean")
                 entities = [e for e in entities if all(
                     (location(e) is not None) == value if key == "located"
                     else (e.get(key) == value and (key != "room" or e["type"] == "object"))
@@ -135,7 +135,7 @@ class MemoryStore:
         context = ""
         try:
             if not isinstance(operations, list) or not 1 <= len(operations) <= 20:
-                raise ValueError("operations 必须包含 1–20 项")
+                raise ValueError("operations must contain 1-20 items")
             current = self.entities
             state = {e["id"]: deepcopy(e) for e in current}
             used = set(json.loads(self.used_path.read_text())) if self.used_path.exists() else set()
@@ -143,17 +143,17 @@ class MemoryStore:
             changes, touched = [], {}
             for index, operation in enumerate(operations, 1):
                 if not isinstance(operation, dict):
-                    raise ValueError(f"第 {index} 项必须为对象")
+                    raise ValueError(f"Operation {index} must be an object")
                 op = operation.get("op")
                 identifier = operation.get("id", operation.get("keep"))
-                context = f"第 {index} 项 {op} {identifier}："
+                context = f"Operation {index} {op} {identifier}: "
                 if op == "create":
                     self._keys(operation, {"op", "id", "type", "fields"})
                     kind = operation.get("type")
                     self._id(identifier, kind)
                     if identifier in used:
                         number = next(i for i in range(1, 10000) if f"{PREFIXES[kind]}{i:02d}" not in used)
-                        return {"error": context + "ID 已经使用过", "hint": f"可用 ID：{PREFIXES[kind]}{number:02d}"}
+                        return {"error": context + "ID has already been used", "hint": f"Available ID: {PREFIXES[kind]}{number:02d}"}
                     fields = self._fields(operation.get("fields", {}), kind)
                     state[identifier] = {"id": identifier, "type": kind, **deepcopy(DEFAULTS[kind]),
                                          "description": "", "evidence": [], **fields}
@@ -161,25 +161,25 @@ class MemoryStore:
                 elif op == "update":
                     self._keys(operation, {"op", "id", "fields"})
                     if identifier not in state:
-                        raise ValueError("实体不存在")
+                        raise ValueError("Entity does not exist")
                     state[identifier].update(self._fields(operation.get("fields", {}), state[identifier]["type"]))
                 elif op == "delete":
                     self._keys(operation, {"op", "id"})
                     if identifier not in state:
-                        raise ValueError("实体不存在")
+                        raise ValueError("Entity does not exist")
                     del state[identifier]
                 elif op == "merge":
                     self._keys(operation, {"op", "keep", "remove", "fields"})
                     self._merge(state, operation)
                 else:
-                    raise ValueError("op 必须为 create、update、delete 或 merge")
+                    raise ValueError("op must be create, update, delete or merge")
                 touched[identifier] = context
                 changes.append({"op": op, "id": identifier, **({"remove": operation["remove"]} if op == "merge" else {})})
             if len(state) > 300:
-                raise ValueError("实体总数不能超过 300")
+                raise ValueError("Memory cannot contain more than 300 entities")
             frames = observation_index(self.workspace)
             for identifier, entity in state.items():
-                context = touched.get(identifier, f"实体 {identifier}：")
+                context = touched.get(identifier, f"Entity {identifier}: ")
                 self._validate(entity, state, frames)
             # Reserve IDs first: even an interrupted public replace cannot reuse an issued ID.
             atomic_json(self.used_path, sorted(used))
@@ -191,16 +191,16 @@ class MemoryStore:
     @staticmethod
     def _keys(value, allowed):
         if set(value) - allowed:
-            raise ValueError("未知字段：" + ", ".join(sorted(set(value) - allowed)))
+            raise ValueError("Unknown fields: " + ", ".join(sorted(set(value) - allowed)))
 
     @staticmethod
     def _id(identifier, kind):
         if kind not in PREFIXES or not isinstance(identifier, str) or not re.fullmatch(PREFIXES[kind] + r"\d{2,4}", identifier):
-            raise ValueError("ID 必须与类型前缀一致，后跟 2–4 位数字")
+            raise ValueError("ID must use the type's prefix followed by 2-4 digits")
 
     def _fields(self, fields, kind):
         if not isinstance(fields, dict):
-            raise ValueError("fields 必须为对象")
+            raise ValueError("fields must be an object")
         self._keys(fields, FIELDS[kind])
         fields = deepcopy(fields)
         for key, default in (("description", ""), ("evidence", []), ("connects", [None, None]), ("passage", "unknown")):
@@ -211,12 +211,12 @@ class MemoryStore:
     def _merge(self, state, operation):
         keep, remove = operation.get("keep"), operation.get("remove")
         if keep not in state or not isinstance(remove, list) or not remove or any(not isinstance(i, str) for i in remove):
-            raise ValueError("merge 需要存在的 keep 和非空 remove ID 数组")
+            raise ValueError("merge requires an existing keep ID and a nonempty remove ID array")
         if keep in remove or len(set(remove)) != len(remove) or any(i not in state for i in remove):
-            raise ValueError("remove 必须互异、存在，且不能包含 keep")
+            raise ValueError("remove IDs must be distinct, exist and exclude keep")
         kind = state[keep]["type"]
         if any(state[i]["type"] != kind for i in remove):
-            raise ValueError("只能合并同类型实体")
+            raise ValueError("Only entities of the same type can be merged")
         fields = self._fields(operation.get("fields", {}), kind)
         sources = [state[keep]] + [state[i] for i in remove]
         result = deepcopy(state[keep])
@@ -227,7 +227,7 @@ class MemoryStore:
                 if value is not None and value not in values:
                     values.append(value)
             if len(values) > 1 and key not in fields:
-                raise ValueError(f"{key} 有冲突，请在 fields 中指定最终值")
+                raise ValueError(f"Conflicting {key}; specify the final value in fields")
             if values and result.get(key) is None:
                 result[key] = values[0]
         result.update(fields)
@@ -250,40 +250,40 @@ class MemoryStore:
         self._id(entity.get("id"), entity.get("type"))
         self._keys(entity, FIELDS[entity["type"]] | {"id", "type"})
         if not isinstance(entity.get("name"), str) or not entity["name"].strip() or len(entity["name"]) > 40:
-            raise ValueError("name 必须为 1–40 字的非空字符串")
+            raise ValueError("name must be a nonempty string of 1-40 characters")
         if not isinstance(entity.get("description"), str) or len(entity["description"]) > 300:
-            raise ValueError("description 不能超过 300 字")
+            raise ValueError("description must be a string of at most 300 characters")
         evidence = entity.get("evidence")
         if not isinstance(evidence, list) or len(evidence) > 10 or any(not isinstance(i, str) for i in evidence):
-            raise ValueError("evidence 必须为不超过 10 个帧号的数组")
+            raise ValueError("evidence must be an array of at most 10 frame IDs")
         if any(i not in frames for i in evidence):
-            raise ValueError("evidence 包含不存在的帧号")
+            raise ValueError("evidence contains unknown frame IDs")
         for key in ("point", "anchor"):
             if entity.get(key) is not None:
                 self._point(entity[key])
         if entity.get("segment") is not None:
             if not isinstance(entity["segment"], list) or len(entity["segment"]) != 2:
-                raise ValueError("segment 必须为两个端点")
+                raise ValueError("segment must contain two endpoints")
             for point in entity["segment"]:
                 self._point(point)
         if entity["type"] == "door":
             if entity.get("passage") not in {"unknown", "seen", "passed", "blocked"}:
-                raise ValueError("passage 必须为 unknown、seen、passed 或 blocked")
+                raise ValueError("passage must be unknown, seen, passed or blocked")
             refs = entity.get("connects")
             if not isinstance(refs, list) or len(refs) != 2:
-                raise ValueError("connects 必须恰好包含两项房间 ID 或 null，例如 [\"R01\", null]")
+                raise ValueError("connects must contain exactly two room IDs or null, e.g. [\"R01\", null]")
         else:
             refs = [entity.get("room")] if entity["type"] == "object" else []
         for reference in refs:
             if reference is not None and (not isinstance(reference, str) or reference not in state or state[reference]["type"] != "room"):
-                raise ValueError(f"房间 {reference} 不存在；room/connects 必须引用已创建的 R01 这样的房间 ID，而不是房间名称")
+                raise ValueError(f"Room {reference} does not exist; room/connects must reference existing room IDs such as R01, not names")
         if entity["type"] == "object":
             if entity.get("category") is not None and (not isinstance(entity["category"], str) or not entity["category"].strip()):
-                raise ValueError("category 必须为字符串或 null")
+                raise ValueError("category must be a nonempty string or null")
             if entity.get("size") not in {None, "small", "medium", "large"}:
-                raise ValueError("size 无效")
+                raise ValueError("size must be small, medium, large or null")
 
     @staticmethod
     def _point(value):
         if not isinstance(value, list) or len(value) != 2 or any(type(v) not in (float, int) or not math.isfinite(v) or not -.05 <= v <= 1.05 for v in value):
-            raise ValueError("坐标必须为 [-0.05, 1.05] 范围内的两个有限数值")
+            raise ValueError("Coordinates must be two finite numbers in [-0.05, 1.05]")

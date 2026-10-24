@@ -33,7 +33,7 @@ class MapRenderer:
             raise ValueError("map size_m must be positive")
         entities = self.memory.entities
         indexed = {e["id"]: e for e in entities}
-        warnings = [f"{e['id']} 没有位置" for e in entities if location(e) is None]
+        warnings = [f"{e['id']} has no location" for e in entities if location(e) is None]
         points, padding = [], 2 / size
         if view == "full":
             bounds = [0., 0., 1., 1.]
@@ -46,7 +46,7 @@ class MapRenderer:
                     raise ValueError("around must be a nonempty ID list")
                 for identifier in ids:
                     if identifier not in indexed:
-                        warnings.append(f"{identifier} 不存在")
+                        warnings.append(f"{identifier} does not exist")
                     elif location(indexed[identifier]) is not None:
                         entity = indexed[identifier]
                         points.extend(entity["segment"] if entity["type"] == "door" else [location(entity)])
@@ -97,7 +97,7 @@ class MapRenderer:
         colors = ["#276cbd", "#4d8953", "#8e57b1", "#bc6a36", "#2c8992", "#bd5887"]
         highlights = set(highlight or [])
         for identifier in highlights - indexed.keys():
-            warnings.append(f"{identifier} 不存在")
+            warnings.append(f"{identifier} does not exist")
         for entity in entities:
             point = location(entity)
             if point is None or not inside(point):
@@ -130,7 +130,7 @@ class MapRenderer:
                 placed = True
                 break
             if not placed:
-                warnings.append(f"{entity['id']} 标签未显示")
+                warnings.append(f"{entity['id']} label could not be placed")
         if inside(pose["pos"]):
             px, py = pixel(pose["pos"])
             angle = math.radians(pose["heading"])

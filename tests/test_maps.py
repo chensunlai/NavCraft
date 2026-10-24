@@ -40,7 +40,7 @@ class MapTests(unittest.TestCase):
         self.assertEqual(a["bounds"], [.3, .3, .7, .7])
         self.assertEqual(a["bounds"], b["bounds"])
         self.assertNotEqual(a["map"], b["map"])
-        self.assertTrue(any("R01" in warning for warning in a["warnings"]))
+        self.assertIn("R01 has no location", a["warnings"])
         with Image.open(self.root / a["map"]) as image:
             self.assertLessEqual(max(image.size), 768)
 
@@ -54,7 +54,7 @@ class MapTests(unittest.TestCase):
             self.assertFalse(any("R01" in warning for warning in updated["warnings"]))
             self.memory.edit([{"op": "delete", "id": "R01"}])
             deleted = renderer.render(self.pose, [], view="full", highlight=["R01"])
-            self.assertTrue(any("R01" in warning for warning in deleted["warnings"]))
+            self.assertIn("R01 does not exist", deleted["warnings"])
         self.assertNotEqual((self.root / initial["map"]).read_bytes(), (self.root / updated["map"]).read_bytes())
 
     def test_public_navlib_calibration_and_direction(self):

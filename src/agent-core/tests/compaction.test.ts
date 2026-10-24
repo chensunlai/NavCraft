@@ -38,7 +38,7 @@ test('image projection retains three complete multi-tool rounds and the latest c
     ? message.content.filter(block => block.type === 'image').map(block => block.data) : []);
   assert.deepEqual(images, ['image-0', 'image-2', 'image-3', 'image-4']);
   assert.equal(JSON.stringify(messages), before);
-  assert.match(JSON.stringify(projected), /view_images/);
+  assert.match(JSON.stringify(projected), /Removed from context/);
   assert.equal(completeRoundStarts(messages).length, 5);
 });
 

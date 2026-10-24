@@ -15,7 +15,7 @@ def map_pose(pose, transform):
     fx = -2 * (qx * qz + qw * qy)
     fz = -(1 - 2 * (qx * qx + qy * qy))
     origin, size = transform["origin"], transform["size_m"]
-    return {"pos": [round((x - origin[0]) / size, 6), round((z - origin[1]) / size, 6)],
+    return {"pos": [round((x - origin[0]) / size, 4), round((z - origin[1]) / size, 4)],
             "heading": round(math.degrees(math.atan2(fx, -fz)) % 360, 2)}
 
 

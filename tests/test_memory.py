@@ -45,7 +45,8 @@ class MemoryTests(unittest.TestCase):
     def test_failed_batch_never_partially_writes_or_reserves_ids(self):
         original = self.store.path.read_bytes()
         result = self.store.edit([self.create("R01", "room"), self.create("O01", "object", room="R09")])
-        self.assertIn("error", result)
+        self.assertEqual(result["error"], "Operation 2 create O01: Room R09 does not exist; "
+                         "room/connects must reference existing room IDs such as R01, not names")
         self.assertEqual(original, self.store.path.read_bytes())
         self.assertNotIn("error", self.store.edit([self.create("R01", "room")]))
 
@@ -53,8 +54,8 @@ class MemoryTests(unittest.TestCase):
         self.store.edit([self.create("R01", "room")])
         self.store.edit([{"op": "delete", "id": "R01"}])
         result = MemoryStore(self.root).edit([self.create("R01", "room")])
-        self.assertIn("error", result)
-        self.assertIn("R02", result["hint"])
+        self.assertEqual(result["error"], "Operation 1 create R01: ID has already been used")
+        self.assertEqual(result["hint"], "Available ID: R02")
 
     def test_delete_reference_can_be_repaired_in_same_batch(self):
         self.store.edit([self.create("R01", "room"), self.create("O01", "object", room="R01")])
