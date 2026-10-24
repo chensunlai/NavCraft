@@ -160,3 +160,14 @@ def test_imported_observation_cannot_point_to_private_file(session):
     session.observations.index_path.write_text(json.dumps(item) + "\n")
     with pytest.raises(ValueError, match="outside"):
         Observations(session.workspace, session.transform)
+
+
+def test_memory_schema_exposes_legal_values_and_references():
+    from src.harness.tools.specs import specifications
+
+    tool = next(t for t in specifications() if t["name"] == "memory_edit")
+    fields = tool["parameters"]["properties"]["operations"]["items"]["properties"]["fields"]["properties"]
+    assert fields["passage"]["enum"] == ["unknown", "seen", "passed", "blocked", None]
+    assert fields["connects"]["minItems"] == fields["connects"]["maxItems"] == 2
+    assert fields["room"]["pattern"] == "^R[0-9]{2,4}$"
+    assert "name" in fields and "evidence" in fields

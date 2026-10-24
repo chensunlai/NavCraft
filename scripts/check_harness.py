@@ -52,12 +52,14 @@ def main():
         else:
             config = read_config(REPO / pilot["models"][args.model])
             if args.mode == "compaction":
-                config = {**config, "compaction_threshold": 10000}
+                config = {**config, "compaction_threshold": 6000}
             session = open_session(REPO, config, output, env, map_directory(REPO, episode) / "map.json")
             question = ("This is a tool integration check. Reopen the current frame with view_images and inspect the full map. "
                         "Use bash to write and run scratch/check.py, importing navlib and printing the current public pose. "
                         "Record one room named 'current area' at your current map position, using the current frame as evidence, "
-                        "then read it back with memory_read. Finally submit(answer='integration_ok'). Do not move.")
+                        "and an unlocated test door connected to that room and an unknown side. Set its passage to unknown; "
+                        "this is a test placeholder, not a claim you saw a door. Read both entities with memory_read. "
+                        "Finally submit(answer='integration_ok'). Do not move.")
             first = session.prompt(question, limits=PromptLimits(max_requests=12, max_actions=6, seconds=600))
             results = [first.to_dict()]
             if args.mode == "compaction" and first.submitted:
@@ -66,8 +68,19 @@ def main():
                 second = session.prompt("Public working notes:\n" + notes + "\nReopen the current frame and inspect the recorded room, then submit(answer='continued').",
                                         limits=PromptLimits(max_requests=16, max_actions=6, seconds=600))
                 results.append(second.to_dict())
+                third = session.prompt("Take a fresh current observation, read the room and door from memory, and submit(answer='observed').",
+                                       limits=PromptLimits(max_requests=12, max_actions=6, seconds=600))
+                results.append(third.to_dict())
+            required = {"view_images", "map_view", "bash", "memory_edit", "memory_read", "submit"}
+            successful = {call["name"] for call in session.trace.calls if not call["isError"]}
+            checks = {"required_tools": required <= successful,
+                      "python_script_created": (session.workspace / "scratch/check.py").is_file(),
+                      "room_and_door": {"room", "door"} <= {e["type"] for e in session.memory.entities},
+                      "all_submitted": all(r["submitted"] for r in results)}
+            if args.mode == "compaction":
+                checks["compaction_triggered"] = bool(session.trace.types.get("checkpoint_compaction_result"))
             result = {"kind": "integration_check", "model": config["model"], "reasoning_effort": config["reasoning_effort"],
-                      "prompts": results, "gpu": args.gpu}
+                      "prompts": results, "gpu": args.gpu, "checks": checks, "passed": all(checks.values())}
         write_json(output / "check.json", result)
         print(json.dumps({"output": str(output), **result}, ensure_ascii=False), flush=True)
     finally:

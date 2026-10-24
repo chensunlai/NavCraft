@@ -268,15 +268,15 @@ class MemoryStore:
                 self._point(point)
         if entity["type"] == "door":
             if entity.get("passage") not in {"unknown", "seen", "passed", "blocked"}:
-                raise ValueError("passage 无效")
+                raise ValueError("passage 必须为 unknown、seen、passed 或 blocked")
             refs = entity.get("connects")
             if not isinstance(refs, list) or len(refs) != 2:
-                raise ValueError("connects 必须包含两个房间 ID 或 null")
+                raise ValueError("connects 必须恰好包含两项房间 ID 或 null，例如 [\"R01\", null]")
         else:
             refs = [entity.get("room")] if entity["type"] == "object" else []
         for reference in refs:
             if reference is not None and (not isinstance(reference, str) or reference not in state or state[reference]["type"] != "room"):
-                raise ValueError(f"房间 {reference} 不存在")
+                raise ValueError(f"房间 {reference} 不存在；room/connects 必须引用已创建的 R01 这样的房间 ID，而不是房间名称")
         if entity["type"] == "object":
             if entity.get("category") is not None and (not isinstance(entity["category"], str) or not entity["category"].strip()):
                 raise ValueError("category 必须为字符串或 null")
