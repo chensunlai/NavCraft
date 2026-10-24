@@ -3,7 +3,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from src.data.map_scene import MapScene, _camera_alignment, _floor_selection, _height_in_range
+from src.data.map_scene import (MapScene, _camera_alignment, _floor_selection,
+                                _height_in_range, orthographic_metric_depth)
 
 
 def _orthographic_camera(origin, side, height):
@@ -26,6 +27,76 @@ def test_actual_camera_alignment_detects_reversed_z_and_wrong_center():
     assert not _camera_alignment(origin, side, size, 0., reversed_projection, transform)["pass"]
     transform[0, 3] += .1
     assert _camera_alignment(origin, side, size, 0., projection, transform)["max_error_px"] == pytest.approx(2.)
+
+
+def _projection(side=10., near=.02, far=100.):
+    return np.array([[2 / side, 0, 0, 0], [0, 2 / side, 0, 0],
+                     [0, 0, -2 / (far - near), -(far + near) / (far - near)],
+                     [0, 0, 0, 1]], dtype=np.float32)
+
+
+def _habitat_native_orthographic(metric, projection):
+    # Project explicit camera-space points into the OpenGL depth buffer, then
+    # reproduce Habitat's documented perspective-only depth reader.
+    metric = np.asarray(metric, dtype=np.float32)
+    points = np.stack([np.zeros_like(metric), np.zeros_like(metric), -metric, np.ones_like(metric)], axis=-1)
+    clip = points @ projection.T
+    buffer = (clip[..., 2] / clip[..., 3] + 1) / 2
+    a = np.float32((projection[2, 2] - np.float32(1)) / np.float32(2))
+    b = np.float32(projection[2, 3] / np.float32(2))
+    return b / (buffer + a)
+
+
+@pytest.mark.parametrize("near,far", [(.02, 100.), (.1, 20.)])
+def test_orthographic_metric_depth_recovers_three_known_plane_heights(near, far):
+    projection = _projection(near=near, far=far)
+    camera_y = 2.05
+    plane_y = np.array([0., .65, 1.3])
+    native = _habitat_native_orthographic(camera_y - plane_y, projection)
+    assert np.ptp(native) < .2  # This compression caused the false near-1m height map.
+    metric = orthographic_metric_depth(native, projection)
+    np.testing.assert_allclose(camera_y - metric, plane_y, atol=2e-5)
+
+
+def test_orthographic_conversion_handles_actual_near_far_and_negative_native_encoding():
+    projection = _projection(near=.3, far=80.)
+    distances = np.array([.3, 1., 4., 25., 60., 79.])
+    native = _habitat_native_orthographic(distances, projection)
+    assert (native < 0).any()  # Negative native values can encode valid distant surfaces.
+    np.testing.assert_allclose(orthographic_metric_depth(native, projection), distances, atol=2e-5)
+
+
+def test_orthographic_far_plane_and_invalid_observations_do_not_become_fake_floor():
+    recovered = orthographic_metric_depth(np.array([0., np.nan, np.inf, -np.inf]), _projection())
+    assert np.isnan(recovered).all()
+    perspective = _projection()
+    perspective[3] = [0, 0, -1, 0]
+    with pytest.raises(ValueError, match="orthographic"):
+        orthographic_metric_depth([1.], perspective)
+
+
+def test_topdown_preserves_rgb_and_reports_correct_metric_depth_conversion():
+    scene = MapScene.__new__(MapScene)
+    scene.origin, scene.side, scene.size = np.array([-5., -5.]), 10., 3
+    scene._pose = lambda *args: None
+    projection = _projection()
+    _, transform = _orthographic_camera(scene.origin, scene.side, 2.05)
+    camera = SimpleNamespace(render_camera=SimpleNamespace(projection_matrix=projection),
+                             node=SimpleNamespace(absolute_transformation=lambda: transform))
+    sensor = SimpleNamespace(_sensor_object=camera)
+    scene.sim = SimpleNamespace(_sensors={"topdown": sensor, "topdepth": sensor})
+    expected = np.tile([0., .65, 1.3], (3, 1))
+    native = _habitat_native_orthographic(2.05 - expected, projection)
+    native[0, 0] = 0
+    rgb = np.full((3, 3, 4), 127, dtype=np.uint8)
+    scene._capture = lambda names: {"topdown": rgb, "topdepth": native}
+    actual_rgb, height, metadata = scene.topdown(0.)
+    np.testing.assert_array_equal(actual_rgb, rgb[:, :, :3])
+    assert np.isnan(height[0, 0])
+    np.testing.assert_allclose(height[1:], expected[1:], atol=2e-5)
+    assert metadata["alignment"]["pass"]
+    assert metadata["depth"]["metric_value_type"] == "camera_forward_z_metres"
+    assert metadata["depth_projection"] == projection.tolist()
 
 
 def test_floor_audit_detects_clipping_before_rasterization():

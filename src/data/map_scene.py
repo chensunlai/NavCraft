@@ -116,6 +116,39 @@ def _camera_alignment(origin, side, size, floor, projection, world_from_camera):
                          for point, target, observed, distance in zip(xz, expected, actual, error)]}
 
 
+def orthographic_metric_depth(native_depth, projection):
+    """Recover metric camera-forward Z from Habitat's orthographic observation.
+
+    Habitat's depth reader applies its perspective-only unprojection to the
+    orthographic OpenGL buffer as well. Its returned value q is therefore
+    b/(d+a), with a=(P22-1)/2 and b=P23/2, rather than metres. Undo that step,
+    then solve the actual orthographic projection for camera Z. Native zero
+    denotes a patched far plane / missing hit and remains NaN.
+
+    The input must be the native orthographic depth observation, not normalized
+    buffer depth or an already-correct metric array. Perspective depth sensors
+    already return metric Z and must not use this conversion.
+    """
+    matrix = np.asarray(projection, dtype=np.float64)
+    if (matrix.shape != (4, 4) or not np.isfinite(matrix).all()
+            or not np.allclose(matrix[3], [0, 0, 0, 1])
+            or not np.allclose(matrix[2, :2], 0) or matrix[2, 2] >= 0):
+        raise ValueError("Need an actual orthographic OpenGL projection matrix")
+    scale, offset = matrix[2, 2], matrix[2, 3]
+    near, far = (offset + 1) / scale, (offset - 1) / scale
+    if not 0 < near < far:
+        raise ValueError("Orthographic projection must have positive near and far distances")
+    native = np.asarray(native_depth, dtype=np.float64)
+    buffer = np.full(native.shape, np.nan)
+    valid = np.isfinite(native) & (native != 0)
+    np.divide(offset / 2, native, out=buffer, where=valid)
+    buffer -= (scale - 1) / 2
+    valid &= (buffer >= -1e-6) & (buffer < 1)
+    metric = (offset - (2 * buffer - 1)) / scale
+    metric = np.where(valid & np.isfinite(metric), metric, np.nan)
+    return metric.astype(np.float32)
+
+
 def select_gpu(gpu):
     if type(gpu) is not int or gpu not in (0, 1):
         raise ValueError("Map construction is restricted to physical GPU 0 or 1")
@@ -257,16 +290,30 @@ class MapScene:
         width = 2 / abs(float(projection[0, 0]))
         if abs(width - self.side) > .001:
             raise ValueError(f"Orthographic camera width {width} != map width {self.side}")
-        depth = observations["topdepth"].squeeze()
-        height = camera_height - depth - floor
-        height[(depth <= .02) | (depth >= 99)] = np.nan
+        depth_sensor = self.sim._sensors["topdepth"]._sensor_object
+        depth_projection = np.asarray(depth_sensor.render_camera.projection_matrix, dtype=float)
+        depth_transform = np.asarray(depth_sensor.node.absolute_transformation(), dtype=float)
+        if not np.allclose(projection, depth_projection) or not np.allclose(transform, depth_transform):
+            raise ValueError("Topdown RGB and depth cameras must have matching projection and pose")
+        if not np.allclose(depth_transform[:3, 2], [0, 1, 0], atol=1e-6):
+            raise ValueError("Topdown depth camera must point vertically down")
+        native_depth = observations["topdepth"].squeeze()
+        depth = orthographic_metric_depth(native_depth, depth_projection)
+        height = float(depth_transform[1, 3]) - depth - floor
         alignment = _camera_alignment(self.origin, self.side, self.size, floor, projection, transform)
         return observations["topdown"][:, :, :3], height, {
             "camera_y": camera_height, "world_width_m": width,
             "projection": projection.tolist(), "axes": "right:+X, down:+Z",
             "world_from_camera": transform.tolist(), "image_size": [self.size, self.size],
             "alignment": alignment,
-            "depth_to_relative_height": "camera_y - depth - floor_y",
+            "depth_projection": depth_projection.tolist(),
+            "depth": {"native_value_type": "habitat_perspective_unprojection_of_orthographic_buffer",
+                      "metric_value_type": "camera_forward_z_metres",
+                      "conversion": "d=(P23/2)/native-(P22-1)/2; metric_z=(P23-(2*d-1))/P22",
+                      "near_m": float((depth_projection[2, 3] + 1) / depth_projection[2, 2]),
+                      "far_m": float((depth_projection[2, 3] - 1) / depth_projection[2, 2]),
+                      "native_missing_hit": 0, "invalid_height": "NaN"},
+            "depth_to_relative_height": "depth_camera_world_y - metric_camera_forward_z_metres - floor_y",
         }
 
     def view(self, point, yaw, output):
