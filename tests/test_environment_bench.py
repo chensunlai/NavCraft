@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import numpy as np
+from PIL import Image
 
 from src.bench.metrics import score_episode, score_goal
 from src.bench.runner import execute_goals, validate_single_floor
@@ -12,6 +14,7 @@ from src.bench.samples import plan, read_config
 from src.dataset.episodes import EpisodeSpec, create_source
 from src.environment import Environment, MotionResult
 from src.environment.fake import FakeSimulator
+from src.environment.base import save_depth
 
 
 def episode(benchmark="objnav", goals=None):
@@ -57,6 +60,86 @@ def test_fresh_frames_panorama_and_motion_accounting(tmp_path):
     with pytest.raises(ValueError):
         env.step("teleport")
     assert env.steps == 2
+    env.close()
+
+
+def test_super_depth_is_private_metric_png_and_basic_stays_rgb(tmp_path):
+    basic = environment(tmp_path / "basic")
+    assert basic.observe().depth is None
+    basic.close()
+    env = Environment(episode(), {"gpu": 0, "tool_tier": "super"}, tmp_path / "super", FakeSimulator)
+    observation = env.observe()
+    values = np.asarray(Image.open(observation.depth))
+    assert observation.depth.parent == env.directory / "observations"
+    assert observation.depth.suffix == ".png" and values.dtype == np.uint16
+    assert (values == 2000).all()
+    assert observation.camera["depth_scale"] == .001
+    assert observation.camera["depth_units"] == "metres"
+    assert observation.camera["depth_max"] == 10
+    assert np.asarray(observation.camera["K"]).shape == (3, 3)
+    assert np.asarray(observation.pose["world_from_optical"]).shape == (4, 4)
+    assert all(view.depth.is_file() for view in env.panorama())
+    env.close()
+
+
+def test_depth_encoding_marks_far_and_nonfinite_pixels_invalid(tmp_path):
+    path = tmp_path / "depth.png"
+    save_depth(path, [[.5, 1.234, 0, 10, 70, float("nan"), float("inf")]])
+    assert np.asarray(Image.open(path)).tolist() == [[500, 1234, 0, 0, 0, 0, 0]]
+
+
+def test_small_turns_count_actions_without_changing_position(tmp_path):
+    env = environment(tmp_path)
+    initial = env.position()
+    motion, frame = env.turn(12.5)
+    assert not motion.blocked and env.steps == 1
+    assert frame.frame_id == "f_0001" and env.position() == initial
+    assert env.path_length == 0
+    assert env.sim.yaw == pytest.approx(-math.radians(12.5))
+    env.turn(-7.5)
+    assert env.steps == 2 and env.sim.yaw == pytest.approx(-math.radians(5))
+    records = [json.loads(line) for line in (env.directory / "private/motions.jsonl").read_text().splitlines()]
+    assert [(row["action"], row["turn_degrees"]) for row in records] == [("turn_right", 12.5), ("turn_left", -7.5)]
+    for invalid in (0, 31, -31, True, float("nan"), float("inf"), "15"):
+        with pytest.raises(ValueError, match="Turn degrees"):
+            env.turn(invalid)
+    assert env.steps == 2
+    env.close()
+
+
+def test_native_small_turn_uses_controls_and_restores_filter():
+    from src.environment.simulator import HabitatSimulator
+
+    native = HabitatSimulator.__new__(HabitatSimulator)
+    events = []
+    def original_filter(start, end):
+        return end
+
+    controls = SimpleNamespace(move_filter_fn=original_filter)
+    def action(node, name, specification):
+        events.append((name, specification.amount))
+        assert controls.move_filter_fn([1, 0, 0], [2, 0, 0]) == [1, 0, 0]
+        return False
+    controls.action = action
+    native.agent = SimpleNamespace(controls=controls, scene_node=object())
+    native.sim = SimpleNamespace(step_physics=lambda seconds: events.append(seconds))
+    native._motion_sample = lambda **kwargs: {"position": [0, 0, 0], **kwargs}
+    result = native.turn(-4.25)
+    assert events == [("turn_left", 4.25), 1 / 60]
+    assert controls.move_filter_fn is original_filter
+    assert not result.collision and len(result.samples) == 2
+
+
+def test_near_point_is_reachable_and_never_changes_environment(tmp_path):
+    env = environment(tmp_path)
+    initial = env.pose()
+    candidate = env.near_point([1, 2, -1], .4)
+    assert candidate[1] == env.position()[1]
+    assert math.hypot(candidate[0] - 1, candidate[2] + 1) <= .4 + 1e-5
+    assert env.shortest_path([candidate]) == [env.position(), candidate]
+    assert env.pose() == initial and env.steps == 0
+    env.sim.shortest_path = lambda start, targets: []
+    assert env.near_point([1, 0, -1], .4) is None
     env.close()
 
 

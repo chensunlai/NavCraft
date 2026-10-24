@@ -12,7 +12,9 @@ from PIL import Image
 from habitat_sim.utils.common import quat_from_coeffs, quat_to_coeffs
 import quaternion
 
-from src.environment.base import MotionResult, Observation, TRANSLATION_ACTIONS
+from src.environment.base import (DEPTH_MAX, DEPTH_MIN, DEPTH_SCALE, MotionResult,
+                                  Observation, TRANSLATION_ACTIONS, save_depth,
+                                  turn_action)
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,11 @@ def camera_parameters(config: SensorConfig) -> dict:
         ],
         "depth_units": "metres",
         "depth_type": "optical_axis_z",
+        "depth_encoding": "uint16_png",
+        "depth_scale": DEPTH_SCALE,
+        "depth_min": DEPTH_MIN,
+        "depth_max": DEPTH_MAX,
+        "depth_invalid_value": 0,
         "optical_frame": "X right, Y down, Z forward",
         "sensor_frame": "X right, Y up, forward -Z",
     }
@@ -107,6 +114,8 @@ class HabitatSimulator:
             spec.resolution = [self.config.height, self.config.width]
             spec.position = mn.Vector3(0, self.config.sensor_height, 0)
             spec.hfov = self.config.hfov
+            if name == "depth":
+                spec.near, spec.far = DEPTH_MIN, DEPTH_MAX
             sensors.append(spec)
         agent.sensor_specifications = sensors
         agent.action_space = {
@@ -180,6 +189,10 @@ class HabitatSimulator:
         if not self.sim.pathfinder.find_path(query):
             return []
         return [[float(value) for value in vertex] for vertex in query.points]
+
+    def snap_point(self, point) -> list[float] | None:
+        snapped = np.asarray(self.sim.pathfinder.snap_point(np.asarray(point, dtype=np.float32)))
+        return snapped.astype(float).tolist() if np.isfinite(snapped).all() else None
 
     def restore_pose(self, pose: dict) -> None:
         """Restore a private recorded body and camera pose without taking an action."""
@@ -287,6 +300,20 @@ class HabitatSimulator:
         collision = bool(observations.get("collided", False))
         return MotionResult(collision, collision, samples=[before, self._motion_sample(collision=collision)])
 
+    def turn(self, degrees: float) -> MotionResult:
+        action = turn_action(degrees)
+        before = self._motion_sample()
+        controls = self.agent.controls
+        movement_filter = controls.move_filter_fn
+        try:
+            controls.move_filter_fn = lambda start, end: start
+            collision = bool(controls.action(self.agent.scene_node, action,
+                                             habitat_sim.agent.ActuationSpec(amount=abs(degrees))))
+        finally:
+            controls.move_filter_fn = movement_filter
+        self.sim.step_physics(1.0 / 60.0)
+        return MotionResult(collision, collision, samples=[before, self._motion_sample(collision=collision)])
+
     def pose(self) -> dict:
         state = self.agent.get_state()
         sensor = state.sensor_states["rgb"]
@@ -314,8 +341,8 @@ class HabitatSimulator:
         Image.fromarray(np.asarray(observations["rgb"])[..., :3]).save(rgb)
         depth = None
         if self.config.depth:
-            depth = directory / f"depth_{frame:06d}.npy"
-            np.save(depth, np.asarray(observations["depth"], dtype=np.float32))
+            depth = directory / f"depth_f_{frame:04d}.png"
+            save_depth(depth, observations["depth"])
         return Observation(
             f"f_{frame:04d}",
             rgb,
