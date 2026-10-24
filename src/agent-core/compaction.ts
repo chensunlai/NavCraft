@@ -1,16 +1,14 @@
 import { spawn } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
 import type { AgentMessage, StreamFn } from '@earendil-works/pi-agent-core';
 import type { ImageContent, TextContent } from '@earendil-works/pi-ai';
 import { compact, type ExtensionFactory, type ProjectedSessionEntry } from '@earendil-works/pi-coding-agent';
-import { publicPath, type ExecutionPolicy } from './sandbox.js';
-import { labelledImages } from './image-content.js';
+import type { ExecutionPolicy } from './sandbox.js';
+import { labelledImages, loadImages } from './image-content.js';
 
 export interface PublicCheckpoint {
   content: string | TextContent[];
   images?: string[];
   image_labels?: string[];
-  metadata?: unknown;
   revision: string | number;
 }
 export interface CompactionTrace { emit(type: string, data?: unknown): void; }
@@ -108,11 +106,7 @@ export function countSummaryTokens(python: string, text: string, signal?: AbortS
 
 async function factualHead(workspace: string, state: PublicCheckpoint, policy?: ExecutionPolicy): Promise<AgentMessage> {
   const content: (TextContent | ImageContent)[] = typeof state.content === 'string' ? [{ type: 'text', text: state.content }] : [...state.content];
-  const images = await Promise.all((state.images ?? []).map(async ref => {
-    const path = await publicPath(workspace, ref, false, policy);
-    return { type: 'image' as const, data: (await readFile(path)).toString('base64'),
-      mimeType: /\.jpe?g$/i.test(path) ? 'image/jpeg' : 'image/png' };
-  }));
+  const images = await loadImages(workspace, state.images, policy);
   content.push(...labelledImages(images, state.images ?? [], state.image_labels));
   return { role: 'custom', customType: 'public_checkpoint', content,
     timestamp: Date.now(), display: false, details: { revision: state.revision } };

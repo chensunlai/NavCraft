@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { createAgentSession, createExtensionRuntime, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ResourceLoader, type ToolDefinition, type ExtensionFactory, type AgentSession } from '@earendil-works/pi-coding-agent';
-import type { ImageContent, Context, Message } from '@earendil-works/pi-ai';
+import { createAgentSession, createExtensionRuntime, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ResourceLoader, type ToolDefinition, type ExtensionFactory } from '@earendil-works/pi-coding-agent';
+import type { Context, Message } from '@earendil-works/pi-ai';
 import { createCodingTools, type ExecutionPolicy } from './sandbox.js';
 import { Trace } from './trace.js';
 import { RequestBudget } from './budget.js';
@@ -45,7 +45,7 @@ export interface RuntimeOptions {
   enableThinking?: boolean;
   sessionFile?: string;
   initialMessages?: Message[];
-  coding?: boolean; timeoutSeconds?: number; extensions?: ExtensionFactory[]; compact?: boolean;
+  coding?: boolean; extensions?: ExtensionFactory[]; compact?: boolean;
   contextWindow?: number; compaction?: { reserveTokens: number; keepRecentTokens: number };
   checkpoint?: () => PublicCheckpoint | undefined | Promise<PublicCheckpoint | undefined>;
   executionPolicy?: ExecutionPolicy; tracePersist?: boolean;
@@ -123,9 +123,4 @@ export async function runtime(options: RuntimeOptions) {
   trace.emit('runtime_started', { pi: '1.2.0', requestedModel, model: auth.model, api, baseUrl: auth.baseUrl, thinking: session.thinkingLevel, maxTokens: 8192, contextWindow, compaction, tools: tools.map(t => t.name) });
   writeFileSync(join(options.directory, 'config.json'), JSON.stringify({ ...options, initialMessages: undefined, auth: options.auth ? '[PRIVATE]' : undefined, tools: tools.map(t => t.name), extensions: undefined, baseUrl: auth.baseUrl, model: auth.model }, null, 2));
   return { session, trace, budget, settingsManager, modelRuntime };
-}
-export async function promptBounded(session: AgentSession, text: string, images: ImageContent[], seconds: number) {
-  const timer = setTimeout(() => { void session.abort(); }, seconds * 1000);
-  try { await session.prompt(text, { images }); }
-  finally { clearTimeout(timer); }
 }

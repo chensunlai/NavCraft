@@ -3,14 +3,12 @@ import { dirname } from 'node:path';
 import type { Trace } from './trace.js';
 
 export class RequestBudget {
-  readonly start: number;
   exhausted = false;
   constructor(readonly file: string, public caseLimit: number, readonly trace: Trace, readonly totalLimit: number | null = null) {
     mkdirSync(dirname(file), { recursive: true });
     if (!existsSync(file)) writeFileSync(file, JSON.stringify({ limit: totalLimit, attempts: [] }, null, 2));
     const state = this.state();
     if (state.limit !== totalLimit) throw new Error('Budget file limit does not match configured global limit');
-    this.start = state.attempts.length;
   }
   state(): { limit: number | null; attempts: { number: number; time: string; url: string; run: string; service_error?: boolean }[] } {
     return JSON.parse(readFileSync(this.file, 'utf8'));

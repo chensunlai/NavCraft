@@ -1,5 +1,4 @@
 import { createInterface } from "node:readline";
-import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Readable, Writable } from "node:stream";
@@ -7,9 +6,9 @@ import type { AssistantMessage, ImageContent, TextContent, ToolCall, ToolResultM
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { runtime, type RuntimeOptions } from "./session.js";
-import { publicPath, type ExecutionPolicy } from "./sandbox.js";
+import type { ExecutionPolicy } from "./sandbox.js";
 import type { PublicCheckpoint } from "./compaction.js";
-import { labelledImages } from "./image-content.js";
+import { labelledImages, loadImages } from "./image-content.js";
 export type { PublicCheckpoint } from "./compaction.js";
 
 export interface RemoteToolDefinition {
@@ -49,13 +48,6 @@ interface PromptRun {
   startedCalls: Set<string>;
   lastMessage?: AgentMessage;
   lastAssistant?: AssistantMessage;
-}
-
-async function images(workspace: string, refs: string[] = [], policy?: ExecutionPolicy): Promise<ImageContent[]> {
-  return Promise.all(refs.map(async (ref) => {
-    const path = await publicPath(workspace, ref, false, policy);
-    return { type: "image" as const, data: (await readFile(path)).toString("base64"), mimeType: /\.jpe?g$/i.test(path) ? "image/jpeg" : /\.webp$/i.test(path) ? "image/webp" : "image/png" };
-  }));
 }
 
 /** Python owns the application. This process owns only a Pi session and callbacks. */
@@ -147,7 +139,7 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
             if (!Array.isArray(message.content)) continue;
             const content = [];
             for (const block of message.content) {
-              if (block.type === 'image' && block.path) content.push(...await images(workspace, [block.path], executionPolicy));
+              if (block.type === 'image' && block.path) content.push(...await loadImages(workspace, [block.path], executionPolicy));
               else content.push(block);
             }
             message.content = content;
@@ -197,7 +189,7 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
         if (!reply.result || !Array.isArray(reply.result.content) || reply.result.content.some((block) => block.type !== "text" || typeof block.text !== "string")) {
           throw new Error("Tool result content must contain text blocks; provide image paths in images");
         }
-        const visual = await images(workspace, reply.result.images, executionPolicy);
+        const visual = await loadImages(workspace, reply.result.images, executionPolicy);
         if (interrupted.has(reply.call_id)) return lateReply();
         if (reply.checkpoint !== undefined) checkpoint = reply.checkpoint;
         if (reply.control?.stop_remaining_tools) stopRemainingTools = true;
@@ -236,7 +228,7 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
       if (!Number.isFinite(seconds) || seconds <= 0) throw new Error("prompt seconds must be positive");
       promptStarting = true;
       let visual: ImageContent[];
-      try { visual = await images(workspace, args.images, executionPolicy); }
+      try { visual = await loadImages(workspace, args.images, executionPolicy); }
       finally { promptStarting = false; }
       if (closed) throw new Error("Core closed before prompt start");
       interrupted.clear();

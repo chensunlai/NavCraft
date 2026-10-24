@@ -137,10 +137,12 @@ test('actual Pi compaction persists the short summary and restores public facts 
   const workspace = join(directory, 'workspace');
   for (const folder of ['scene', 'observations', 'memory', 'scratch']) await mkdir(join(workspace, folder), { recursive: true });
   await writeFile(join(workspace, 'observations', 'current.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aB5cAAAAASUVORK5CYII=', 'base64'));
+  await writeFile(join(workspace, 'observations', 'reference.webp'), Buffer.from('UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEAAQAcJaQAA3AA/v89WAAAAA==', 'base64'));
   const original = globalThis.fetch;
   const payloads: Record<string, unknown>[] = [];
   const checkpoint = { content: 'PUBLIC FACTS current_request=Find chair; frame=f_latest', revision: 4,
-    images: ['observations/current.png'], image_labels: ['[CURRENT f_latest]'] };
+    images: ['observations/current.png', 'observations/reference.webp'],
+    image_labels: ['[CURRENT f_latest]', '[TARGET f_reference]'] };
   globalThis.fetch = async (_input, init) => {
     payloads.push(JSON.parse(String(init?.body)));
     const chunks = [
@@ -168,7 +170,7 @@ test('actual Pi compaction persists the short summary and restores public facts 
     assert.equal(result.summary, 'Door identity uncertain; inspect its other side.');
     assert.equal(active.budget.used, 1);
     checkpoint.content = 'PUBLIC FACTS current_request=Find chair; frame=f_after_moving';
-    checkpoint.image_labels = ['[CURRENT f_after_moving]'];
+    checkpoint.image_labels = ['[CURRENT f_after_moving]', '[TARGET f_reference]'];
     checkpoint.revision = 5;
     await active.session.prompt('Continue');
     assert.equal(active.budget.used, 2);
@@ -177,6 +179,7 @@ test('actual Pi compaction persists the short summary and restores public facts 
     const input = JSON.stringify(payloads[1]);
     assert.match(input, /PUBLIC FACTS/);
     assert.match(input, /CURRENT f_after_moving/);
+    assert.match(input, /data:image\/webp;base64/);
     assert.doesNotMatch(input, /f_latest/);
     assert.match(input, /Door identity uncertain/);
     assert.doesNotMatch(input, /OLD DISCARDED HISTORY/);
