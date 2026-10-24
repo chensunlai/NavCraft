@@ -112,6 +112,19 @@ def test_duplicate_keeps_one_opening_and_preserves_each_audit_evidence():
     assert merged[0]["evidence"] == original[0]["evidence"]
     assert [item["candidate_id"] for item in merged[0]["gap_audit_evidence"]] == ["G001", "G002"]
     assert all(item["duplicate_of"] == "O016" for item in audited)
+    assert merged[0]["segment"] == [[.2, 0.], [.8, 0.]]
+    assert merged[0]["initial_geometry"]["segment"] == original[0]["segment"]
+
+
+def test_duplicate_reanchors_to_measured_cad_axis_not_the_old_surface_plane():
+    prior = {"id": "door", "status": "accepted", "segment": [[0, .08], [1, .08]],
+             "width_m": 1., "evidence": {"kind": "original_surface_probe"}}
+    merged, added = merge_audited_openings([prior], [accepted_gap()], "cad/audit.json")
+    assert added == 0 and merged[0]["id"] == "door"
+    assert merged[0]["segment"] == [[.2, 0.], [.8, 0.]]
+    assert merged[0]["initial_geometry"] == {"segment": prior["segment"], "width_m": 1.}
+    assert merged[0]["evidence"] == prior["evidence"]
+    assert merged[0]["gap_audit_evidence"][0]["path"] == "cad/audit.json"
 
 
 def test_publish_measured_clear_span_and_allocate_unused_id_without_dropping_reviews():

@@ -1,17 +1,16 @@
-"""Reconstruct architectural window-wall lines from an observed raised frame.
+"""Reconstruct only wall gaps supported by complete raised window frames.
 
-Raw upper/lower spans and both vertical sides constrain a rectangular opening.
-The inferred wall line follows its adjacent architectural walls, not curtains or
-different sill/header recess depths. This is explicitly structural inference;
-it does not claim a measured solid surface or a physically closed glass pane.
+The raw frame is fitted over the complete current-floor instance, independently
+of the width of a scanner-induced wall fragment gap. Four raw edge bands must
+close a 3D frame and each support at least 90% of its fitted edge. Glass/frame
+instances are grouped; adjacent-floor and floor-level glazing stay explicitly
+outside automatic raised-window inference. Only missing wall spans are added.
 """
 
 from copy import deepcopy
 import math
 
 import numpy as np
-
-from .map_geometry import slice_triangles
 
 
 def _intervals(values, low, high, tolerance=1e-9):
@@ -41,12 +40,14 @@ def _gaps(primitives):
             continue
         tangent /= length
         normal = np.array([-tangent[1], tangent[0]])
-        for second in lines[index + 1:]:
+        for second in lines[index + 1 :]:
             b = np.asarray([second["start"], second["end"]], dtype=float)
             other = b[1] - b[0]
-            if np.linalg.norm(other) <= 1e-8 or abs(tangent @ (other / np.linalg.norm(other))) < math.cos(math.radians(3)):
+            if np.linalg.norm(other) <= 1e-8 or abs(
+                tangent @ (other / np.linalg.norm(other))
+            ) < math.cos(math.radians(3)):
                 continue
-            if np.abs((b - a[0]) @ normal).max() > .015:
+            if np.abs((b - a[0]) @ normal).max() > 0.015:
                 continue
             positions = (b - a[0]) @ tangent
             if positions.min() > length:
@@ -56,15 +57,17 @@ def _gaps(primitives):
             else:
                 continue
             gap = np.linalg.norm(span[1] - span[0])
-            if .12 <= gap <= 2.:
+            if 0.12 <= gap <= 2.0:
                 covered = False
                 for carrier in lines:
                     if carrier["id"] in (first["id"], second["id"]):
                         continue
                     points = np.asarray([carrier["start"], carrier["end"]], dtype=float)
                     positions = (points - span[0]) @ tangent
-                    if (np.abs((points - span[0]) @ normal).max() <= .015
-                            and min(gap, float(positions.max())) - max(0., float(positions.min())) > .025):
+                    if (
+                        np.abs((points - span[0]) @ normal).max() <= 0.015
+                        and min(gap, float(positions.max())) - max(0.0, float(positions.min())) > 0.025
+                    ):
                         covered = True
                         break
                 if covered:
@@ -72,254 +75,428 @@ def _gaps(primitives):
                 yield span, [first["id"], second["id"]]
 
 
-def _horizontal_groups(ids, u, v, y, normals, length, window_y):
-    centers = y.mean(1)
-    eligible = ids[(np.abs(normals[ids, 1]) >= .9) & (np.ptp(y[ids], axis=1) <= .025)]
-    groups = []
-    for height_id in np.unique(np.rint(centers[eligible] / .025).astype(int)):
-        selected = eligible[np.rint(centers[eligible] / .025).astype(int) == height_id]
-        intervals = _intervals(np.stack((u[selected].min(1), u[selected].max(1)), axis=1), 0, length)
-        if _coverage(intervals, length) < .9 - 1e-9:
+def _raw_edges(ids, u, v, y):
+    """Columns are u0/u1, y0/y1, normal0/normal1, raw face ID, local edge ID."""
+    data = []
+    for edge, (i, j) in enumerate(((0, 1), (1, 2), (2, 0))):
+        data.append(
+            np.column_stack(
+                [
+                    u[ids, i],
+                    u[ids, j],
+                    y[ids, i],
+                    y[ids, j],
+                    v[ids, i],
+                    v[ids, j],
+                    ids,
+                    np.full(len(ids), edge),
+                ]
+            )
+        )
+    return np.concatenate(data)
+
+
+def _bands(edges, axis, low, high, side):
+    """Keep separated raw edge-band peaks near a complete frame's four sides."""
+    start, end = (0, 1) if axis == "horizontal" else (2, 3)
+    cross_start, cross_end = (2, 3) if axis == "horizontal" else (0, 1)
+    along = np.abs(edges[:, end] - edges[:, start])
+    across = np.abs(edges[:, cross_end] - edges[:, cross_start])
+    selected = edges[(along > 0.005) & (across <= 0.04) & (across <= along * math.tan(math.radians(12)))]
+    centers = selected[:, [cross_start, cross_end]].mean(1)
+    bands = []
+    for center in np.unique(np.round(centers / 0.025) * 0.025):
+        if not low <= center <= high:
             continue
-        height = float(np.median(y[selected]))
-        kind = ("sill" if abs(height - window_y[0]) <= .25 else
-                "header" if abs(height - window_y[1]) <= .4 else None)
-        if kind is not None:
-            corner_depths = {}
-            for side, point in (("left", intervals[0][0]), ("right", intervals[-1][1])):
-                close = selected[(u[selected].min(1) <= point + .05) & (u[selected].max(1) >= point - .05)]
-                corner_depths[side] = [float(v[close].min()), float(v[close].max())]
-            groups.append({"kind": kind, "height_m": height, "projected_coverage": _coverage(intervals, length),
-                           "along_intervals_m": intervals,
-                           "corner_normal_ranges_m": corner_depths,
-                           "normal_range_m": [float(v[selected].min()), float(v[selected].max())],
-                           "source_raw_face_ids": selected.tolist()})
+        evidence = selected[np.abs(centers - center) <= 0.026]
+        intervals = _intervals(np.sort(evidence[:, [start, end]], axis=1), -1e6, 1e6)
+        total = sum(b - a for a, b in intervals)
+        bands.append(
+            {"coordinate": float(center), "edges": evidence, "seed_length": total, "side": side}
+        )
+    chosen = []
+    for band in sorted(bands, key=lambda b: b["seed_length"], reverse=True):
+        if all(abs(band["coordinate"] - old["coordinate"]) > 0.05 for old in chosen):
+            chosen.append(band)
+        if len(chosen) >= 5:
+            break
+    return chosen
+
+
+def _edge_evidence(band, low, high, axis):
+    cols = (0, 1) if axis == "horizontal" else (2, 3)
+    intervals = _intervals(np.sort(band["edges"][:, cols], axis=1), low, high)
+    return {
+        "coordinate_m": band["coordinate"],
+        "coverage": _coverage(intervals, high - low),
+        "intervals_m": intervals,
+        "source_raw_face_ids": np.unique(band["edges"][:, 6]).astype(int).tolist(),
+        "source_raw_edges": band["edges"][:, 6:8].astype(int).tolist(),
+        "normal_span_m": float(np.ptp(band["edges"][:, 4:6])),
+        "normal_range_m": [float(band["edges"][:, 4:6].min()), float(band["edges"][:, 4:6].max())],
+    }
+
+
+def _corner(horizontal, vertical, u, y):
+    h = horizontal["edges"]
+    v = vertical["edges"]
+    h = h[(h[:, :2].max(1) >= u - 0.06) & (h[:, :2].min(1) <= u + 0.06)]
+    v = v[(v[:, 2:4].max(1) >= y - 0.06) & (v[:, 2:4].min(1) <= y + 0.06)]
+    if not len(h) or not len(v):
+        return {"pass": False, "normal_gap_m": None}
+    gap = max(float(h[:, 4:6].min() - v[:, 4:6].max()), float(v[:, 4:6].min() - h[:, 4:6].max()), 0.0)
+    return {
+        "pass": gap <= 0.06,
+        "normal_gap_m": gap,
+        "horizontal_raw_face_ids": np.unique(h[:, 6]).astype(int).tolist(),
+        "vertical_raw_face_ids": np.unique(v[:, 6]).astype(int).tolist(),
+    }
+
+
+def _fit_raw_frame(raw, instance, a, tangent, floor):
+    """Fit an elevation rectangle; measure each complete edge's relative support."""
+    normal = np.array([-tangent[1], tangent[0]])
+    semantic = instance.triangles.reshape(-1, 3)
+    su = (semantic[:, [0, 2]] - a) @ tangent
+    sy = semantic[:, 1] - floor
+    left, right = float(su.min()), float(su.max())
+    bottom, top = float(sy.min()), float(sy.max())
+    width = right - left
+    height = top - bottom
+    if width < 0.4 or height < 0.4:
+        return None
+    u = (raw[:, :, [0, 2]] - a) @ tangent
+    v = (raw[:, :, [0, 2]] - a) @ normal
+    y = raw[:, :, 1] - floor
+    local = (
+        (u.max(1) >= left - 0.15)
+        & (u.min(1) <= right + 0.15)
+        & (v.min(1) >= -0.35)
+        & (v.max(1) <= 0.35)
+        & (y.min(1) >= max(0.2, bottom - 0.3))
+        & (y.max(1) <= top + 0.4)
+    )
+    ids = np.flatnonzero(local)
+    edges = _raw_edges(ids, u, v, y)
+    lowers = _bands(edges, "horizontal", bottom - 0.25, bottom + 0.25, "sill")
+    uppers = _bands(edges, "horizontal", top - 0.4, top + 0.2, "header")
+    lefts = _bands(edges, "vertical", left - 0.15, left + min(0.25, width * 0.25), "left")
+    rights = _bands(edges, "vertical", right - min(0.25, width * 0.25), right + 0.15, "right")
+    best = None
+    for lo in lowers:
+        for hi in uppers:
+            H = hi["coordinate"] - lo["coordinate"]
+            if H < 0.4 or H < 0.6 * height:
+                continue
+            for l in lefts:
+                for r in rights:
+                    W = r["coordinate"] - l["coordinate"]
+                    if W < 0.4 or W < 0.6 * width:
+                        continue
+                    evidence = [
+                        _edge_evidence(lo, l["coordinate"], r["coordinate"], "horizontal"),
+                        _edge_evidence(hi, l["coordinate"], r["coordinate"], "horizontal"),
+                        _edge_evidence(l, lo["coordinate"], hi["coordinate"], "vertical"),
+                        _edge_evidence(r, lo["coordinate"], hi["coordinate"], "vertical"),
+                    ]
+                    coverage = [e["coverage"] for e in evidence]
+                    corners = [
+                        _corner(h, z, z["coordinate"], h["coordinate"]) for h in (lo, hi) for z in (l, r)
+                    ]
+                    depth_supported = all(e["normal_span_m"] >= 0.025 for e in evidence)
+                    passed = (
+                        min(coverage) >= 0.9 - 1e-9
+                        and all(c["pass"] for c in corners)
+                        and depth_supported
+                    )
+                    score = (passed, min(coverage), sum(coverage), -abs(W - width) - abs(H - height))
+                    if best is None or score > best[0]:
+                        best = (
+                            score,
+                            {
+                                "pass": bool(passed),
+                                "left_m": l["coordinate"],
+                                "right_m": r["coordinate"],
+                                "sill_height_m": lo["coordinate"],
+                                "header_height_m": hi["coordinate"],
+                                "width_m": W,
+                                "height_m": H,
+                                "edges": dict(zip(["sill", "header", "left", "right"], evidence)),
+                                "corners": corners,
+                                "source_raw_face_ids": sorted(
+                                    {i for e in evidence for i in e["source_raw_face_ids"]}
+                                ),
+                                "minimum_edge_coverage": min(coverage),
+                                "three_dimensional_frame_depth_support": bool(depth_supported),
+                                "semantic_bbox": {
+                                    "left": left,
+                                    "right": right,
+                                    "bottom": bottom,
+                                    "top": top,
+                                },
+                            },
+                        )
+    return best[1] if best else None
+
+
+def _window_groups(instances):
+    values = []
+    for instance in instances:
+        if instance.category != "window":
+            continue
+        points = np.asarray(instance.triangles, dtype=float).reshape(-1, 3)
+        if not len(points) or not np.isfinite(points).all():
+            continue
+        center = points[:, [0, 2]].mean(0)
+        _, _, axes = np.linalg.svd(points[:, [0, 2]] - center, full_matrices=False)
+        axis = axes[0]
+        along = (points[:, [0, 2]] - center) @ axis
+        values.append(
+            (
+                instance,
+                points,
+                center,
+                axis,
+                float(np.ptp(along) * (points[:, 1].max() - points[:, 1].min())),
+            )
+        )
+    groups = []
+    for item in sorted(values, key=lambda v: ("frame" not in v[0].label.casefold(), -v[4])):
+        instance, points, center, axis, _ = item
+        assigned = False
+        for group in groups:
+            original = group[0]
+            other = original[1]
+            base = original[2]
+            t = original[3]
+            n = np.array([-t[1], t[0]])
+            a = (other[:, [0, 2]] - base) @ t
+            b = (points[:, [0, 2]] - base) @ t
+            W = float(np.ptp(b))
+            H = float(np.ptp(points[:, 1]))
+            overlap = min(a.max(), b.max()) - max(a.min(), b.min())
+            vertical = min(other[:, 1].max(), points[:, 1].max()) - max(
+                other[:, 1].min(), points[:, 1].min()
+            )
+            if (
+                W > 0
+                and H > 0
+                and overlap >= 0.8 * W
+                and vertical >= 0.8 * H
+                and abs((center - base) @ n) <= 0.35
+                and abs(axis @ t) >= math.cos(math.radians(20))
+            ):
+                group.append(item)
+                assigned = True
+                break
+        if not assigned:
+            groups.append([item])
     return groups
 
 
-def _plane_profile(triangles, groups, a, tangent, normal, length):
-    best = None
-    bottom, top = groups
-    # This bounded 5 mm search measures the actual frame depth; it never moves
-    # the original wall plane to obtain a favourable nearest-surface score.
-    low = max(-.35, bottom["normal_range_m"][0], top["normal_range_m"][0])
-    high = min(.35, bottom["normal_range_m"][1], top["normal_range_m"][1])
-    if high <= low:
-        return None
-    transformed = []
-    for group in groups:
-        faces = triangles[group["source_raw_face_ids"]]
-        transformed.append(np.stack(((faces[:, :, [0, 2]] - a) @ tangent,
-                                     (faces[:, :, [0, 2]] - a) @ normal, faces[:, :, 1]), axis=-1))
-    for offset in np.linspace(low + 1e-7, high - 1e-7, max(3, math.ceil((high - low) / .005) + 1)):
-        intervals = []
-        for faces in transformed:
-            cuts = slice_triangles(faces, float(offset))
-            intervals.append(_intervals(np.sort(cuts[:, :, 0], axis=1), 0, length))
-        fractions = [_coverage(values, length) for values in intervals]
-        score = (min(fractions), sum(fractions), -abs(offset))
-        if best is None or score > best[0]:
-            both = _intervals([[max(a0, b0), min(a1, b1)] for a0, a1 in intervals[0]
-                               for b0, b1 in intervals[1] if min(a1, b1) > max(a0, b0)], 0, length)
-            best = (score, {"normal_offset_m": float(offset), "sill_coverage": fractions[0],
-                            "header_coverage": fractions[1], "sill_intervals_m": intervals[0],
-                            "header_intervals_m": intervals[1], "joint_intervals_m": both,
-                            "joint_coverage": _coverage(both, length)})
-    return best[1]
+def _body_support(primitives, a, tangent, left, right):
+    normal = np.array([-tangent[1], tangent[0]])
+    sides = {"left": [], "right": []}
+    for wall in primitives:
+        if wall["type"] != "line":
+            continue
+        points = np.asarray([wall["start"], wall["end"]])
+        delta = points[1] - points[0]
+        length = np.linalg.norm(delta)
+        if length <= 1e-8 or abs(delta @ tangent) / length < math.cos(math.radians(5)):
+            continue
+        positions = (points - a) @ tangent
+        lo, hi = np.sort(positions)
+        clipped = np.array([max(lo, left - 0.15), min(hi, right + 0.15)])
+        if clipped[1] < clipped[0]:
+            continue
+        offsets = (points - a) @ normal
+        local_offsets = offsets[0] + (clipped - positions[0]) * (offsets[1] - offsets[0]) / (
+            positions[1] - positions[0]
+        )
+        if np.abs(local_offsets).max() > 0.05:
+            continue
+        if lo < left - 0.05 and hi >= left - 0.15:
+            sides["left"].append(wall["id"])
+        if hi > right + 0.05 and lo <= right + 0.15:
+            sides["right"].append(wall["id"])
+    return {
+        "pass": bool(sides["left"] and sides["right"]),
+        "architectural_wall_ids": sides,
+        "plane_tolerance_m": 0.05,
+        "frame_outer_span_m": [left, right],
+    }
 
 
-def _jambs(ids, u, v, y, normals, tangent, length, bottom, top):
-    result = []
-    side_normals = normals[:, [0, 2]] @ tangent
-    for name, position in (("left", 0.), ("right", length)):
-        selected = ids[(np.abs(side_normals[ids]) >= .85)
-                       & (np.abs(u[ids].mean(1) - position) <= .15)]
-        intervals = _intervals(np.stack((y[selected].min(1), y[selected].max(1)), axis=1),
-                               bottom, top, tolerance=.025)
-        longest = max((end - start for start, end in intervals), default=0.)
-        corners, depths = {}, {}
-        for corner, height in (("lower", bottom), ("upper", top)):
-            close = selected[(y[selected].min(1) <= height + .05) & (y[selected].max(1) >= height - .05)]
-            corners[corner] = [float(u[close].min()), float(u[close].max())] if len(close) else None
-            depths[corner] = [float(v[close].min()), float(v[close].max())] if len(close) else None
-        result.append({"side": name, "continuous_height_span_m": longest, "height_intervals_m": intervals,
-                       "height_coverage": _coverage(intervals, top - bottom), "corner_along_ranges_m": corners,
-                       "corner_normal_ranges_m": depths,
-                       "normal_range_m": [float(v[selected].min()), float(v[selected].max())] if len(selected) else None,
-                       "source_raw_face_ids": selected.tolist()})
-    return result
+def build_window_boundaries(
+    raw_triangles, primitives, window_instances, *, floor_height, passage, not_blocks_navmesh=None
+):
+    """Infer only existing wall gaps covered by an independently fitted raw frame.
 
-
-def _rectangle(bottom, top, jambs):
-    """Check that measured edge fragments close the same raised rectangle."""
-    checks = []
-    for side, jamb in enumerate(jambs):
-        for name, edge in (("lower", bottom), ("upper", top)):
-            point = edge["along_intervals_m"][0][0] if side == 0 else edge["along_intervals_m"][-1][1]
-            bounds = jamb["corner_along_ranges_m"][name]
-            distance = max(bounds[0] - point, point - bounds[1], 0.) if bounds else None
-            horizontal_depth = edge["corner_normal_ranges_m"][jamb["side"]]
-            vertical_depth = jamb["corner_normal_ranges_m"][name]
-            depth_gap = (max(horizontal_depth[0] - vertical_depth[1], vertical_depth[0] - horizontal_depth[1], 0.)
-                         if vertical_depth else None)
-            checks.append({"side": jamb["side"], "edge": name, "horizontal_endpoint_m": point,
-                           "raw_jamb_range_m": bounds, "separation_m": distance,
-                           "normal_separation_m": depth_gap,
-                           "pass": distance is not None and distance <= .05 + 1e-9
-                           and depth_gap is not None and depth_gap <= .05 + 1e-9})
-    vertical = []
-    for jamb in jambs:
-        intervals = jamb["height_intervals_m"]
-        lower_distance = intervals[0][0] - bottom["height_m"] if intervals else math.inf
-        upper_distance = top["height_m"] - intervals[-1][1] if intervals else math.inf
-        vertical.append({"side": jamb["side"], "height_coverage": jamb["height_coverage"],
-                         "continuous_height_span_m": jamb["continuous_height_span_m"],
-                         "reaches_sill_and_header": max(lower_distance, upper_distance) <= .05,
-                         "pass": jamb["height_coverage"] >= .9 - 1e-9
-                         and jamb["continuous_height_span_m"] >= 1.4 - 1e-9
-                         and max(lower_distance, upper_distance) <= .05})
-    geometry_closes = bool(all(check["pass"] for check in checks + vertical))
-    floor_associated = .25 <= bottom["height_m"] <= 1.8 and top["height_m"] <= 3.2
-    return {"pass": bool(geometry_closes and floor_associated), "geometry_closes": geometry_closes,
-            "current_floor_window_association": floor_associated,
-            "current_floor_auto_inference_range_m": {"sill": [.25, 1.8], "header_max": 3.2},
-            "outside_range_is_unknown_not_absent_window": True,
-            "height_m": top["height_m"] - bottom["height_m"],
-            "raised_sill_height_m": bottom["height_m"], "corner_tolerance_m": .05,
-            "corner_checks": checks, "vertical_checks": vertical,
-            "rule": "two_90_percent_horizontal_edges_and_two_90_percent_vertical_edges_with_four_closing_corners",
-            "recess_depth_equality_required": False}
-
-
-def build_window_boundaries(raw_triangles, primitives, window_instances, *, floor_height, passage,
-                            not_blocks_navmesh=None):
-    """Return unchanged walls plus evidence-supported window-wall reconstructions.
-
-    ``window_instances`` are SemanticInstance objects. ``passage(segment)`` uses
-    MapScene's ``{pass, probes}`` format. Empty probes mean unknown, not a blocked
-    window. Missing probes do not veto architectural inference. Any recorded
-    successful crossing vetoes it. Every accepted addition is explicitly an
-    inferred wall line spanning a measured frame, not a measured solid surface.
-    ``not_blocks_navmesh`` optionally checks the reconstructed line against
-    measured walkable space. A known overlap vetoes it independently of probes.
+    ``passage`` returns MapScene's ``{pass, probes}``; any successful crossing is
+    a veto. ``not_blocks_navmesh`` optionally checks existing walkable space.
+    Missing probes stay unknown. Returned ``not_applicable`` groups include
+    neighbouring-floor windows and floor-level glazing, separately from local
+    pending candidates. Complete-frame support does not measure a solid wall.
     """
-    triangles = np.asarray(raw_triangles, dtype=float).reshape(-1, 3, 3)
-    if not np.isfinite(triangles).all() or not math.isfinite(floor_height):
+    raw = np.asarray(raw_triangles, dtype=float).reshape(-1, 3, 3)
+    if not np.isfinite(raw).all() or not math.isfinite(floor_height):
         raise ValueError("Raw triangles and floor height must be finite")
     original = deepcopy(list(primitives))
-    window_instances = list(window_instances)
-    if len({item["id"] for item in original}) != len(original):
-        raise ValueError("Wall primitive IDs must be unique")
-    cross = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
-    sizes = np.linalg.norm(cross, axis=1)
-    normals = np.divide(cross, sizes[:, None], out=np.zeros_like(cross), where=sizes[:, None] > 1e-10)
-    y = triangles[:, :, 1] - floor_height
-    candidates, accepted, rejected, additions = [], [], [], []
-    seen = set()
-    for span, adjacent in _gaps(original):
-        a, b = span
-        length = float(np.linalg.norm(b - a))
-        tangent = (b - a) / length
-        normal = np.array([-tangent[1], tangent[0]])
-        u = (triangles[:, :, [0, 2]] - a) @ tangent
-        v = (triangles[:, :, [0, 2]] - a) @ normal
-        for instance in window_instances:
-            if instance.category != "window":
+    gaps = list(_gaps(original))
+    candidates = []
+    accepted = []
+    rejected = []
+    not_applicable = []
+    additions = []
+    built = []
+    for group in _window_groups(window_instances):
+        instance, points, _, _, _ = group[0]
+        ymin = float(points[:, 1].min() - floor_height)
+        ymax = float(points[:, 1].max() - floor_height)
+        aliases = [v[0].id for v in group]
+        if not 0.25 <= ymin <= 1.8 or ymax > 3.2:
+            not_applicable.append(
+                {
+                    "semantic_instance_ids": aliases,
+                    "height_above_floor_m": [ymin, ymax],
+                    "reason": "outside_supported_current_floor_raised_window_range",
+                    "is_absent_window": False,
+                }
+            )
+            continue
+        for span, adjacent in gaps:
+            a, b = span
+            L = float(np.linalg.norm(b - a))
+            t = (b - a) / L
+            n = np.array([-t[1], t[0]])
+            u = (points[:, [0, 2]] - a) @ t
+            v = (points[:, [0, 2]] - a) @ n
+            projected = (instance.triangles[:, :, [0, 2]] - a) @ t
+            semantic_intervals = _intervals(np.stack([projected.min(1), projected.max(1)], axis=1), 0, L)
+            coverage = _coverage(semantic_intervals, L)
+            if coverage < 0.8 - 1e-9 or max(abs(np.quantile(v, [0.05, 0.95]))) > 0.35:
                 continue
-            semantic = np.asarray(instance.triangles)
-            su = (semantic[:, :, [0, 2]] - a) @ tangent
-            sv = (semantic[:, :, [0, 2]] - a) @ normal
-            sy = semantic[:, :, 1] - floor_height
-            selected = (sv.min(1) >= -.35) & (sv.max(1) <= .35) & (sy.max(1) > .2)
-            intervals = _intervals(np.stack((su[selected].min(1), su[selected].max(1)), axis=1), 0, length)
-            prior_coverage = _coverage(intervals, length)
-            if prior_coverage < .8 - 1e-9:
+            if any(
+                np.linalg.norm(span.mean(0) - old.mean(0)) < 0.05
+                and np.linalg.norm(span[1] - span[0]) <= np.linalg.norm(old[1] - old[0]) + 0.05
+                for old in built
+            ):
                 continue
-            key = (instance.id, tuple(sorted(adjacent)))
-            if key in seen:
-                continue
-            seen.add(key)
-            window_y = [float(sy[selected].min()), float(sy[selected].max())]
-            local = ((u.max(1) >= -.15) & (u.min(1) <= length + .15)
-                     & (v.min(1) >= -.35) & (v.max(1) <= .35)
-                     & (y.min(1) >= max(.2, window_y[0] - .35)) & (y.max(1) <= window_y[1] + .45))
-            ids = np.flatnonzero(local)
-            groups = _horizontal_groups(ids, u, v, y, normals, length, window_y)
-            pairs = [(bottom, top) for bottom in groups for top in groups
-                     if bottom["kind"] == "sill" and top["kind"] == "header"
-                     and top["height_m"] - bottom["height_m"] >= 1.4]
-            number = len(candidates) + 1
-            identifier = f"WINDOW{number:04d}"
-            while any(item["id"] == identifier + "-0" for item in original):
-                number += 1
-                identifier = f"WINDOW{number:04d}"
-            record = {"id": identifier, "segment": span.tolist(), "adjacent_primitive_ids": adjacent,
-                      "semantic_instance_id": instance.id, "source_kind": "reconstructed_window_wall",
-                      "status": "needs_review", "solid_wall_measured": False, "proposed_primitives": [],
-                      "evidence_kind": "structural_inference", "glass_open_or_closed": "not_determined",
-                      "evidence": {"semantic_prior_coverage": prior_coverage,
-                                   "semantic_source": deepcopy(instance.source),
-                                   "semantic_prior_is_raw_proof": False, "horizontal_groups": groups,
-                                   "raw_geometry_source_kind": "original_render_mesh",
-                                   "raw_face_id_space": "row_in_input_raw_triangles",
-                                   "raw_triangle_count": len(triangles)}}
+            serial = len(candidates) + 1
+            identifier = f"WINDOW{serial:04d}"
+            while any(wall["id"] == identifier + "-0" for wall in original):
+                serial += 1
+                identifier = f"WINDOW{serial:04d}"
+            record = {
+                "id": identifier,
+                "segment": span.tolist(),
+                "adjacent_primitive_ids": adjacent,
+                "semantic_instance_id": instance.id,
+                "semantic_instance_ids": aliases,
+                "source_kind": "reconstructed_window_wall",
+                "evidence_kind": "structural_inference",
+                "solid_wall_measured": False,
+                "glass_open_or_closed": "not_determined",
+                "status": "needs_review",
+                "proposed_primitives": [],
+                "evidence": {
+                    "semantic_prior_coverage": coverage,
+                    "semantic_prior_is_raw_proof": False,
+                    "semantic_source": deepcopy(instance.source),
+                    "raw_geometry_source_kind": "original_render_mesh",
+                    "raw_face_id_space": "row_in_input_raw_triangles",
+                    "frame_coordinate_origin_world_xz": a.tolist(),
+                    "frame_tangent_world_xz": t.tolist(),
+                    "floor_height_world_y": floor_height,
+                },
+            }
             candidates.append(record)
-            if not pairs:
-                record["reason"] = "missing_full_width_raw_sill_or_header"
-                rejected.append(record)
+            frame = _fit_raw_frame(raw, instance, a, t, floor_height)
+            record["evidence"]["full_raw_frame"] = frame
+            if frame is None:
+                record["reason"] = "no_raw_rectangular_frame_fit"
                 continue
-            choices = []
-            for bottom, top in pairs:
-                jambs = _jambs(ids, u, v, y, normals, tangent, length, bottom["height_m"], top["height_m"])
-                closure = _rectangle(bottom, top, jambs)
-                choices.append((bottom, top, jambs, closure))
-            bottom, top, jambs, closure = max(choices, key=lambda item: (
-                item[3]["pass"], sum(check["pass"] for check in item[3]["corner_checks"]),
-                min(item[0]["projected_coverage"], item[1]["projected_coverage"])))
-            # A shared recess plane is diagnostic only: a real sill and header
-            # can have different depths while delimiting the same wall opening.
-            profile = _plane_profile(triangles, (bottom, top), a, tangent, normal, length)
-            record["evidence"].update(sill=bottom, header=top, jambs=jambs, frame_rectangle=closure,
-                best_frame_plane=profile, reconstruction_plane="continuation_of_adjacent_architectural_wall_lines",
-                reconstructed_span_is_inferred_not_raw_surface=True)
-            source_ids = sorted(set(bottom["source_raw_face_ids"] + top["source_raw_face_ids"]
-                                    + [index for jamb in jambs for index in jamb["source_raw_face_ids"]]))
-            record["source_raw_face_ids"] = source_ids
-            record["proposed_primitives"].append({"id": identifier + "-0", "type": "line",
-                "start": a.tolist(), "end": b.tolist(), "endpoints": span.tolist(), "length_m": length,
-                "role": "architectural_window_wall", "source_kind": "reconstructed_window_wall",
-                "evidence_kind": "structural_inference", "solid_wall_measured": False,
-                "source_raw_face_ids": source_ids, "window_candidate_id": identifier})
-            record["inferred_boundary_spans_m"] = [[0., length]]
+            rectangle_ok = (
+                frame["pass"]
+                and 0.25 <= frame["sill_height_m"] <= 1.8
+                and frame["header_height_m"] <= 3.2
+                and frame["left_m"] - 0.15 <= 1e-9
+                and frame["right_m"] + 0.15 >= L - 1e-9
+            )
+            body = _body_support(original, a, t, float(u.min()), float(u.max()))
+            record["evidence"]["wall_body_continuity"] = body
+            record["evidence"]["frame_rectangle"] = {
+                "pass": bool(rectangle_ok),
+                "width_m": frame["width_m"],
+                "height_m": frame["height_m"],
+                "edge_coverage": {k: x["coverage"] for k, x in frame["edges"].items()},
+                "corners": frame["corners"],
+                "absolute_minimum_jamb_height_required": False,
+            }
+            record["source_raw_face_ids"] = frame["source_raw_face_ids"]
+            record["proposed_primitives"] = [
+                {
+                    "id": identifier + "-0",
+                    "type": "line",
+                    "start": a.tolist(),
+                    "end": b.tolist(),
+                    "endpoints": span.tolist(),
+                    "length_m": L,
+                    "role": "architectural_window_wall",
+                    "source_kind": "reconstructed_window_wall",
+                    "evidence_kind": "structural_inference",
+                    "solid_wall_measured": False,
+                    "source_raw_face_ids": frame["source_raw_face_ids"],
+                    "window_candidate_id": identifier,
+                }
+            ]
             navigation = passage(span.tolist())
             if not isinstance(navigation, dict) or type(navigation.get("pass")) is not bool:
-                raise ValueError("passage must return a dict containing explicit boolean pass")
-            record["evidence"]["navmesh"] = navigation
-            record["evidence"]["robot_crossing_status"] = (
-                "successful_crossing_recorded" if navigation["pass"] else
-                "blocked_probes_recorded" if navigation.get("probes") else "not_established")
-            walkability = ({"pass": None, "source": "not_provided"} if not_blocks_navmesh is None
-                           else not_blocks_navmesh(span.tolist()))
-            if not isinstance(walkability, dict) or (not_blocks_navmesh is not None and type(walkability.get("pass")) is not bool):
-                raise ValueError("not_blocks_navmesh must return a dict containing explicit boolean pass")
-            record["evidence"]["walkable_space_check"] = walkability
-            if navigation["pass"] or any(probe.get("pass") is True for probe in navigation.get("probes", [])):
+                raise ValueError("passage must return explicit boolean pass")
+            walkability = (
+                {"pass": None, "source": "not_provided"}
+                if not_blocks_navmesh is None
+                else not_blocks_navmesh(span.tolist())
+            )
+            if (
+                not isinstance(walkability, dict)
+                or not_blocks_navmesh is not None
+                and type(walkability.get("pass")) is not bool
+            ):
+                raise ValueError("not_blocks_navmesh must return explicit boolean pass")
+            record["evidence"].update(
+                navmesh=navigation,
+                walkable_space_check=walkability,
+                robot_crossing_status=(
+                    "not_established" if not navigation.get("probes") else "recorded_probes"
+                ),
+                reconstruction_plane="adjacent_architectural_walls_only_missing_gap_is_added",
+            )
+            if navigation["pass"] or any(
+                probe.get("pass") is True for probe in navigation.get("probes", [])
+            ):
                 record.update(status="rejected", reason="measured_direct_passage_exists")
                 rejected.append(record)
             elif walkability["pass"] is False:
                 record.update(status="rejected", reason="would_block_measured_walkable_space")
                 rejected.append(record)
-            elif closure["pass"]:
-                record.update(status="accepted", reason="raised_rectangular_frame_and_adjacent_wall_continuity")
+            elif rectangle_ok and body["pass"]:
+                record.update(
+                    status="accepted", reason="full_raw_frame_and_architectural_wall_body_continuity"
+                )
                 accepted.append(record)
                 additions.extend(record["proposed_primitives"])
+                built.append(span)
             else:
-                record["reason"] = ("incomplete_or_nonclosing_raised_rectangular_frame"
-                                    if closure["current_floor_window_association"] else
-                                    "requires_floor_or_window_type_confirmation")
-                record["interpretation"] = "window_frame_needs_additional_geometry_or_visual_evidence"
-            for primitive in record["proposed_primitives"]:
-                # Keep per-segment provenance usable without an external index.
-                primitive["evidence"] = deepcopy(record["evidence"])
-    return {"primitives": original + deepcopy(additions), "candidates": candidates,
-            "accepted": accepted, "rejected": rejected, "original_primitives_modified": False}
+                record["reason"] = "incomplete_full_frame_or_wall_body_connection"
+            for line in record["proposed_primitives"]:
+                line["evidence"] = deepcopy(record["evidence"])
+    return {
+        "primitives": original + deepcopy(additions),
+        "candidates": candidates,
+        "accepted": accepted,
+        "rejected": rejected,
+        "not_applicable": not_applicable,
+        "original_primitives_modified": False,
+    }

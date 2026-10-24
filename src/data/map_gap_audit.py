@@ -161,7 +161,7 @@ def passed_probe_count(passage, segment):
 
 
 def merge_audited_openings(existing, audited, audit_path):
-    """Retain prior records and attach repeated checks to one opening ID."""
+    """Keep opening identity while using the newly measured current wall span."""
     result = deepcopy(existing)
     identifiers = {item["id"] for item in result}
     added = 0
@@ -176,6 +176,9 @@ def merge_audited_openings(existing, audited, audit_path):
         if duplicate is not None:
             item["duplicate_of"] = duplicate["id"]
             target = duplicate
+            target.setdefault("initial_geometry", {"segment": deepcopy(target["segment"]),
+                              "width_m": target.get("width_m")})
+            target.update(segment=deepcopy(opening["segment"]), width_m=opening["width_m"])
         else:
             index = 1
             while f"A{index:03d}" in identifiers:

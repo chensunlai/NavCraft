@@ -11,7 +11,8 @@ from pathlib import Path
 
 import numpy as np
 
-from .map_gap_audit import line_gap_candidates
+from .map_gap_audit import line_gap_candidates, same_opening
+from .map_wall_cad import overlap_report
 
 
 def near_endpoint_clusters(primitives, *, tolerance=.05):
@@ -46,25 +47,31 @@ def audit_fitted(fitted):
     gaps = line_gap_candidates(geometry["primitives"])
     accepted = [item for item in openings if item.get("status") == "accepted"]
     for gap in gaps:
-        centre = np.mean(gap["segment"], axis=0)
         gap["opening_record"] = next((item.get("id") for item in accepted
-                                       if np.linalg.norm(centre - np.mean(item["segment"], axis=0)) < .2), None)
+                                       if same_opening(gap, item)), None)
         gap["status"] = "explained_opening" if gap["opening_record"] else "unresolved_gap"
     unresolved = [item for item in gaps if item["status"] == "unresolved_gap"]
     clusters = near_endpoint_clusters(geometry["primitives"])
+    coverage = overlap_report(geometry["primitives"])
+    stored_cad = geometry.get("cad", {})
     result = {
         "fitted": str(fitted),
         "scene": meta.get("scene"),
-        "status": "pending_structural_review" if unresolved or clusters else "needs_visual_review",
+        "status": "pending_structural_review" if unresolved or clusters or not coverage["qualified"]
+                  or stored_cad.get("qualified") is False
+                  else "needs_visual_review",
         "counts": {"primitives": len(geometry["primitives"]),
                    "connections": len(geometry.get("connections", [])),
                    "unexplained_endpoints": len(geometry.get("unexplained_endpoints", [])),
                    "near_endpoint_clusters": len(clusters),
                    "candidate_gaps": len(gaps),
                    "unresolved_gaps": len(unresolved),
+                   "overlapping_wall_spans": coverage["visible_overlap_count"],
                    "accepted_openings": len(accepted),
                    "regions": len(json.loads((fitted / "regions.json").read_text()))},
         "near_endpoint_clusters": clusters,
+        "wall_coverage": coverage,
+        "stored_cad_checks": stored_cad,
         "gaps": gaps,
         "limitations": [
             "Endpoint proximity is a review cue, not proof of a common wall junction.",

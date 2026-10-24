@@ -280,3 +280,25 @@ def test_unmeasured_thickness_is_explicitly_null_and_still_renders():
     item = {**line("wall", [0, 0], [1, 0]), "thickness_m": None}
     assert rasterize_primitives([item], [-1, -1], 3).any()
     assert 'stroke-width="0.05"' in structure_svg([item], [-1, -1], 3)
+
+
+def test_explicit_circle_is_one_closed_cad_entity_and_accepts_a_real_junction():
+    circle = {"id": "round_wall", "type": "circle", "center": [0, 0], "radius_m": 1.}
+    result = reconnect([circle, line("branch", [0, 2], [0, 1.08])])
+    rounded, branch = result["primitives"]
+    assert {key: rounded[key] for key in circle} == circle
+    assert branch["end_node"] in rounded["interior_nodes"]
+    assert not any(item.get("primitive_id") == "round_wall" for item in result["unexplained_endpoints"])
+    svg = structure_svg([circle], [-2, -2], 4)
+    assert svg.count('<circle ') == 1
+    assert '<path ' not in svg
+    assert rasterize_primitives([circle], [-2, -2], 4).any()
+
+
+def test_measured_wall_thickness_does_not_create_a_band_or_double_cad_line():
+    item = {**line("wall", [0, 0], [1, 0]), "thickness_m": .3}
+    mask = rasterize_primitives([item], [-1, -1], 3)
+    assert mask.sum() <= 22
+    svg = structure_svg([item], [-1, -1], 3)
+    assert svg.count('<path ') == 1
+    assert 'stroke-width="0.05"' in svg

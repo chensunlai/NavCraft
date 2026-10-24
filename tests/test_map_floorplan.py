@@ -1,7 +1,8 @@
 """Independent surface evidence must precede architectural vector rendering."""
 import numpy as np
 
-from src.data.map_floorplan import RawWallEvidence, primitive_points, split_primitive, verify_primitive
+from src.data.map_floorplan import (RawWallEvidence, primitive_points, split_primitive,
+                                    support_with_wall_axes, verify_primitive)
 
 
 def wall(x0, x1, z, height=2.5):
@@ -71,3 +72,75 @@ def test_door_lintel_does_not_supply_wall_body_support():
     accepted, result = verify_primitive(line([0, 0], [3, 0]), evidence)
     assert len(accepted) == 2 and result["carved_passages"]
     assert not evidence.support([[1.3, 0], [1.7, 0]])["pass"]
+
+
+def test_explicit_circle_samples_one_radius_and_a_carved_piece_becomes_an_arc():
+    circle = {"id": "round_wall", "type": "circle", "center": [2, 3], "radius_m": 2.}
+    points = primitive_points(circle)
+    np.testing.assert_allclose(np.linalg.norm(points - [2, 3], axis=1), 2, atol=1e-10)
+    whole = split_primitive(circle, points, np.ones(len(points), dtype=bool))
+    assert whole[0]["type"] == "circle"
+    partial = split_primitive(circle, points, np.arange(len(points)) <= len(points) // 2)
+    assert partial[0]["type"] == "arc"
+    assert partial[0]["sweep_degrees"] < 181
+
+
+def test_measured_two_face_wall_supports_its_axis_but_not_unknown_extensions():
+    raw = np.concatenate([wall(0, 3, 0), wall(0, 3, .3)])
+    evidence = RawWallEvidence(raw, 0, [-1, -1], 5, np.zeros((100, 100), bool))
+    axis = {"id": "axis", "start": [0, .15], "end": [3, .15], "wall_thickness_m": .3}
+    middle = [[1, .15], [2, .15]]
+    assert not evidence.support(middle)["pass"]
+    checked = support_with_wall_axes(middle, evidence, [axis])
+    assert checked["pass"] and checked["measured_wall_axis_ids"] == ["axis"]
+    assert not support_with_wall_axes([[3.2, .15], [3.4, .15]], evidence, [axis])["pass"]
+    assert not support_with_wall_axes([[1, .6], [2, .6]], evidence, [axis])["pass"]
+
+
+def test_near_parallel_fits_can_select_one_independent_raw_surface():
+    evidence = RawWallEvidence(wall(0, 3, 0), 0, [-1, -1], 5, np.zeros((100, 100), bool))
+    checked = evidence.same_surface(line([0, -.005], [3, -.005]),
+                                    line([.5, .008], [2, .008]))
+    assert checked["pass"]
+    assert all(item["same_nearest_raw_cut_fraction"] == 1 for item in checked["height_checks"])
+
+
+def test_separate_raw_planes_two_centimetres_apart_are_not_duplicates():
+    raw = np.concatenate([wall(0, 3, 0), wall(0, 3, .02)])
+    evidence = RawWallEvidence(raw, 0, [-1, -1], 5, np.zeros((100, 100), bool))
+    checked = evidence.same_surface(line([0, 0], [3, 0]), line([.5, .02], [2, .02]))
+    assert not checked["pass"]
+    assert checked["reason"] == "multiple_raw_surface_sheets"
+
+
+def test_two_inaccurate_fits_selecting_one_nearest_plane_still_cannot_merge_two_sheets():
+    raw = np.concatenate([wall(0, 3, 0), wall(0, 3, .02)])
+    for triangles in (raw, raw[::-1]):
+        evidence = RawWallEvidence(triangles, 0, [-1, -1], 5, np.zeros((100, 100), bool))
+        for offsets in ((0, .009), (.01, .015)):
+            assert not evidence.same_surface(line([0, offsets[0]], [3, offsets[0]]),
+                                            line([.5, offsets[1]], [2, offsets[1]]))["pass"]
+
+
+def test_narrow_second_surface_between_grid_points_is_continuously_detected():
+    # The second sheet deliberately falls between the 0.1m sampled columns.
+    raw = np.concatenate([wall(0, 3, 0)] + [wall(x + .04, x + .06, .02)
+                                          for x in np.arange(0, 3, .1)])
+    evidence = RawWallEvidence(raw, 0, [-1, -1], 5, np.zeros((100, 100), bool))
+    checked = evidence.same_surface(line([0, 0], [3, 0]), line([0, .009], [3, .009]))
+    assert not checked["pass"] and checked["reason"] == "multiple_raw_surface_sheets"
+
+
+def test_submillimetre_tessellation_does_not_hide_a_separate_continuous_plane():
+    raw = np.concatenate([wall(0, .3, 0)] + [wall(x, x + .00075, .02)
+                                           for x in np.arange(0, .3, .00075)])
+    evidence = RawWallEvidence(raw, 0, [-1, -1], 5, np.zeros((100, 100), bool))
+    checked = evidence.same_surface(line([0, 0], [.3, 0]), line([0, .009], [.3, .009]))
+    assert not checked["pass"] and checked["reason"] == "multiple_raw_surface_sheets"
+
+
+def test_one_height_or_unobserved_gap_does_not_establish_same_surface():
+    raw = wall(0, 3, 0, height=.4)
+    evidence = RawWallEvidence(raw, 0, [-1, -1], 5, np.zeros((100, 100), bool))
+    assert not evidence.same_surface(line([0, 0], [3, 0]), line([.5, .01], [2, .01]))["pass"]
+    assert not evidence.same_surface(line([0, 0], [1, 0]), line([2, .01], [3, .01]))["pass"]

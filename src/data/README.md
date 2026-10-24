@@ -31,10 +31,27 @@ candidate's opening/region records and saves the previous records alongside it.
   PNG/SVG rendering; a straight wall can meet a curve without flattening it.
 - `map_wall_recovery.py`: strict, aligned raw support for missing straight spans.
 - `map_window_boundaries.py`: reconstruct raised-window wall continuity from
-  independent sill/header/jamb geometry. Structural inference is recorded
+  a complete raw frame before testing its contained wall gaps. Relative support
+  is required on all four edges, including short windows. Structural inference is recorded
   separately from measured wall surfaces; observed passage or walkable-space
   conflicts reject the proposed boundary.
 - `map_floorplan.py`: one-scene fitting, independent raw checks and real-RGB overlay.
+- `map_wall_cad.py`: canonical line/circle/arc coverage and overlap diagnostics.
+  A continuous wall has one drawing entity, including internal T-junction nodes.
+  Near repeated coverage is a hard pending issue, even when exact overlap is zero.
+  Parallel fits only deduplicate after an independent same-surface check;
+  distinct measured planes remain separate.
+- `map_wall_axes.py`: one axis for two independently confirmed physical wall
+  faces. Raw outward-facing surfaces, vertical extent, area, door and NavMesh
+  checks prevent merging corridor sides. Finite confirmed slabs can absorb
+  contained scan fragments without extending the wall or crossing a door.
+- `map_wall_refit.py`: jointly fit original cuts after independent same-surface
+  confirmation; bound source residual and old-line displacement, preserve the
+  finite coverage union, then rebuild junctions. A close offset alone is not
+  permission to refit two distinct measured surface sheets.
+- `map_cad_review.py`: small, audited jamb-point and wall-pair tasks. Saved wall
+  reviews bind to the exact source geometry and verified provider model; a
+  visual decision cannot override missing geometry or a passage conflict.
 - `map_gap_audit.py`: contiguous raw clearance, actual robot-width crossing,
   paired views and compressed depth evidence; unresolved gaps are retained.
 - `map_structure_audit.py`: unresolved endpoints/gaps, without repairing the map.
@@ -45,6 +62,18 @@ labels alone do not justify filling scan holes. A supported rectangular window
 surround can justify continuity through scan damage without claiming that every
 point on the inferred boundary was directly measured. Missing wall thickness is
 stored as null and is not invented by widening the rendered line.
+
+PNG and SVG always use a single stroke. Measured physical thickness is metadata,
+not two parallel outlines. Full circular walls use an explicit circle; partial
+arcs remain partial. Removing an apparent spur requires evidence that it belongs
+to a confirmed wall slab or a nonarchitectural surface, not just a length cutoff.
+
+For the saved small wall-pair experiment, add
+`--pair-reviews runs/map-cad-20261024/pair-review/results.json` to the fitting
+command. It is an optional offline evidence file, not a live model loop. Changed
+geometry invalidates old decisions. Point proposals are separately reviewed and
+never write directly to maps. The CAD checks only establish coverage consistency;
+room structure, semantic correctness and real doorways still require inspection.
 
 Use the `vln` Python environment and a fresh worker on physical GPU 0 or 1:
 

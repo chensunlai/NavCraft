@@ -1,4 +1,4 @@
-"""Evidence-gated line junctions and exact line/arc floor-plan rendering.
+"""Evidence-gated wall junctions and CAD-style line/arc/circle rendering.
 
 Coordinates are world [X, Z] metres. Arc parameters are immutable: this module
 does not approximate curves by straight walls or infer unsupported boundaries.
@@ -45,10 +45,16 @@ def _on_segment(point, segment):
             and np.linalg.norm(point - segment[0] - t * direction) <= NODE_TOLERANCE_M)
 
 
+def _curve_angles(primitive):
+    if primitive["type"] == "circle":
+        return 0., 360.
+    start = float(primitive["start_angle_degrees"])
+    return start, float(primitive.get("sweep_degrees", primitive["end_angle_degrees"] - start))
+
+
 def _arc_points(primitive, step_m=.025):
     center, radius = _point(primitive["center"]), float(primitive["radius_m"])
-    start = float(primitive["start_angle_degrees"])
-    sweep = float(primitive.get("sweep_degrees", primitive["end_angle_degrees"] - start))
+    start, sweep = _curve_angles(primitive)
     if not all(math.isfinite(value) for value in (radius, start, sweep)) or radius <= 0:
         raise ValueError("Arcs require finite angles and a positive radius_m")
     if math.radians(abs(sweep)) * radius < NODE_TOLERANCE_M:
@@ -59,10 +65,10 @@ def _arc_points(primitive, step_m=.025):
 
 
 def _endpoints(primitive):
-    if primitive["type"] == "arc":
+    if primitive["type"] in {"arc", "circle"}:
         return _arc_points(primitive)[[0, -1]]
     if primitive["type"] != "line":
-        raise ValueError("Wall primitives must have type line or arc")
+        raise ValueError("Wall primitives must have type line, arc or circle")
     points = np.stack((_point(primitive["start"]), _point(primitive["end"])))
     if np.linalg.norm(points[1] - points[0]) < NODE_TOLERANCE_M:
         raise ValueError("Wall lines must have nonzero length")
@@ -75,8 +81,7 @@ def _arc_parameter(primitive, point):
     radius = float(primitive["radius_m"])
     if abs(np.linalg.norm(relative) - radius) > NODE_TOLERANCE_M:
         return None
-    start = float(primitive["start_angle_degrees"])
-    sweep = float(primitive.get("sweep_degrees", primitive["end_angle_degrees"] - start))
+    start, sweep = _curve_angles(primitive)
     angle = math.degrees(math.atan2(relative[1], relative[0]))
     delta = ((angle - start) if sweep > 0 else (start - angle)) % 360
     tolerance = math.degrees(NODE_TOLERANCE_M / radius)
@@ -175,7 +180,7 @@ def _candidates(primitives, max_shift, collinear_gap):
                 candidates.append({"kind": "endpoint_to_interior", "ends": [(index, endpoint)],
                                    "carrier": carrier_index, "junction": junction, "maximum_shift_m": shift})
         for carrier_index, carrier in enumerate(primitives):
-            if carrier["type"] != "arc":
+            if carrier["type"] not in {"arc", "circle"}:
                 continue
             for junction in _line_arc_junctions(prior, carrier):
                 shift = float(np.linalg.norm(junction - point))
@@ -209,7 +214,8 @@ def _compatible_near_endpoints(first, second, primitives):
             and float((point - segment[1 - endpoint]) @ (other_point - other[1 - other_endpoint])) < 0)
 
 
-def _graph(primitives, portals):
+def junction_graph(primitives, portals):
+    """Attach node IDs to the supplied primitives without changing geometry."""
     nodes, indexed = [], {}
     for primitive in primitives:
         ids = []
@@ -288,7 +294,7 @@ def reconnect_primitives(primitives, *, raw_support, not_blocks_navmesh,
         np.stack([_point(point) for point in portal["segment"]]).reshape(2, 2)
     original = [_endpoints(item) for item in result]
     connections, rejected, fixed, interiors = [], [], {}, {}
-    initial_nodes, _, _ = _graph(result, protected)
+    initial_nodes, _, _ = junction_graph(result, protected)
     indices = {item["id"]: index for index, item in enumerate(result)}
     for node in initial_nodes:
         if node["kind"] != "junction":
@@ -435,7 +441,7 @@ def reconnect_primitives(primitives, *, raw_support, not_blocks_navmesh,
         if "carrier" in candidate:
             interiors.setdefault(candidate["carrier"], []).append(junction.copy())
         connections.append({**record, "checks": checks})
-    nodes, edges, unexplained = _graph(result, protected)
+    nodes, edges, unexplained = junction_graph(result, protected)
     return {"primitives": result, "nodes": nodes, "edges": edges,
             "shared_junctions": [node for node in nodes if node["kind"] == "junction"],
             "connections": connections, "rejected": rejected,
@@ -446,7 +452,7 @@ def reconnect_primitives(primitives, *, raw_support, not_blocks_navmesh,
 
 
 def rasterize_primitives(primitives, origin, side_m, resolution=.05):
-    """Draw fitted geometry; unmeasured thickness defaults to one raster pixel."""
+    """Render one CAD stroke per wall; physical thickness stays in metadata."""
     origin = _point(origin)
     size = round(side_m / resolution)
     if resolution <= 0 or size < 1 or not math.isclose(size * resolution, side_m):
@@ -454,13 +460,12 @@ def rasterize_primitives(primitives, origin, side_m, resolution=.05):
     image = Image.new("1", (size, size))
     draw = ImageDraw.Draw(image)
     for item in primitives:
-        points = _arc_points(item, resolution / 2) if item["type"] == "arc" else _endpoints(item)
+        points = _arc_points(item, resolution / 2) if item["type"] in {"arc", "circle"} else _endpoints(item)
         measured = item.get("thickness_m")
-        thickness = float(resolution if measured is None else measured)
-        if not math.isfinite(thickness) or thickness <= 0:
+        if measured is not None and (not math.isfinite(float(measured)) or float(measured) <= 0):
             raise ValueError("Measured thickness_m must be positive and finite")
         pixels = np.rint((points - origin) / resolution - .5).astype(int)
-        draw.line([tuple(point) for point in pixels], fill=1, width=max(1, round(thickness / resolution)))
+        draw.line([tuple(point) for point in pixels], fill=1, width=1)
     return np.asarray(image, dtype=bool)
 
 
@@ -470,15 +475,14 @@ def structure_svg(primitives, origin, side_m, resolution=.05):
     elements = []
     for item in primitives:
         start, end = _endpoints(item) - origin
-        measured = item.get("thickness_m")
-        width = float(resolution if measured is None else measured)
+        width = resolution
         identifier = html.escape(str(item["id"]), quote=True)
         style = f'id="{identifier}" fill="none" stroke="black" stroke-width="{width:g}"'
         if item["type"] == "line":
             elements.append(f'<path {style} d="M {start[0]:g} {start[1]:g} L {end[0]:g} {end[1]:g}"/>')
         else:
             radius = float(item["radius_m"])
-            sweep = float(item.get("sweep_degrees", item["end_angle_degrees"] - item["start_angle_degrees"]))
+            _, sweep = _curve_angles(item)
             if abs(sweep) >= 359.999999:
                 center = np.asarray(item["center"]) - origin
                 elements.append(f'<circle {style} cx="{center[0]:g}" cy="{center[1]:g}" r="{radius:g}"/>')

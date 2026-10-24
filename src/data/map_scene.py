@@ -316,21 +316,32 @@ class MapScene:
             "depth_to_relative_height": "depth_camera_world_y - metric_camera_forward_z_metres - floor_y",
         }
 
-    def view(self, point, yaw, output):
+    def view(self, point, yaw, output, *, pitch_degrees=0):
         """Save RGB, metric depth, and optical camera matrix for reprojection."""
+        if not math.isfinite(pitch_degrees) or not -90 <= pitch_degrees <= 90:
+            raise ValueError("Camera pitch must be finite and within [-90, 90] degrees")
         output = Path(output)
         output.parent.mkdir(parents=True, exist_ok=True)
         self._pose(point, yaw)
+        if pitch_degrees:
+            import magnum as mn
+            for name in ("rgb", "depth"):
+                self.sim._sensors[name]._sensor_object.node.rotation = mn.Quaternion.rotation(
+                    mn.Deg(pitch_degrees), mn.Vector3.x_axis())
         observations = self._capture(("rgb", "depth"))
         rgb, depth = observations["rgb"][:, :, :3], observations["depth"].squeeze()
         Image.fromarray(rgb).save(output.with_suffix(".jpg"), quality=90)
         np.save(output.with_suffix(".npy"), depth)
         transform = np.asarray(self.sim._sensors["rgb"]._sensor_object.node.absolute_transformation(), dtype=float)
         optical = transform @ np.diag([1, -1, -1, 1])
-        focal = 640 / (2 * math.tan(math.radians(79) / 2))
+        projection = np.asarray(self.sim._sensors["rgb"]._sensor_object.render_camera.projection_matrix)
+        height, width = rgb.shape[:2]
+        intrinsics = [[float(projection[0, 0] * width / 2), 0, float((1 - projection[0, 2]) * width / 2 - .5)],
+                      [0, float(projection[1, 1] * height / 2), float((1 + projection[1, 2]) * height / 2 - .5)],
+                      [0, 0, 1]]
         return {"rgb": str(output.with_suffix(".jpg")), "depth": str(output.with_suffix(".npy")),
-                "position": list(map(float, point)), "yaw_degrees": float(yaw),
-                "intrinsics": [[focal, 0, 319.5], [0, focal, 239.5], [0, 0, 1]],
+                "position": list(map(float, point)), "yaw_degrees": float(yaw), "pitch_degrees": float(pitch_degrees),
+                "intrinsics": intrinsics,
                 "world_from_optical": optical.tolist()}
 
     def points(self, floor, count=80):
