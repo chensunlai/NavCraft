@@ -12,22 +12,17 @@ import uuid
 
 from PIL import Image
 
+from src.common.actions import ACTIONS
+from src.common.io import write_json
+
 from .config import core_options
 from .core_client import CoreClient
 from .memory import MemoryStore
 from .maps import MapRenderer
 from .observations import Observations, map_pose
 from .service_retry import charged_requests, wait_seconds
-from .tools.specs import ACTIONS, specifications
+from .tools.specs import specifications
 from .trace import TraceWriter
-
-
-def _write(path, value):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
-    temporary.replace(path)
 
 
 @dataclass(frozen=True)
@@ -93,10 +88,10 @@ class HarnessSession:
                 environment.restore_pose(state["pose"])
             if state.get("observations"):
                 shutil.copytree(state["observations"], self.workspace / "observations", dirs_exist_ok=True)
-            _write(self.workspace / "memory/entities.json", state.get("memory", []))
+            write_json(self.workspace / "memory/entities.json", state.get("memory", []))
             self.observations = Observations(self.workspace, self.transform)
             self.memory = MemoryStore(self.workspace, self.private)
-            self.renderer = MapRenderer(self.workspace)
+            self.renderer = MapRenderer(self.workspace, self.memory)
             self.current = self.observations.capture(environment.observe(), environment.steps)
             self._publish_state()
             options = core_options(config, self.repo, self.directory, self.workspace,
@@ -133,7 +128,7 @@ class HarnessSession:
 
     def _publish_state(self):
         self._revision += 1
-        _write(self.workspace / "scene/state.json", {"pose": self.current["pose"],
+        write_json(self.workspace / "scene/state.json", {"pose": self.current["pose"],
                 "frame": self.current["frame"], "step": self.environment.steps})
 
     def checkpoint(self):
@@ -378,7 +373,7 @@ class HarnessSession:
                                   charged_requests(self.private) - before, self.environment.steps - action_start,
                                   f"private/prompts/{prompt_id}.json", max(0, elapsed), self.trace.sanitize(error_text))
             self.trace.emit("prompt_end", result.to_dict())
-            _write(self.directory / result.record, result.to_dict())
+            write_json(self.directory / result.record, result.to_dict())
             with self._lock:
                 self._busy = False
         return result

@@ -3,8 +3,7 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 
-TRANSLATION_ACTIONS = ("move_forward", "move_backward", "move_left", "move_right")
-ACTIONS = TRANSLATION_ACTIONS + ("turn_left", "turn_right")
+from src.common.actions import ACTIONS as ACTIONS, TRANSLATION_ACTIONS as TRANSLATION_ACTIONS
 
 
 @dataclass(frozen=True)

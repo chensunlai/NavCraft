@@ -20,8 +20,9 @@ def _font(size):
 
 
 class MapRenderer:
-    def __init__(self, workspace):
+    def __init__(self, workspace, memory=None):
         self.workspace = Path(workspace)
+        self.memory = memory if memory is not None else MemoryStore(self.workspace)
 
     def render(self, pose, trajectory, view="explored", labels="id", highlight=None):
         if labels not in {"id", "name", "both", "none"}:
@@ -30,7 +31,7 @@ class MapRenderer:
         size = float(data["size_m"])
         if not math.isfinite(size) or size <= 0:
             raise ValueError("map size_m must be positive")
-        entities = MemoryStore(self.workspace).entities
+        entities = self.memory.entities
         indexed = {e["id"]: e for e in entities}
         warnings = [f"{e['id']} 没有位置" for e in entities if location(e) is None]
         points, padding = [], 2 / size

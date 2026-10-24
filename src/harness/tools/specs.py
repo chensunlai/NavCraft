@@ -1,6 +1,6 @@
 """Navigation extensions are defined once, in Python."""
 
-ACTIONS = ["move_forward", "move_backward", "move_left", "move_right", "turn_left", "turn_right"]
+from src.common.actions import ACTIONS
 
 
 def definition(name, description, properties, required=()):
@@ -37,7 +37,7 @@ def specifications():
         definition("nav_observe", "Capture a fresh current RGB or a six-view panorama. The body heading is restored after panorama; yaw offsets turn right-positive.",
                    {"mode": {"type": "string", "enum": ["current", "panorama"]}}),
         definition("nav_step", "Execute 1–6 atomic actions sequentially. Translate 0.25m or turn 30deg. Translation may slide and auto-turn by at most 15deg per action. The returned pose and RGB describe actual motion; blocked stops the batch.",
-                   {"actions": {"type": "array", "items": {"type": "string", "enum": ACTIONS}, "minItems": 1, "maxItems": 6}}, ["actions"]),
+                   {"actions": {"type": "array", "items": {"type": "string", "enum": list(ACTIONS)}, "minItems": 1, "maxItems": 6}}, ["actions"]),
         definition("map_view", "Render the fixed map-up wall map, recorded entities, current pose and path. Blank space need not be traversable. Example: view={around_self:6} requests a 6-metre radius.",
                    {"view": {"anyOf": [{"type": "string", "enum": ["explored", "full"]},
                                          {"type": "object", "properties": {"around": ids}, "required": ["around"], "additionalProperties": False},

@@ -4,6 +4,7 @@ from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -42,6 +43,19 @@ class MapTests(unittest.TestCase):
         self.assertTrue(any("R01" in warning for warning in a["warnings"]))
         with Image.open(self.root / a["map"]) as image:
             self.assertLessEqual(max(image.size), 768)
+
+    def test_renderer_reuses_memory_and_reads_later_edits(self):
+        renderer = MapRenderer(self.root, self.memory)
+        with patch("src.harness.maps.MemoryStore", side_effect=AssertionError("Memory was reopened")):
+            initial = renderer.render(self.pose, [], view="full")
+            self.assertTrue(any("R01" in warning for warning in initial["warnings"]))
+            self.memory.edit([{"op": "update", "id": "R01", "fields": {"anchor": [.4, .4]}}])
+            updated = renderer.render(self.pose, [], view="full", highlight=["R01"])
+            self.assertFalse(any("R01" in warning for warning in updated["warnings"]))
+            self.memory.edit([{"op": "delete", "id": "R01"}])
+            deleted = renderer.render(self.pose, [], view="full", highlight=["R01"])
+            self.assertTrue(any("R01" in warning for warning in deleted["warnings"]))
+        self.assertNotEqual((self.root / initial["map"]).read_bytes(), (self.root / updated["map"]).read_bytes())
 
     def test_public_navlib_calibration_and_direction(self):
         source = Path(__file__).resolve().parents[1] / "src/harness/navlib.py"

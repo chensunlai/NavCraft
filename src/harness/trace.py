@@ -61,12 +61,8 @@ class TraceWriter:
         self._stream = (directory / "trace.jsonl").open("a", encoding="utf-8")
         self._secrets = tuple(secret for secret in secrets if secret)
         self.types = {}
-        self.compactions = []
         self.calls = []
         self.closed = False
-
-    def redact_with(self, *secrets):
-        self._secrets += tuple(secret for secret in secrets if secret)
 
     def store(self, value):
         raw = json.dumps(self.sanitize(value), ensure_ascii=False, separators=(",", ":")).encode()
@@ -77,11 +73,6 @@ class TraceWriter:
         if not path.exists():
             path.write_bytes(raw)
         return {"$trace_blob": digest, "encoding": "json"}
-
-    @property
-    def position(self):
-        """Byte offset used to delimit one prompt in the shared audit stream."""
-        return self._stream.tell()
 
     def sanitize(self, value):
         line = json.dumps(value, ensure_ascii=False)
@@ -102,8 +93,6 @@ class TraceWriter:
         self._stream.write(line + "\n")
         self._stream.flush()
         self.types[kind] = self.types.get(kind, 0) + 1
-        if kind == "compaction_end" and isinstance(data, dict) and data.get("result"):
-            self.compactions.append(data["result"])
         if kind == "tool_execution_end" and isinstance(data, dict):
             self.calls.append({"name": data.get("toolName"), "isError": data.get("isError", False)})
 
