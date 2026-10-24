@@ -104,8 +104,17 @@ class HarnessSession:
             if state.get("history"):
                 options["initialMessages"] = state["history"]
             self.trace = TraceWriter(self.private, [options["auth"]["apiKey"]])
+            source_files = []
+            for folder in ("harness", "environment", "bench", "common", "dataset/episodes"):
+                source_files.extend((self.repo / "src" / folder).rglob("*.py"))
+            source_files.extend((self.repo / "src/agent-core").glob("*.ts"))
+            source_files.append(self.repo / "src/agent-core/pi/packages/coding-agent/src/core/compaction/compaction.ts")
+            source_hash = hashlib.sha256()
+            for file in sorted(source_files):
+                source_hash.update(file.relative_to(self.repo).as_posix().encode() + b"\0" + file.read_bytes())
             self.trace.emit("application_started", {
                 "model": config["model"], "reasoning_effort": config.get("reasoning_effort", "high"),
+                "source_sha256": source_hash.hexdigest(),
                 "prompt_sha256": hashlib.sha256(options["systemPrompt"].encode()).hexdigest(),
                 "map_sha256": hashlib.sha256(Path(scene_map).read_bytes()).hexdigest(),
                 "memory_source": state.get("memory_source", "empty"),
