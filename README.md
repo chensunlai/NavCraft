@@ -28,6 +28,9 @@ export NAVCRAFT_PYTHON=/home/chen/.local/anaconda3/envs/vln/bin/python
 
 # Five ObjectNav and five R2R samples per model; dispatch alternates families.
 "$NAVCRAFT_PYTHON" -m src.bench pilot --model all
+
+# Refresh a report from saved files, including while a run is in progress.
+"$NAVCRAFT_PYTHON" -m src.bench report --output runs/<run-name>
 ```
 
 Only physical GPUs 0 and 1 are permitted for simulation. The fixed pilot uses DeepSeek xhigh / Qwen27 medium / Sol high, with per-model concurrency 1 / 4 / 2. GOAT uses the same persistent session across subgoals, but is not part of this pilot.

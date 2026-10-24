@@ -68,7 +68,9 @@ def main(argv=None):
     from .batch import run_batch
     output = args.output or REPO / "runs" / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-pilot")
     models = list(config["models"]) if args.model == "all" else [args.model]
-    print(run_batch(REPO, config, prepared, output, models))
+    run_batch(REPO, config, prepared, output, models)
+    from .report import write_report
+    print(write_report(output))
     return 0
 
 
