@@ -38,6 +38,12 @@ def extend(tools):
           "required": ["frame"], "additionalProperties": False}
     operation["fields"]["properties"]["at"] = at
     operation["coordinate_ref"] = string
+    # Geometry may be map-view pixels; MemoryStore validates UV after conversion.
+    for name in ("point", "anchor", "segment"):
+        geometry = operation["fields"]["properties"][name]["anyOf"][1]
+        if name == "segment":
+            geometry = geometry["items"]
+        geometry["items"] = {"type": "number"}
     by_name["memory_edit"]["description"] += " fields.at={frame:f_0042,pixel:[x,y]} sets point/anchor; door uses pixels:[[x1,y1],[x2,y2]]. This adds the source frame as evidence. Do not also supply geometry. coordinate_ref=m_0007 instead interprets explicit point/anchor/segment as pixels in that saved map view, including ego views. Stored memory always uses global UV."
     def tool(name, description, properties, required):
         return {"name": name, "description": description, "parameters": {"type": "object",

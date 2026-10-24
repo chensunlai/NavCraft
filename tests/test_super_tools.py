@@ -166,6 +166,15 @@ def test_goto_stops_on_blocked_and_shared_action_budget(session):
     assert result["stop"] == "interrupted"
 
 
+def test_goto_stops_before_core_timeout_without_extra_motion(session, monkeypatch):
+    ticks = iter([0, 0, 91])
+    monkeypatch.setattr("src.harness.super_tools.time.monotonic", lambda: next(ticks))
+    _, result = call(session, "nav_goto", {"target": {"uv": [.5, .3]}})
+    assert result["stop"] == "time_limit" and not result["reached"]
+    assert session.environment.steps == 1
+    assert not session._submitted
+
+
 def test_local_planning_refuses_remote_and_cross_floor_routes(session):
     frame = session.current["frame"]
     _, result = call(session, "memory_edit", {"operations": [{"op": "create", "id": "O01", "type": "object",

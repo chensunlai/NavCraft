@@ -4,6 +4,7 @@ from copy import deepcopy
 import json
 import math
 import shutil
+import time
 
 from src.common.io import write_json
 from .geometry import Geometry
@@ -199,7 +200,11 @@ class SuperTools:
                     stop = "outside_local_scope"
         done, events, turn_degrees = [], [], 0.
         start_steps = session.environment.steps
+        deadline = time.monotonic() + 90
         while stop == "completed" and session.environment.steps - start_steps < max_actions:
+            if time.monotonic() >= deadline:
+                stop = "time_limit"
+                break
             bearing, remaining = self.relative(goal)
             if planner == "local" and (remaining > 8 or math.dist(session.environment.position(), start) > 8
                                        or abs(session.environment.position()[1] - start[1]) > .5):
