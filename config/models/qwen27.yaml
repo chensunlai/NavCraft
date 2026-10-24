@@ -1,0 +1,6 @@
+model: Qwen3.8-27B
+reasoning_effort: medium
+concurrency: 4
+credentials: .env.harness
+api: openai-responses
+python: /home/chen/.local/anaconda3/envs/vln/bin/python

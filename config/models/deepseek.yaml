@@ -1,0 +1,6 @@
+model: deepseek-v4.1-flash-1017
+reasoning_effort: xhigh
+concurrency: 1
+credentials: .env.harness
+api: openai-responses
+python: /home/chen/.local/anaconda3/envs/vln/bin/python

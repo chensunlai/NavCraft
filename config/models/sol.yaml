@@ -1,0 +1,6 @@
+model: gpt-6.1-sol
+reasoning_effort: high
+concurrency: 2
+credentials: .env.harness
+api: openai-responses
+python: /home/chen/.local/anaconda3/envs/vln/bin/python

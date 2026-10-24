@@ -1,0 +1,24 @@
+# Temporary alternating dispatch; frozen official sample IDs are not edited.
+models:
+  deepseek: config/models/deepseek.yaml
+  qwen27: config/models/qwen27.yaml
+  sol: config/models/sol.yaml
+environment:
+  scenes: data/nas/scene_datasets
+  gpus: [0, 1]
+  seed: 0
+limits:
+  max_actions: 500
+  max_requests: 150
+  seconds: 3600
+episodes:
+  - objnav:val:6s7QHgap2fW:chair:1
+  - r2r:val_unseen:1652
+  - objnav:val:LT9Jq6dN3Ea:bed:14
+  - r2r:val_unseen:379
+  - objnav:val:k1cupFYWXJ6:chair:11
+  - r2r:val_unseen:166
+  - objnav:val:wcojb4TFT35:bed:6
+  - r2r:val_unseen:744
+  - objnav:val:mL8ThkuaVTM:plant:11
+  - r2r:val_unseen:281
