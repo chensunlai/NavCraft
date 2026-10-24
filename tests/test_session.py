@@ -85,6 +85,21 @@ def test_persistent_prompts_and_submit_stops_remaining_calls(session):
     assert session.checkpoint()["content"].count("First request") == 1
 
 
+def test_refresh_after_host_change_preserves_memory_and_session(session):
+    session._tool("record-room", "memory_edit", {"operations": [
+        {"op": "create", "id": "R01", "type": "room", "fields": {"name": "room"}}]})
+    previous = session.current["frame"]
+    session.environment.trajectory.append([8., 0., 2.])
+    current = session.refresh_observation()
+    assert current["frame"] != previous and current["pose"]["pos"] == [.8, .2]
+    assert session.memory.entities[0]["id"] == "R01"
+    assert session.session_id == "one-session" and session.environment.steps == 0
+    session._busy = True
+    with pytest.raises(RuntimeError, match="busy"):
+        session.refresh_observation()
+    session._busy = False
+
+
 def test_duplicate_tool_id_does_not_repeat_motion(session):
     args = {"actions": ["move_forward"]}
     first = session._tool("same", "nav_step", args)

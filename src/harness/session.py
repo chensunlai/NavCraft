@@ -152,6 +152,16 @@ class HarnessSession:
     def register_target(self, image):
         return self.observations.add(image, kind="target")["frame"]
 
+    def refresh_observation(self):
+        """Publish a fresh view after an explicit host-side state change."""
+        with self._lock:
+            if self._busy or self._closed or self._broken:
+                raise RuntimeError("Session is busy, closed or has uncertain execution")
+            self.current = self._capture(self.environment.observe())
+            self._publish_state()
+            self.trace.emit("observation_refreshed", self.current)
+            return self.current.copy()
+
     def _capture(self, observation, body_pose=None, **metadata):
         row = self.observations.capture(observation, self.environment.steps, **metadata)
         if self.super_tools:
@@ -302,7 +312,8 @@ class HarnessSession:
         points = self.super_tools.geometry.overlay(overlay) if overlay else None
         origin, size = self.transform["origin"], self.transform["size_m"]
         trajectory = [[(p[0] - origin[0]) / size, (p[2] - origin[1]) / size] for p in self.environment.trajectory]
-        value = self.renderer.render(self.current["pose"], trajectory, overlay_points=points, **args)
+        value = self.renderer.render(self.current["pose"], trajectory, overlay_points=points,
+                                     trajectory_breaks=getattr(self.environment, "trajectory_breaks", ()), **args)
         return value if self.super_tools else {key: value[key] for key in ("map", "bounds", "warnings")}
 
     def _execute(self, name, args):

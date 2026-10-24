@@ -24,7 +24,8 @@ class MapRenderer:
         self.workspace = Path(workspace)
         self.memory = memory if memory is not None else MemoryStore(self.workspace)
 
-    def render(self, pose, trajectory, view="explored", labels="id", highlight=None, *, overlay_points=None):
+    def render(self, pose, trajectory, view="explored", labels="id", highlight=None, *, overlay_points=None,
+               trajectory_breaks=()):
         if labels not in {"id", "name", "both", "none"}:
             raise ValueError("labels must be id, name, both, or none")
         data = json.loads((self.workspace / "scene/map.json").read_text())
@@ -133,7 +134,10 @@ class MapRenderer:
             uv = [[(p[i] - data["origin"][i]) / size for i in (0, 1)] for p in segment]
             draw.line([pixel(p) for p in uv], fill="#262a2f", width=2)
         if len(trajectory or []) > 1:
-            draw.line([pixel(p) for p in trajectory], fill="#8fc6ed", width=2)
+            breaks = set(trajectory_breaks)
+            for index, (a, b) in enumerate(zip(trajectory, trajectory[1:]), 1):
+                if index not in breaks:
+                    draw.line([pixel(a), pixel(b)], fill="#8fc6ed", width=2)
         occupied = []
         colors = ["#276cbd", "#4d8953", "#8e57b1", "#bc6a36", "#2c8992", "#bd5887"]
         highlights = set(highlight or [])

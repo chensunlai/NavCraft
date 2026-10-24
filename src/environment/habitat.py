@@ -32,6 +32,7 @@ class Environment:
         self.path_length = 0.0
         self.trajectory = [self.position()]
         self.motion_trajectory = [self.position()]
+        self.trajectory_breaks = []
         self.motions = []
         self.current = None
         self._frame = 0
@@ -86,7 +87,30 @@ class Environment:
         self.sim.restore_pose(pose)
         self.trajectory = [self.position()]
         self.motion_trajectory = [self.position()]
+        self.trajectory_breaks = []
         self.current = None
+
+    def relocate(self, pose):
+        """Explicit host relocation; preserve budgets and break the plotted path."""
+        position, rotation = pose["position"], pose["rotation_xyzw"]
+        if (len(position) != 3 or len(rotation) != 4
+                or any(type(v) not in (int, float) or not math.isfinite(v) for v in [*position, *rotation])
+                or not math.isclose(sum(v * v for v in rotation), 1, abs_tol=1e-3)):
+            raise ValueError("Relocation requires a finite position and unit quaternion")
+        before = self.position()
+        self.sim.restore_pose({"position": position, "rotation_xyzw": rotation,
+                               "camera_position": [position[0], position[1] + self.config["sensor_height"], position[2]],
+                               "camera_rotation_xyzw": rotation})
+        self.trajectory_breaks.append(len(self.trajectory))
+        self.trajectory.append(self.position())
+        self.motion_trajectory.append(self.position())
+        self.current = None
+        private = self.directory / "private"
+        private.mkdir(exist_ok=True)
+        with (private / "relocations.jsonl").open("a") as stream:
+            stream.write(json.dumps({"step": self.steps, "from": before, "to": self.position(),
+                                     "trajectory_index": self.trajectory_breaks[-1],
+                                     "motion_index": len(self.motion_trajectory) - 1}) + "\n")
 
     def position(self):
         return self.sim.position()
