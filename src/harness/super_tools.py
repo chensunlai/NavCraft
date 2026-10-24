@@ -57,42 +57,31 @@ class SuperTools:
                 raise ValueError("fields must be an object")
             at, reference = fields.pop("at", None), op.pop("coordinate_ref", None)
             if at is not None:
-                if reference is not None or any(k in fields for k in ("point", "anchor", "segment")):
+                if reference is not None or any(k in fields for k in ("point", "anchor")):
                     raise ValueError("at cannot be combined with explicit geometry or coordinate_ref")
-                if not isinstance(at, dict) or set(at) - {"frame", "pixel", "pixels"}:
-                    raise ValueError("at requires an original frame and pixel or pixels")
+                if not isinstance(at, dict) or set(at) != {"frame", "pixel"}:
+                    raise ValueError("at requires an original frame and one pixel")
                 kind = kinds.get(identifier)
-                field = {"room": "anchor", "door": "segment", "object": "point"}.get(kind)
+                field = {"room": "anchor", "door": "point", "object": "point"}.get(kind)
                 if field is None:
                     raise ValueError("at requires an existing or newly created entity type")
-                key = "pixels" if kind == "door" else "pixel"
-                if set(at) != {"frame", key}:
-                    raise ValueError(f"at for {kind} requires frame and {key}")
-                pixels = at[key] if kind == "door" else [at[key]]
-                if not isinstance(pixels, list) or len(pixels) != (2 if kind == "door" else 1):
-                    raise ValueError("A door requires two pixels")
-                values = [self.geometry.resolve_frame(at["frame"], pixel) for pixel in pixels]
-                if any(not value["valid"] for value in values):
-                    raise ValueError("at has invalid geometry: " + ", ".join(v.get("reason", "valid") for v in values))
-                fields[field] = [v["uv"] for v in values] if kind == "door" else values[0]["uv"]
+                value = self.geometry.resolve_frame(at["frame"], at["pixel"])
+                if not value["valid"]:
+                    raise ValueError("at has invalid geometry: " + value["reason"])
+                fields[field] = value["uv"]
                 evidence = fields.get("evidence", [])
                 if evidence is None:
                     evidence = []
                 if not isinstance(evidence, list):
                     raise ValueError("evidence must be an array")
                 fields["evidence"] = list(dict.fromkeys([*evidence, at["frame"]]))
-                position = ([(values[0]["uv"][i] + values[1]["uv"][i]) / 2 for i in (0, 1)]
-                            if kind == "door" else values[0]["uv"])
-                sources[identifier] = {"frame": at["frame"], "uv": position,
-                                       "height": sum(v["height"] for v in values) / len(values)}
+                sources[identifier] = {"frame": at["frame"], "uv": value["uv"], "height": value["height"]}
             elif reference is not None:
                 if not isinstance(reference, str) or not reference.startswith("m_"):
                     raise ValueError("coordinate_ref must be a saved map view ID")
-                for field in ("point", "anchor", "segment"):
+                for field in ("point", "anchor"):
                     if fields.get(field) is not None:
-                        value = fields[field]
-                        fields[field] = ([self.geometry.resolve_map(reference, p)["uv"] for p in value]
-                                         if field == "segment" else self.geometry.resolve_map(reference, value)["uv"])
+                        fields[field] = self.geometry.resolve_map(reference, fields[field])["uv"]
         return prepared, sources
 
     def remember_sources(self, operations, additions):
@@ -100,7 +89,7 @@ class SuperTools:
         entities = {e["id"]: e for e in self.session.memory.entities}
         for op in operations:
             identifier = op.get("id", op.get("keep"))
-            if any(key in op.get("fields", {}) for key in ("point", "anchor", "segment")):
+            if any(key in op.get("fields", {}) for key in ("point", "anchor")):
                 sources.pop(identifier, None)
         for identifier, source in additions.items():
             if identifier in entities and source["uv"] == location(entities[identifier]):

@@ -15,9 +15,6 @@ def extend(tools):
         {"type": "object", "properties": {"uv": uv}, "required": ["uv"], "additionalProperties": False},
         {"type": "object", "properties": {"entity": string}, "required": ["entity"], "additionalProperties": False},
     ]}
-    for name in ("nav_observe", "view_images"):
-        by_name[name]["parameters"]["properties"]["grid"] = {"type": "boolean"}
-        by_name[name]["description"] += " grid=true adds original-image pixel ticks; use individual frame coordinates, never collage coordinates."
     by_name["nav_observe"]["parameters"]["properties"]["project"] = {"type": "boolean"}
     by_name["nav_observe"]["description"] += " project=true adds an ego map with RGB-D projection of the captured views."
     props = by_name["map_view"]["parameters"]["properties"]
@@ -33,18 +30,15 @@ def extend(tools):
          "required": ["entity"], "additionalProperties": False}]}
     by_name["memory_read"]["description"] += " near={self:5} or {entity:D02,radius:3} filters by metres. Returned bearing (right-positive) and distance are always relative to the current body. Do not combine near with ids."
     operation = by_name["memory_edit"]["parameters"]["properties"]["operations"]["items"]["properties"]
-    at = {"type": "object", "properties": {"frame": string, "pixel": pixel,
-          "pixels": {"type": "array", "minItems": 2, "maxItems": 2, "items": pixel}},
-          "required": ["frame"], "additionalProperties": False}
+    at = {"type": "object", "properties": {"frame": string, "pixel": pixel},
+          "required": ["frame", "pixel"], "additionalProperties": False}
     operation["fields"]["properties"]["at"] = at
     operation["coordinate_ref"] = string
     # Geometry may be map-view pixels; MemoryStore validates UV after conversion.
-    for name in ("point", "anchor", "segment"):
+    for name in ("point", "anchor"):
         geometry = operation["fields"]["properties"][name]["anyOf"][1]
-        if name == "segment":
-            geometry = geometry["items"]
         geometry["items"] = {"type": "number"}
-    by_name["memory_edit"]["description"] += " fields.at={frame:f_0042,pixel:[x,y]} sets point/anchor; door uses pixels:[[x1,y1],[x2,y2]]. This adds the source frame as evidence. Do not also supply geometry. coordinate_ref=m_0007 instead interprets explicit point/anchor/segment as pixels in that saved map view, including ego views. Stored memory always uses global UV."
+    by_name["memory_edit"]["description"] += " fields.at={frame:f_0042,pixel:[x,y]} sets point for a door/object or anchor for a room. This adds the source frame as evidence. Do not also supply geometry. coordinate_ref=m_0007 instead interprets explicit point/anchor as pixels in that saved map view, including ego views. Stored memory always uses global UV."
     def tool(name, description, properties, required):
         return {"name": name, "description": description, "parameters": {"type": "object",
                 "properties": deepcopy(properties), "required": required, "additionalProperties": False}}

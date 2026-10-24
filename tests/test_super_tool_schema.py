@@ -9,7 +9,7 @@ from src.harness.tools.specs import specifications
 
 
 def test_map_pixel_geometry_passes_pi_validation_only_in_super_tier(tmp_path):
-    tools = {tier: next(tool for tool in specifications(tier) if tool["name"] == "memory_edit")
+    tools = {tier: {tool["name"]: tool for tool in specifications(tier)}
              for tier in ("basic", "super")}
     script = """
 import assert from 'node:assert/strict';
@@ -25,14 +25,28 @@ function call(type, fields, coordinate_ref) {
 for (const [type, fields] of [
     ['object',{point:[384,207]}],
     ['room',{anchor:[384,207]}],
-    ['door',{segment:[[100,207],[300,207]]}],
+    ['door',{point:[384,207]}],
 ]) {
-    assert.doesNotThrow(()=>validateToolArguments(tools.super,call(type,fields,'m_0001')));
-    assert.throws(()=>validateToolArguments(tools.basic,call(type,fields)),/Validation failed/);
+    assert.doesNotThrow(()=>validateToolArguments(tools.super.memory_edit,call(type,fields,'m_0001')));
+    assert.throws(()=>validateToolArguments(tools.basic.memory_edit,call(type,fields)),/Validation failed/);
 }
 for (const tier of ['basic','super']) {
-    assert.doesNotThrow(()=>validateToolArguments(tools[tier],call('object',{point:[.5,.6]})));
+    assert.doesNotThrow(()=>validateToolArguments(tools[tier].memory_edit,call('door',{point:[.5,.6]})));
+    assert.throws(()=>validateToolArguments(tools[tier].memory_edit,
+        call('door',{segment:[[.4,.5],[.5,.5]]})),/Validation failed/);
+    for (const [name,args] of [
+        ['nav_observe',{mode:'current',grid:true}],
+        ['view_images',{frames:[{frame:'f_0001'}],grid:true}],
+        ['view_images',{frames:[{frame:'f_0001',grid:true}]}],
+    ]) {
+        assert.throws(()=>validateToolArguments(tools[tier][name],
+            {id:'fixture',name,arguments:args}),/Validation failed/);
+    }
 }
+assert.doesNotThrow(()=>validateToolArguments(tools.super.memory_edit,
+    call('door',{at:{frame:'f_0001',pixel:[320,240]}})));
+assert.throws(()=>validateToolArguments(tools.super.memory_edit,
+    call('door',{at:{frame:'f_0001',pixels:[[300,240],[340,240]]}})),/Validation failed/);
 """
     result = subprocess.run(["node", "--input-type=module", "-e", script],
                             input=json.dumps(tools), text=True, capture_output=True,

@@ -56,7 +56,7 @@ def main():
                     raise ValueError(value)
                 return value
 
-            pano = call("nav_observe", {"mode": "panorama", "grid": True, "project": True})
+            pano = call("nav_observe", {"mode": "panorama", "project": True})
             candidate = None
             for view in pano["views"]:
                 for x, y in [(x, y) for y in (400, 440, 470, 360, 320) for x in (320, 200, 440, 100, 540)]:

@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from src.harness.memory import MemoryStore
+from src.harness.memory import MemoryStore, location
 
 
 class MemoryTests(unittest.TestCase):
@@ -83,6 +83,27 @@ class MemoryTests(unittest.TestCase):
         self.assertIn("error", self.store.edit([merge]))
         merge["fields"] = {"point": [.4, .5]}
         self.assertNotIn("error", self.store.edit([merge]))
+
+    def test_door_point_merge_and_rejected_segment_are_atomic(self):
+        result = self.store.edit([
+            self.create("D01", "door", point=[.2, .3]), self.create("D02", "door", point=[.5, .6]),
+        ])
+        self.assertNotIn("error", result)
+        self.assertEqual(location(self.store.entities[0]), [.2, .3])
+        before = self.store.path.read_bytes()
+        merge = {"op": "merge", "keep": "D01", "remove": ["D02"]}
+        self.assertIn("Conflicting point", self.store.edit([merge])["error"])
+        self.assertEqual(before, self.store.path.read_bytes())
+        merge["fields"] = {"point": [.4, .5]}
+        self.assertNotIn("error", self.store.edit([merge]))
+        before = self.store.path.read_bytes()
+        result = self.store.edit([
+            {"op": "update", "id": "D01", "fields": {"point": [.6, .6]}},
+            self.create("D03", "door", segment=[[.4, .5], [.5, .5]]),
+        ])
+        self.assertIn("Unknown fields: segment", result["error"])
+        self.assertEqual(before, self.store.path.read_bytes())
+        self.assertEqual(MemoryStore(self.root).entities[0]["point"], [.4, .5])
 
     def test_rejects_unknown_evidence_out_of_bounds_and_identity_change(self):
         for fields in ({"anchor": [1.1, .5]}, {"anchor": [float("nan"), .5]}, {"evidence": ["f_future"]}):

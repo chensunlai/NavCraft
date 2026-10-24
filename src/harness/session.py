@@ -194,9 +194,9 @@ class HarnessSession:
             reply["control"] = {"stop_remaining_tools": True, "end_run": True}
         return reply
 
-    def _observe(self, mode="current", grid=False, project=False):
-        if type(grid) is not bool or type(project) is not bool:
-            raise ValueError("grid and project must be boolean")
+    def _observe(self, mode="current", project=False):
+        if type(project) is not bool:
+            raise ValueError("project must be boolean")
         if mode not in {"current", "panorama"}:
             raise ValueError("mode must be current or panorama")
         if mode == "current":
@@ -204,9 +204,6 @@ class HarnessSession:
             self._publish_state()
             value = {key: self.current[key] for key in ("frame", "step", "pose")}
             refs, labels = [self.current["path"]], [f"[CURRENT {self.current['frame']}]"]
-            if grid:
-                self._image_counter += 1
-                refs = [self.observations.grid_image(refs[0], f"observations/derived/t_{self._image_counter:04d}.jpg")]
             views = [self.current]
         else:
             captured_pose = self.environment.pose()
@@ -217,7 +214,7 @@ class HarnessSession:
             self.current = views[0]
             self._publish_state()
             image = self.observations.collage([v["path"] for v in views], f"observations/{group}.jpg",
-                        [f"{v['frame']} | right {v['yaw']} deg" for v in views], grid=grid)
+                        [f"{v['frame']} | right {v['yaw']} deg" for v in views])
             value = {"group": group, "views": [{"frame": v["frame"], "yaw": v["yaw"]} for v in views],
                      "step": self.environment.steps, "pose": body_pose}
             refs, labels = [image], [f"[CURRENT {group}]"]
@@ -259,9 +256,7 @@ class HarnessSession:
             self._stop_reason = "action_budget"
         return self._reply(value, [self.current["path"]], [f"[CURRENT {self.current['frame']}]"], end=bool(self._stop_reason))
 
-    def _images(self, frames, layout="separate", grid=False):
-        if type(grid) is not bool:
-            raise ValueError("grid must be boolean")
+    def _images(self, frames, layout="separate"):
         if not isinstance(frames, list) or not 1 <= len(frames) <= 6 or layout not in {"separate", "grid"}:
             raise ValueError("Expected 1–6 frames and separate/grid layout")
         rows, refs, labels = [], [], []
@@ -279,7 +274,6 @@ class HarnessSession:
         public = []
         for row, crop in rows:
             ref = row["path"]
-            bounds = None
             metadata = {k: row[k] for k in ("frame", "step", "pose", "group", "yaw") if k in row}
             if crop is not None:
                 self._image_counter += 1
@@ -292,9 +286,6 @@ class HarnessSession:
                               max(int(crop[3] * h), int(crop[1] * h) + 1)]
                     source.crop(bounds).save(destination, quality=85)
                 metadata["crop"] = crop
-            if grid:
-                self._image_counter += 1
-                ref = self.observations.grid_image(ref, f"observations/derived/t_{self._image_counter:04d}.jpg", source_bounds=bounds)
             refs.append(ref)
             labels.append(f"[{'TARGET' if row['kind'] == 'target' else 'HISTORY'} {row['frame']}]")
             public.append(metadata)

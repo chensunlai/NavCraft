@@ -13,12 +13,12 @@ PREFIXES = {"room": "R", "door": "D", "object": "O"}
 COMMON = {"name", "description", "evidence"}
 FIELDS = {
     "room": COMMON | {"anchor"},
-    "door": COMMON | {"segment", "connects", "passage"},
+    "door": COMMON | {"point", "connects", "passage"},
     "object": COMMON | {"category", "point", "size", "room"},
 }
 DEFAULTS = {
     "room": {"anchor": None},
-    "door": {"segment": None, "connects": [None, None], "passage": "unknown"},
+    "door": {"point": None, "connects": [None, None], "passage": "unknown"},
     "object": {"point": None, "room": None, "category": None},
 }
 
@@ -52,12 +52,7 @@ def observation_index(workspace):
 
 
 def location(entity):
-    if entity["type"] == "room":
-        return entity.get("anchor")
-    if entity["type"] == "object":
-        return entity.get("point")
-    segment = entity.get("segment")
-    return [(segment[0][i] + segment[1][i]) / 2 for i in range(2)] if segment else None
+    return entity.get("anchor" if entity["type"] == "room" else "point")
 
 
 class MemoryStore:
@@ -261,11 +256,6 @@ class MemoryStore:
         for key in ("point", "anchor"):
             if entity.get(key) is not None:
                 self._point(entity[key])
-        if entity.get("segment") is not None:
-            if not isinstance(entity["segment"], list) or len(entity["segment"]) != 2:
-                raise ValueError("segment must contain two endpoints")
-            for point in entity["segment"]:
-                self._point(point)
         if entity["type"] == "door":
             if entity.get("passage") not in {"unknown", "seen", "passed", "blocked"}:
                 raise ValueError("passage must be unknown, seen, passed or blocked")

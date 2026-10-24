@@ -55,13 +55,14 @@ def test_super_schemas_are_opt_in_and_basic_remains_seven_tools():
     assert len(super_tools) == 10
     assert {"locate", "nav_face", "nav_goto"} <= super_tools.keys()
     assert "grid" not in basic[0]["parameters"]["properties"]
-    assert "grid" in super_tools["nav_observe"]["parameters"]["properties"]
+    assert "grid" not in super_tools["nav_observe"]["parameters"]["properties"]
+    assert "grid" not in super_tools["view_images"]["parameters"]["properties"]
     with pytest.raises(ValueError):
         specifications("unknown")
 
 
 def test_private_depth_and_panorama_capture_bearing(session):
-    receipt, panorama = call(session, "nav_observe", {"mode": "panorama", "grid": True, "project": True})
+    receipt, panorama = call(session, "nav_observe", {"mode": "panorama", "project": True})
     assert not receipt["result"]["isError"]
     assert len(receipt["result"]["images"]) == 2
     point = session.super_tools.geometry.resolve_frame(panorama["views"][1]["frame"], [319.5, 239.5])
@@ -106,20 +107,47 @@ def test_at_edit_is_atomic_and_provenance_cannot_be_reused_for_other_coordinates
 def test_map_pixels_and_near_query_use_global_memory_and_current_body(session):
     _, view = call(session, "map_view", {"view": {"ego": 2}})
     _, result = call(session, "memory_edit", {"operations": [{
-        "op": "create", "id": "O01", "type": "object", "coordinate_ref": view["view_id"],
+        "op": "create", "id": "D01", "type": "door", "coordinate_ref": view["view_id"],
         "fields": {"name": "front", "point": [384, 207]}}]})
     assert "error" not in result
     assert session.memory.entities[0]["point"] == pytest.approx([.5, .45])
-    assert not session.super_tools.target({"entity": "O01"})["observed"]
+    assert not session.super_tools.target({"entity": "D01"})["observed"]
     _, near = call(session, "memory_read", {"near": {"self": 2}})
     assert near["total"] == 1
     assert near["entities"][0]["distance"] == 1
     assert near["entities"][0]["bearing"] == 0
     session._perform_motion("turn_right", 30)
-    _, near = call(session, "memory_read", {"near": {"entity": "O01", "radius": .1}})
+    _, near = call(session, "memory_read", {"near": {"entity": "D01", "radius": .1}})
     assert near["entities"][0]["bearing"] == -30
     _, far = call(session, "memory_read", {"near": {"self": .5}})
     assert far["total"] == 0
+
+
+def test_door_single_pixel_location_and_goto_provenance(session):
+    frame = session.current["frame"]
+    _, result = call(session, "memory_edit", {"operations": [{
+        "op": "create", "id": "D01", "type": "door", "fields": {
+            "name": "doorway", "at": {"frame": frame, "pixel": [320, 240]}}}]})
+    assert "error" not in result
+    door = session.memory.entities[0]
+    assert door["point"] == session.super_tools.geometry.resolve_frame(frame, [320, 240])["uv"]
+    assert door["evidence"] == [frame] and "segment" not in door and "at" not in door
+    assert session.super_tools.target({"entity": "D01"})["observed"]
+    _, movement = call(session, "nav_goto", {"target": {"entity": "D01"}})
+    assert movement["planner"] == "local" and movement["reached"]
+    before = session.memory.entities
+    _, result = call(session, "memory_edit", {"operations": [
+        {"op": "update", "id": "D01", "fields": {"name": "changed"}},
+        {"op": "create", "id": "D02", "type": "door", "fields": {
+            "name": "invalid", "at": {"frame": frame, "pixels": [[300, 240], [340, 240]]}}},
+    ]})
+    assert "error" in result and session.memory.entities == before
+    _, result = call(session, "memory_edit", {"operations": [{
+        "op": "update", "id": "D01", "fields": {"point": [.6, .6]}}]})
+    assert "error" not in result
+    assert not session.super_tools.target({"entity": "D01"})["observed"]
+    _, movement = call(session, "nav_goto", {"target": {"entity": "D01"}, "max_actions": 1})
+    assert movement["planner"] == "straight"
 
 
 def test_face_uses_actual_budgeted_micro_turns_and_idempotent_calls(session):
