@@ -37,6 +37,17 @@ Only physical GPUs 0 and 1 are permitted for simulation. The fixed pilot uses De
 
 Programmatic callers use `src.harness.open_session(...)` and successive `session.prompt(...)` calls. Tool definitions and execution live in Python; the TS Core is task independent. `submit` ends one request and never returns an evaluation outcome. Native Coding tools can read scene, observations and memory; only scratch is writable. Formal memory changes go through `memory_edit`.
 
+For a continuous development check, load a frozen local task chain:
+
+```bash
+"$NAVCRAFT_PYTHON" -m src.bench.sequence \
+  --scenario data/datasets/navcraft/qa_campaign_v2/scenario.json \
+  --map cache/wall_maps/QaLdnwvtxbs-L1/map.json \
+  --model-config <model-config.json> --output runs/<new-run> --gpu 1
+```
+
+This preserves one environment, Pi session and memory across all requests. Explicit relocations preserve history and do not count as travel. Each round saves navigation scores and memory changes separately; exploration is excluded from navigation success. Local task chains are development checks, separate from the frozen public benchmark subsets.
+
 ## Boundaries and records
 
 - `src/dataset`: official episode readers and offline semantic wall extraction.
