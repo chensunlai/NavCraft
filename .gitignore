@@ -21,3 +21,7 @@ __pycache__/
 *.egg-info/
 /build/
 /dist/
+
+# Local Agent Core build and dependencies.
+node_modules/
+/src/agent-core/dist/
