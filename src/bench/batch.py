@@ -14,13 +14,21 @@ from .samples import read_config
 
 def summarize(results, selected):
     complete = [r for r in results if r.get("status") == "completed"]
-    successes = sum(r.get("environment", {}).get("metrics", {}).get("success", 0.0) for r in complete)
+    infra = sum(r.get("status") == "infrastructure_error" for r in results)
+    weights = [int(r.get("planned_goals", 1)) if r.get("benchmark") == "goat" else 1
+               for r in complete]
+    values = [r.get("environment", {}).get("metrics", {}).get(
+        "partial_success" if r.get("benchmark") == "goat" else "success") for r in complete]
+    evaluated_goals = sum(weights)
+    successes = (sum(value * weight for value, weight in zip(values, weights))
+                 if all(value is not None for value in values) else None)
+    observed = successes / evaluated_goals if successes is not None and evaluated_goals else None
+    finished = len(complete) == selected and selected > 0
     return {"selected": selected, "finished": len(complete),
-            "infrastructure_errors": sum(r.get("status") == "infrastructure_error" for r in results),
-            "pending": selected - len(complete), "successes": successes,
-            "success_rate": successes / len(complete) if complete else None,
-            "success_over_selected": successes / selected if selected else None,
-            "complete": len(complete) == selected}
+            "infrastructure_errors": infra, "pending": selected - len(complete) - infra,
+            "evaluated_goals": evaluated_goals, "successes": successes,
+            "observed_success_rate": observed,
+            "success_rate": observed if finished else None, "complete": finished}
 
 
 def run_batch(repo, pilot, prepared_plan, directory, model_names):

@@ -14,13 +14,19 @@ REPO = Path(__file__).resolve().parents[2]
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["doctor", "prepare", "run", "pilot", "worker"])
+    parser.add_argument("command", choices=["doctor", "prepare", "run", "pilot", "worker", "report"])
     parser.add_argument("--config", type=Path, default=REPO / "config/pilot.yaml")
     parser.add_argument("--model", choices=["all", "deepseek", "qwen27", "sol"], default="all")
     parser.add_argument("--episode", help="Frozen canonical ID for run")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--job", type=Path)
     args = parser.parse_args(argv)
+    if args.command == "report":
+        if args.output is None:
+            parser.error("report requires --output <existing run directory>")
+        from .report import write_report
+        print(write_report(args.output))
+        return 0
     if args.command == "worker":
         from .runner import run_episode
         job = json.loads(args.job.read_text())
