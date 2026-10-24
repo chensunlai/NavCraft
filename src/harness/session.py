@@ -267,8 +267,9 @@ class HarnessSession:
         if name == "memory_edit":
             before = self.trace.store(self.memory.entities)
             result = self.memory.edit(**args)
-            self._revision += 1
-            self.trace.emit("memory_changed", {"before": before, "after": self.trace.store(self.memory.entities)})
+            if "error" not in result:
+                self._revision += 1
+                self.trace.emit("memory_changed", {"before": before, "after": self.trace.store(self.memory.entities)})
             return self._reply(result, error="error" in result)
         if name == "map_view":
             origin, size = self.transform["origin"], self.transform["size_m"]

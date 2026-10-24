@@ -151,6 +151,30 @@ def test_memory_read_validation_is_tool_error(session):
     assert session._tool("invalid-read", "memory_read", {"ids": [], "filter": {}})["result"]["isError"]
 
 
+def test_failed_memory_edit_preserves_revision_and_change_history(session):
+    from src.harness.trace import read_trace
+
+    revision = session.checkpoint()["revision"]
+    invalid = session._tool("bad-edit", "memory_edit", {"operations": [
+        {"op": "create", "id": "R01", "type": "room", "fields": {"name": "room"}},
+        {"op": "create", "id": "O01", "type": "object", "fields": {"name": "chair", "room": "R99"}},
+    ]})
+    assert invalid["result"]["isError"]
+    assert session.memory.entities == []
+    assert session.checkpoint()["revision"] == revision
+    trace = session.private / "trace.jsonl"
+    assert not any(event["type"] == "memory_changed" for event in read_trace(trace))
+
+    valid = session._tool("good-edit", "memory_edit", {"operations": [
+        {"op": "create", "id": "R01", "type": "room", "fields": {"name": "room"}},
+    ]})
+    assert not valid["result"]["isError"]
+    assert session.checkpoint()["revision"] == revision + 1
+    changes = [event["data"] for event in read_trace(trace) if event["type"] == "memory_changed"]
+    assert len(changes) == 1
+    assert changes[0]["before"] != changes[0]["after"]
+
+
 def test_imported_observation_cannot_point_to_private_file(session):
     from src.harness.observations import Observations
 
