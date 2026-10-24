@@ -11,7 +11,8 @@ from .memory import MemoryStore, location
 
 
 def _font(size):
-    for candidate in ("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+    for candidate in ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                      "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
                       "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"):
         if Path(candidate).exists():
             return ImageFont.truetype(candidate, size)

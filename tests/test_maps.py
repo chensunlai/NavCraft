@@ -7,11 +7,16 @@ import unittest
 
 from PIL import Image
 
-from src.harness.maps import MapRenderer
+from src.harness.maps import MapRenderer, _font
 from src.harness.memory import MemoryStore
 
 
 class MapTests(unittest.TestCase):
+    def test_map_font_has_distinct_numbers_latin_and_chinese_glyphs(self):
+        font = _font(16)
+        masks = [bytes(font.getmask(character)) for character in "012mNR椅门"]
+        self.assertEqual(len(set(masks)), len(masks))
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
