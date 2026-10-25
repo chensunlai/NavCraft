@@ -1,0 +1,4 @@
+interface:
+  display_name: "场景地图构建与复查"
+  short_description: "构建完整地图或墙体阶段，交付补全墙、证据墙及楼梯，多轮复查后逐场景归档"
+  default_prompt: "使用 $build-scene-map 按指定阶段逐个构建场景图，交付补全 wall、证据 wall_real 和正确楼梯标注，渲染复查验收后归档到 data/scene_maps。"
