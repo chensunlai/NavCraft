@@ -18,6 +18,7 @@ from matplotlib.collections import LineCollection, PolyCollection
 import numpy as np
 
 from src.bench.runner import validate_single_floor
+from src.common.progress import Progress
 from src.bench.samples import load_episodes, plan, read_config
 from src.common.io import write_json
 from src.environment import Environment
@@ -99,7 +100,9 @@ def main():
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     reports = []
+    progress = Progress("Geometry", [e.id for e in episodes])
     for job, episode in zip(planned["jobs"], episodes):
+        progress.set(episode.id, "running")
         started = time.monotonic()
         folder = output / f"{job['index']:02d}-{episode.benchmark}"
         folder.mkdir()
@@ -153,6 +156,7 @@ def main():
             record["seconds"] = time.monotonic() - started
             write_json(folder / "report.json", record)
             reports.append(record)
+            progress.set(episode.id, "failed" if record["status"] in {"error", "preflight_failed"} else "finished")
             write_json(output / "summary.json", reports)
             print(json.dumps({k: record[k] for k in ("episode_id", "status", "seconds")}), flush=True)
     cards = []

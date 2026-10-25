@@ -13,6 +13,7 @@ import time
 
 from jsonschema import ValidationError
 
+from src.common.progress import Progress
 from src.common.io import redact, write_json
 from .appserver import AppServer
 
@@ -285,13 +286,15 @@ def retryable_service_error(error):
                     'connection timed out', 'rate limit exceeded')))
 
 
-async def build_with_retries(plan, scene, directory, settings, max_turns, timeout, output):
+async def build_with_retries(plan, scene, directory, settings, max_turns, timeout, output, progress=None):
     """Retry transient service failures in the saved thread, after releasing its process."""
     path = directory / 'result.json'
     state = json.loads(path.read_text()) if path.exists() else {}
     initial_turns = len(state.get('turns', []))
     while True:
         if state.get('status') == 'retry_wait':
+            if progress is not None:
+                progress.set(scene['scene_id'], 'waiting')
             try:
                 await asyncio.sleep(max(0, state['next_retry_at'] - time.time()))
             except asyncio.CancelledError:
@@ -301,6 +304,8 @@ async def build_with_retries(plan, scene, directory, settings, max_turns, timeou
         remaining = max_turns - (len(state.get('turns', [])) - initial_turns)
         if remaining <= 0:
             return state
+        if progress is not None:
+            progress.set(scene['scene_id'], 'running')
         state = await build_scene(plan, scene, directory, settings, remaining, timeout)
         if state.get('status') != 'error' or not state.get('retryable'):
             return state
@@ -329,14 +334,28 @@ def summarize(plan, output):
     return summary
 
 
+def build_progress(plan, output):
+    rows = summarize(plan, output)["scenes"]
+    # Old errors/partials are scheduled again; only ready scenes are already done.
+    return Progress("Maps", [r["scene_id"] for r in rows],
+                    {r["scene_id"]: "ready" for r in rows if r["status"] == "ready_for_review"})
+
+
+def finish_progress(progress, scene, result):
+    state = {"ready_for_review": "ready", "partial": "partial"}.get(result["status"], "failed")
+    progress.set(scene["scene_id"], state)
+
+
 async def run_batch(plan, output, settings, max_turns, timeout):
     if plan.get('parallel'):
         return await run_parallel(plan, output, settings, max_turns, timeout)
     with home_lock(settings.codex_home):
+        progress = build_progress(plan, output)
         try:
             for scene in plan['scenes']:
                 print(json.dumps({'scene': scene['scene_id'], 'event': 'starting'}, ensure_ascii=False), flush=True)
-                result = await build_with_retries(plan, scene, scene_directory(output, scene), settings, max_turns, timeout, output)
+                result = await build_with_retries(plan, scene, scene_directory(output, scene), settings, max_turns, timeout, output, progress)
+                finish_progress(progress, scene, result)
                 summarize(plan, output)
                 print(json.dumps({'scene': scene['scene_id'], 'status': result['status']}, ensure_ascii=False), flush=True)
                 if result['status'] != 'ready_for_review':
@@ -382,7 +401,8 @@ async def run_parallel(plan, output, settings, max_turns, timeout):
                     print(json.dumps({'scene': scene['scene_id'], 'event': 'starting',
                                       'worker': slot, 'gpu': config.gpu}), flush=True)
                     result = await build_with_retries(plan, scene, scene_directory(output, scene),
-                                                      config, max_turns, timeout, output)
+                                                      config, max_turns, timeout, output, progress)
+                finish_progress(progress, scene, result)
                 passed = passed and result['status'] == 'ready_for_review'
                 summarize(plan, output)
                 print(json.dumps({'scene': scene['scene_id'], 'status': result['status'],
@@ -391,7 +411,7 @@ async def run_parallel(plan, output, settings, max_turns, timeout):
 
     with home_lock(settings.codex_home):
         try:
-            summarize(plan, output)
+            progress = build_progress(plan, output)
             results = await asyncio.gather(*(worker(i) for i in range(min(count, len(plan['scenes'])))))
             return all(results)
         finally:

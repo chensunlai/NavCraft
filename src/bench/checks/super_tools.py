@@ -1,5 +1,7 @@
 """One real Habitat RGB-D/tool replay; no model requests or benchmark score."""
 
+from src.common.progress import Progress
+
 import argparse
 import json
 import os
@@ -42,14 +44,17 @@ def main():
     env = Environment(episode, {"gpu": args.gpu, "tool_tier": "super", "scenes": str(REPO / "data/nas/scene_datasets")},
                       output / "private/environment")
     records = []
+    progress = Progress("Super tools", ["nav_observe", "locate", "memory_edit", "memory_read", "map_view", "nav_face", "nav_goto", "validate"])
     try:
         with open_session(REPO, {"model": "offline", "tool_tier": "super", "credentials": str(credentials)},
                           output, env, map_directory(REPO, episode) / "map.json", client_factory=OfflineClient) as session:
             def call(name, arguments):
+                progress.set(name, "running")
                 receipt = session._tool(f"offline-{len(records)}", name, arguments)
                 value = json.loads(receipt["result"]["content"][0]["text"])
                 records.append({"tool": name, "arguments": arguments, "result": value,
                                 "images": receipt["result"]["images"]})
+                progress.set(name, "failed" if receipt["result"]["isError"] else "finished")
                 if receipt["result"]["isError"]:
                     raise ValueError(value)
                 return value
@@ -92,6 +97,7 @@ def main():
                 lines.extend([f"## {record['tool']}", "", "```json", json.dumps(record["result"], indent=2), "```", ""])
                 lines.extend(f"![{record['tool']}](workspace/{ref})\n" for ref in record["images"])
             (output / "README.md").write_text("\n".join(lines))
+            progress.set("validate", "finished" if all(checks.values()) else "failed")
             if not all(value for value in checks.values()):
                 raise ValueError("Physical checks failed; inspect check.json")
             print(output / "README.md")

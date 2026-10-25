@@ -12,6 +12,7 @@ import threading
 from src.common.config import merge_config
 
 from src.common.io import write_json
+from src.common.progress import Progress
 from .samples import read_config
 
 
@@ -42,6 +43,7 @@ def run_batch(repo, pilot, prepared_plan, directory, model_names):
     write_json(directory / "pilot.json", pilot)
     results = {name: [] for name in model_names}
     lock = threading.Lock()
+    progress = Progress("Episodes", [(name, job["index"]) for name in model_names for job in prepared_plan["jobs"]])
 
     def save():
         write_json(directory / "summary.json", {
@@ -52,6 +54,7 @@ def run_batch(repo, pilot, prepared_plan, directory, model_names):
         config = merge_config(read_config(config_path), pilot.get("model_overrides", {}))
 
         def execute(job):
+            progress.set((name, job["index"]), "running")
             output = directory / name / f"{job['index']:03d}-{job['benchmark']}"
             output.mkdir(parents=True)
             specification = {**job, "directory": str(output), "limits": pilot["limits"],
@@ -82,6 +85,7 @@ def run_batch(repo, pilot, prepared_plan, directory, model_names):
             with lock:
                 results[name].append(value)
                 save()
+            progress.set((name, job["index"]), "finished" if value.get("status") == "completed" else "failed")
             return value
 
         with ThreadPoolExecutor(max_workers=int(config["concurrency"])) as pool:

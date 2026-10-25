@@ -8,6 +8,7 @@ import sys
 
 from src.common.io import redact, write_json
 from src.common.config import parse_config_args
+from src.common.progress import Progress
 from .appserver import AppServer
 from .runner import home_lock, make_plan, open_thread, run_batch, save_plan
 from .settings import Settings, read_env
@@ -90,9 +91,13 @@ def main(argv=None):
                         (args.base_url or values.get(args.base_url_env, '')).rstrip('/'),
                         values.get(args.api_key_env, ''), args.codex, args.gpu)
     output = path(args.output)
+    progress = Progress("Map setup", [args.command])
+    progress.set(args.command, "running")
     try:
         if args.command == 'probe':
-            return 0 if asyncio.run(probe(settings, output, args.turn_timeout)) else 1
+            passed = asyncio.run(probe(settings, output, args.turn_timeout))
+            progress.set(args.command, "finished" if passed else "failed")
+            return 0 if passed else 1
         plan = make_plan(path(args.queue), repo, path(args.skill), settings, args.stage,
                          Path(sys.executable), args.scene, args.start, args.limit)
         if args.archive_root:
@@ -108,14 +113,17 @@ def main(argv=None):
         if any(output.resolve().is_relative_to((repo / s['output_dir']).resolve()) for s in plan['scenes']):
             raise ValueError('Batch output must not be inside a final scene archive')
         save_plan(plan, output, args.resume)
+        progress.set(args.command, "finished")
         if args.command == 'plan':
             print(json.dumps({'plan': str(output / 'plan.json'), 'scenes': plan['scene_count'],
                               'settings': settings.public()}, ensure_ascii=False, indent=2))
             return 0
         return 0 if asyncio.run(run_batch(plan, output, settings, args.max_turns, args.turn_timeout)) else 1
     except KeyboardInterrupt:
+        progress.set(args.command, "failed")
         return 130
     except Exception as error:
+        progress.set(args.command, "failed")
         print(redact(f'{type(error).__name__}: {error}', (settings.api_key,)), file=sys.stderr)
         return 1
 

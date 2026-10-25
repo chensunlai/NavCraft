@@ -19,6 +19,7 @@ from .metrics import spl
 from .runner import INFRASTRUCTURE_REASONS, validate_single_floor
 from .samples import read_config
 from src.common.config import parse_config_args
+from src.common.progress import Progress
 
 
 def inside(point, polygon):
@@ -189,6 +190,7 @@ def run_sequence(repo, model_config, scenario_path, scene_map, directory, enviro
               "status": "running", "started_at": datetime.now(timezone.utc).isoformat(),
               "planned_rounds": len(scenario["rounds"]), "planned_navigation": planned, "rounds": []}
     environment = session = None
+    progress = Progress(model_config["model"] + " rounds", [row["id"] for row in scenario["rounds"]])
 
     def save():
         navigation = [row for row in result["rounds"] if row["kind"] == "navigation" and row["status"] == "completed"]
@@ -222,6 +224,7 @@ def run_sequence(repo, model_config, scenario_path, scene_map, directory, enviro
         session = open_session(repo, model_config, directory, environment, Path(scene_map))
         rooms = {room["id"]: room for room in scenario.get("private_rooms", [])}
         for index, specification in enumerate(scenario["rounds"], 1):
+            progress.set(specification["id"], "running")
             result["active_round"] = {"round": index, "id": specification["id"], "kind": specification["kind"]}
             save()
             if specification.get("teleport"):
@@ -262,6 +265,7 @@ def run_sequence(repo, model_config, scenario_path, scene_map, directory, enviro
                 row["spl"] = spl(row["success"], shortest, row["path_length"])
             write_json(directory / f"private/rounds/{index:02d}-{row['id']}.json", {**row, "trajectory": trajectory})
             result["rounds"].append(row)
+            progress.set(row["id"], "failed" if failed else "finished")
             result["active_round"] = None
             save()
             if failed:
@@ -270,6 +274,8 @@ def run_sequence(repo, model_config, scenario_path, scene_map, directory, enviro
         else:
             result.update(status="completed", finish_reason="sequence_complete")
     except Exception as error:
+        if result.get("active_round"):
+            progress.set(result["active_round"]["id"], "failed")
         result.update(status="infrastructure_error", finish_reason="worker_error",
                       error=redact(str(error)), error_type=type(error).__name__)
         (directory / "private/error.txt").write_text(traceback.format_exc())

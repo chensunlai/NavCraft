@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from src.common.config import merge_config
+from src.common.progress import Progress
 
 from .samples import load_episodes, plan, read_config
 
@@ -47,7 +48,10 @@ def main(argv=None):
         if not args.episode or args.model == "all":
             parser.error("run requires --episode and a single --model")
         config["episodes"] = [args.episode]
+    progress = Progress("Prepare", ["samples and maps"])
+    progress.set("samples and maps", "running")
     prepared = plan(REPO, config)
+    progress.set("samples and maps", "finished")
     if args.command == "doctor":
         models = {name: merge_config(read_config(REPO / path), config["model_overrides"])
                   for name, path in config["models"].items()}

@@ -6,6 +6,7 @@ from pathlib import Path
 import traceback
 
 from src.common.io import redact, write_json
+from src.common.progress import Progress
 from src.environment import Environment
 from .metrics import score_episode, score_goal
 
@@ -58,7 +59,9 @@ def execute_goals(environment, session, episode, limits, directory):
     rows = []
     finish_reason = "completed"
     infrastructure_error = False
+    progress = Progress("Goals", range(len(episode.goals)))
     for index, goal in enumerate(episode.goals):
+        progress.set(index, "running")
         shortest = environment.distance(goal["positions"])
         start_steps, start_length = environment.steps, environment.path_length
         images = ()
@@ -76,6 +79,7 @@ def execute_goals(environment, session, episode, limits, directory):
                    answer=result.answer, requests=result.requests)
         rows.append(row)
         write_json(directory / "private/goals.json", rows)
+        progress.set(index, "failed" if result.reason in INFRASTRUCTURE_REASONS else "finished")
         # These conditions cannot be fairly scored as navigation failures.
         if result.reason in INFRASTRUCTURE_REASONS:
             infrastructure_error = True

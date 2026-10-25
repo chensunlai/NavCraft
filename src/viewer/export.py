@@ -1,5 +1,7 @@
 """Export saved continuous navigation runs into an independent offline website."""
 
+from src.common.progress import Progress
+
 import argparse
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -270,10 +272,12 @@ def export_sequence(run_dir, output_dir) -> Path:
     output.mkdir(parents=True, exist_ok=True)
     assets = _Assets(output)
     models, scene_map, scenario = [], None, None
-    for model_dir in sorted(path for path in run_dir.iterdir() if path.is_dir()):
-        if not (model_dir / "result.json").is_file():
-            continue
+    directories = sorted(path for path in run_dir.iterdir() if path.is_dir() and (path / "result.json").is_file())
+    progress = Progress("Export models", [path.name for path in directories])
+    for model_dir in directories:
+        progress.set(model_dir.name, "running")
         model = _model_export(model_dir, output, assets)
+        progress.set(model_dir.name, "finished" if model is not None else "failed")
         if model is not None:
             models.append(model)
             scene_map = scene_map or _read(model_dir / "workspace/scene/map.json")

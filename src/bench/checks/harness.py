@@ -12,6 +12,7 @@ REPO = Path(__file__).resolve().parents[3]
 from src.bench.samples import load_episodes, map_directory, read_config
 from src.common.io import write_json
 from src.common.config import merge_config
+from src.common.progress import Progress
 from src.environment import Environment
 from src.harness.session import PromptLimits, open_session
 
@@ -32,6 +33,8 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     env = Environment(episode, {"scenes": str(REPO / pilot["environment"]["scenes"]), "gpu": args.gpu}, output / "private/environment")
     session = None
+    progress = Progress(args.mode, ["check"])
+    progress.set("check", "running")
     try:
         if args.mode == "local":
             first = env.observe()
@@ -83,7 +86,11 @@ def main():
             result = {"kind": "integration_check", "model": config["model"], "reasoning_effort": config["reasoning_effort"],
                       "prompts": results, "gpu": args.gpu, "checks": checks, "passed": all(checks.values())}
         write_json(output / "check.json", result)
+        progress.set("check", "finished" if result.get("passed", True) else "failed")
         print(json.dumps({"output": str(output), **result}, ensure_ascii=False), flush=True)
+    except BaseException:
+        progress.set("check", "failed")
+        raise
     finally:
         if session is not None:
             session.close()

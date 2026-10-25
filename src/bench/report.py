@@ -6,6 +6,7 @@ import math
 from pathlib import Path
 
 from src.common.io import write_json
+from src.common.progress import Progress
 from .batch import summarize
 
 
@@ -36,9 +37,10 @@ def collect_report(directory):
     groups, episodes = [], []
     # A model directory is created when its first worker starts. No credentials or
     # current source configuration are needed to read an existing run.
-    for model_dir in sorted(p for p in directory.iterdir() if p.is_dir()):
-        if not any(model_dir.glob("*/result.json")):
-            continue
+    directories = sorted(p for p in directory.iterdir() if p.is_dir() and any(p.glob("*/result.json")))
+    progress = Progress("Report models", [p.name for p in directories])
+    for model_dir in directories:
+        progress.set(model_dir.name, "running")
         model_rows = []
         for job in jobs:
             case = model_dir / f"{job['index']:03d}-{job['benchmark']}"
@@ -84,6 +86,7 @@ def collect_report(directory):
                           "cost": None, "status": "missing",
                           "reason": "Token/cache/cost usage is not recorded in these plan/result/request files."},
             })
+        progress.set(model_dir.name, "finished")
     return {"generated_at": datetime.now(timezone.utc).isoformat(), "directory": str(directory),
             "complete": bool(groups) and all(g["complete"] for g in groups),
             "groups": groups, "episodes": episodes}
