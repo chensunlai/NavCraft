@@ -16,7 +16,8 @@ def refresh(root, write=False):
     base = (path.parent/manifest.get('checksum_path_base','..')).resolve()
     if base != root:
         raise ValueError('expected checksum_path_base to resolve to scene root')
-    excluded = {'raw/manifest.json','raw/validation.json','raw/standard_archive_validation.json'}
+    excluded = {'raw/manifest.json','raw/validation.json','raw/standard_archive_validation.json',
+                'raw/events.jsonl','raw/result.json','raw/result.json.tmp','raw/stderr.log','raw/prompt.md'}
     hashes = {}
     for file in sorted(root.rglob('*')):
         name = file.relative_to(root).as_posix()
