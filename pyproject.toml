@@ -2,7 +2,7 @@
 name = "navcraft-lite"
 version = "0.0.0"
 requires-python = ">=3.10"
-dependencies = ["numpy", "Pillow", "PyYAML", "plyfile", "tokenizers", "scipy", "jsonschema", "matplotlib"]
+dependencies = ["numpy", "Pillow", "PyYAML", "tokenizers", "scipy", "jsonschema", "matplotlib"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,4 +1,4 @@
-"""Offline preparation and episode evaluation entry points."""
+"""Evaluation entry points for frozen tasks and prepared maps."""
 
 import argparse
 from datetime import datetime, timezone
@@ -6,7 +6,6 @@ import importlib.util
 import json
 from pathlib import Path
 
-from src.common.io import write_json
 from .samples import load_episodes, plan, read_config
 
 REPO = Path(__file__).resolve().parents[2]
@@ -14,7 +13,7 @@ REPO = Path(__file__).resolve().parents[2]
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["doctor", "prepare", "run", "pilot", "worker", "report"])
+    parser.add_argument("command", choices=["doctor", "run", "pilot", "worker", "report"])
     parser.add_argument("--config", type=Path, default=REPO / "config/pilot.yaml")
     parser.add_argument("--model", choices=["all", "deepseek", "qwen27", "sol"], default="all")
     parser.add_argument("--episode", help="Frozen canonical ID for run")
@@ -52,19 +51,10 @@ def main(argv=None):
                           "maps_ready": sum(Path(j["map"]).is_file() for j in prepared["jobs"]),
                           "dispatch_order": prepared["dispatch_order"]}, indent=2))
         return 0
-    if args.command == "prepare":
-        from src.dataset.wall_maps import build
-        for job in prepared["jobs"]:
-            target = Path(job["map"])
-            if not target.is_file():
-                build(job["scene"], job["floor_height"], target.parent)
-            print(json.dumps({"episode_id": job["episode_id"], "map": str(target)}), flush=True)
-        output = args.output or REPO / "cache/pilot-plan.json"
-        write_json(output, prepared)
-        return 0
     missing = [j["map"] for j in prepared["jobs"] if not Path(j["map"]).is_file()]
     if missing:
-        parser.error("Wall maps are not prepared; run `python -m src.bench prepare` first")
+        parser.error("Prepared wall maps are missing; Bench only loads existing map.json files. "
+                     "Expected paths: " + ", ".join(dict.fromkeys(missing)))
     from .batch import run_batch
     output = args.output or REPO / "runs" / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-pilot")
     models = list(config["models"]) if args.model == "all" else [args.model]

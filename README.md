@@ -19,9 +19,6 @@ export NAVCRAFT_PYTHON=/home/chen/.local/anaconda3/envs/vln/bin/python
 ## Run
 
 ```bash
-# Offline semantic wall extraction; no model requests.
-"$NAVCRAFT_PYTHON" -m src.bench prepare
-
 # One frozen sample.
 "$NAVCRAFT_PYTHON" -m src.bench run --model sol \
   --episode objnav:val:6s7QHgap2fW:chair:1
@@ -50,7 +47,7 @@ This preserves one environment, Pi session and memory across all requests. Expli
 
 ## Boundaries and records
 
-- `src/dataset`: official episode readers and offline semantic wall extraction.
+- `src/dataset`: official episode readers; no map construction during evaluation.
 - `src/environment`: fresh observations, panorama, adaptive atomic motion, private pose and microstep path.
 - `src/harness`: seven tools, entity memory, map rendering, public state and session lifecycle.
 - `src/agent-core`: Pi session, model transport, Coding sandbox, compaction and request ledger.
@@ -58,7 +55,9 @@ This preserves one environment, Pi session and memory across all requests. Expli
 
 Each episode records `result.json`, public files under `workspace/`, and private prompts, scoring, actual model/tool events and content-addressed blobs under `private/`. Pi's native session is under `private/pi/sessions/`. Batch `summary.json` reports completion coverage as well as success; infrastructure errors remain explicit. Service outages retry unchanged model decisions without charging normal budgets or outage waiting time. Motion is never automatically replayed.
 
-Walls come from original semantic triangles at floor+1m, not manually built scene maps. Incomplete source labels can leave gaps; blank map space is not a traversability guarantee.
+Bench loads prepared `map.json` files from `cache/wall_maps/<scene>-<start-height-mm>/`; `doctor` reports how many are present. Sequence runs accept an explicit `--map`. Existing maps and their provenance are preserved. Blank map space is not a traversability guarantee.
+
+The former semantic wall-slice builder and its tests are archived in [archive/wall_maps](archive/wall_maps/README.md). Wall construction is no longer a Bench command or runtime dependency.
 
 ## Checks
 
