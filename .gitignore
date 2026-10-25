@@ -4,6 +4,7 @@
 /model
 /runs
 /cache/
+/archive/
 /outputs/
 
 # Credentials and local environments.
