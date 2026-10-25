@@ -1,0 +1,3 @@
+extends: pilot.yaml
+models:
+  astra: config/models/astra.yaml

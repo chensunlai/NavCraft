@@ -2,9 +2,10 @@
 
 from pathlib import Path
 import re
+import sys
 
 REPO = Path(__file__).resolve().parents[2]
-PYTHON = "/home/chen/.local/anaconda3/envs/vln/bin/python"
+PYTHON = sys.executable
 
 
 def credentials(config, repo=REPO):

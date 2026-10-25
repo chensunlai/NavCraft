@@ -1,0 +1,6 @@
+environment:
+  scenes: data/nas/scene_datasets
+  gpus:
+  - 0
+  - 1
+  seed: 0

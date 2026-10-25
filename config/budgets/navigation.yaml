@@ -1,0 +1,4 @@
+limits:
+  max_actions: 500
+  max_requests: 150
+  seconds: 3600

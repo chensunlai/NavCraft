@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 
 from src.common.io import redact, write_json
+from src.common.config import parse_config_args
 from .appserver import AppServer
 from .runner import home_lock, make_plan, open_thread, run_batch, save_plan
 from .settings import Settings, read_env
@@ -38,6 +39,7 @@ def parser():
     p.add_argument('--gpus', type=int, choices=[0, 1], nargs='+', default=[0, 1], help='GPU assignment for parallel workers')
     p.add_argument('--min-free-gb', type=float, default=20, help='Parallel dispatch pauses below this free disk space')
     p.add_argument('--output', type=Path, required=True, help='Batch logs/work directory, separate from final scene archives')
+    p.add_argument('--archive-root', type=Path, help='Independent scene destinations, e.g. a model comparison directory')
     p.add_argument('--scene-workspaces', action='store_true', help='Use each scene archive raw/ as its workspace')
     p.add_argument('--resume', action='store_true', help='Continue saved threads with the same plan and settings')
     p.add_argument('--max-turns', type=int, default=3, help='At most this many additional turns per scene per invocation')
@@ -75,7 +77,7 @@ async def probe(settings, output, timeout):
 
 def main(argv=None):
     p = parser()
-    args = p.parse_args(argv)
+    args = parse_config_args(p, argv, {'credentials': 'env', 'reasoning_effort': 'effort'})
     if args.start < 1 or (args.limit is not None and args.limit < 1) or args.max_turns < 1 or args.turn_timeout <= 0 or args.concurrency < 1 or args.min_free_gb < 0:
         p.error('start, limit, max-turns and turn-timeout must be positive')
     repo = args.repo.resolve()
@@ -93,6 +95,10 @@ def main(argv=None):
             return 0 if asyncio.run(probe(settings, output, args.turn_timeout)) else 1
         plan = make_plan(path(args.queue), repo, path(args.skill), settings, args.stage,
                          Path(sys.executable), args.scene, args.start, args.limit)
+        if args.archive_root:
+            queue_root = path(json.loads(path(args.queue).read_text())['output_root']).resolve()
+            for scene in plan['scenes']:
+                scene['output_dir'] = str(path(args.archive_root) / path(scene['output_dir']).resolve().relative_to(queue_root))
         if args.concurrency > 1:
             plan['parallel'] = {'concurrency': args.concurrency, 'gpus': args.gpus,
                                 'min_free_gb': args.min_free_gb}

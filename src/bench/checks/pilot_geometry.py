@@ -6,11 +6,9 @@ import json
 import math
 import os
 from pathlib import Path
-import sys
 import time
 
-REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO))
+REPO = Path(__file__).resolve().parents[3]
 os.environ.setdefault("__EGL_VENDOR_LIBRARY_FILENAMES", "/usr/share/glvnd/egl_vendor.d/10_nvidia.json")
 
 import matplotlib
@@ -89,13 +87,13 @@ def overlay(environment, episode, map_data, target, destination):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=REPO / "config/pilot.yaml")
+    parser.add_argument("--config", type=Path, action="append")
     parser.add_argument("--output", type=Path, default=REPO / "cache/pilot-geometry")
     parser.add_argument("--gpu", type=int, choices=[0, 1], default=1)
     args = parser.parse_args()
     import habitat_sim
 
-    config = read_config(args.config)
+    config = read_config(args.config or [REPO / "config/pilot.yaml"])
     planned = plan(REPO, config)
     episodes = load_episodes(REPO, planned["dispatch_order"])
     output = args.output.resolve()

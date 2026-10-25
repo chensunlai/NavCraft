@@ -1,0 +1,2 @@
+context_window: 32768
+compaction_threshold: 24576

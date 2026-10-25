@@ -1,0 +1,2 @@
+credentials: .env.harness-test
+api: openai-responses

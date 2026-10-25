@@ -1,0 +1,3 @@
+scenario: data/datasets/navcraft/qa_campaign_v2/scenario.json
+map: cache/wall_maps/QaLdnwvtxbs-L1/map.json
+scenes: data/nas/scene_datasets

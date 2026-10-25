@@ -6,7 +6,10 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import threading
+
+from src.common.config import merge_config
 
 from src.common.io import write_json
 from .samples import read_config
@@ -46,18 +49,19 @@ def run_batch(repo, pilot, prepared_plan, directory, model_names):
 
     def run_model(name, model_index):
         config_path = repo / pilot["models"][name]
-        config = read_config(config_path)
+        config = merge_config(read_config(config_path), pilot.get("model_overrides", {}))
 
         def execute(job):
             output = directory / name / f"{job['index']:03d}-{job['benchmark']}"
             output.mkdir(parents=True)
             specification = {**job, "directory": str(output), "limits": pilot["limits"],
                              "model_config": str(config_path),
+                             "model_overrides": pilot.get("model_overrides", {}),
                              "environment": {"scenes": str((repo / pilot["environment"]["scenes"]).resolve()),
                                              "gpu": (job["index"] + model_index) % 2,
                                              "seed": pilot["environment"].get("seed", 0)}}
             write_json(output / "job.json", specification)
-            command = [config["python"], "-m", "src.bench", "worker", "--job", str(output / "job.json")]
+            command = [config.get("python", sys.executable), "-m", "src.bench", "worker", "--job", str(output / "job.json")]
             with (output / "worker.log").open("w", encoding="utf-8") as stream:
                 environment = os.environ.copy()
                 environment.setdefault("__EGL_VENDOR_LIBRARY_FILENAMES", "/usr/share/glvnd/egl_vendor.d/10_nvidia.json")

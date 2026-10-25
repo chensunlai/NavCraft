@@ -1,0 +1,4 @@
+max_turns: 3
+turn_timeout: 3600
+min_free_gb: 20
+gpus: [0, 1]

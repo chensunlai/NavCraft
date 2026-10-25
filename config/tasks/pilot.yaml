@@ -1,0 +1,12 @@
+# Frozen official samples; alternate ObjectNav and R2R.
+episodes:
+- objnav:val:6s7QHgap2fW:chair:1
+- r2r:val_unseen:1652
+- objnav:val:LT9Jq6dN3Ea:bed:14
+- r2r:val_unseen:379
+- objnav:val:k1cupFYWXJ6:chair:11
+- r2r:val_unseen:166
+- objnav:val:wcojb4TFT35:bed:6
+- r2r:val_unseen:744
+- objnav:val:mL8ThkuaVTM:plant:11
+- r2r:val_unseen:281

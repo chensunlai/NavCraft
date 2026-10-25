@@ -4,10 +4,8 @@ import argparse
 import json
 import os
 from pathlib import Path
-import sys
 
-REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO))
+REPO = Path(__file__).resolve().parents[3]
 os.environ.setdefault("__EGL_VENDOR_LIBRARY_FILENAMES", "/usr/share/glvnd/egl_vendor.d/10_nvidia.json")
 
 class OfflineClient:

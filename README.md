@@ -10,24 +10,26 @@ Use the existing Habitat Python environment and build the local Coding Agent SDK
 git submodule update --init src/agent-core/pi
 npm ci --ignore-scripts
 npm run build
-export NAVCRAFT_PYTHON=/home/chen/.local/anaconda3/envs/vln/bin/python
-"$NAVCRAFT_PYTHON" -m src.bench doctor
+conda activate vln
+bash scripts/doctor.sh
 ```
 
-`data/` and `model/` point to local assets. `.env.harness` supplies `NAVCRAFT_TEST_BASE_URL` and `NAVCRAFT_TEST_API_KEY`; neither credentials nor assets enter Git. Model and reasoning settings live in `config/models/`.
+`data/` and `model/` point to local assets. `.env.harness-test` supplies `NAVCRAFT_TEST_BASE_URL` and `NAVCRAFT_TEST_API_KEY`; neither credentials nor assets enter Git. Model and reasoning settings live in `config/models/`.
 
 ## Run
 
+Reusable Bash entrypoints are listed in [scripts/README.md](scripts/README.md). They accept no arguments: edit paths/configs at the top and simple options in the command, then run `bash scripts/<name>.sh`. They use the active `python` environment, never a fixed interpreter path. Provider, model, task, environment, budget and tool configs compose in order; later values override earlier ones. The module commands below remain available for programmatic use.
+
 ```bash
 # One frozen sample.
-"$NAVCRAFT_PYTHON" -m src.bench run --model sol \
+python -m src.bench run --model sol \
   --episode objnav:val:6s7QHgap2fW:chair:1
 
 # Five ObjectNav and five R2R samples per model; dispatch alternates families.
-"$NAVCRAFT_PYTHON" -m src.bench pilot --model all
+python -m src.bench pilot --model all
 
 # Refresh a report from saved files, including while a run is in progress.
-"$NAVCRAFT_PYTHON" -m src.bench report --output runs/<run-name>
+python -m src.bench report --output runs/<run-name>
 ```
 
 Only physical GPUs 0 and 1 are permitted for simulation. The fixed pilot uses DeepSeek xhigh / Qwen27 medium / Sol high, with per-model concurrency 1 / 4 / 2. GOAT uses the same persistent session across subgoals, but is not part of this pilot.
@@ -37,7 +39,7 @@ Programmatic callers use `src.harness.open_session(...)` and successive `session
 For a continuous development check, load a frozen local task chain:
 
 ```bash
-"$NAVCRAFT_PYTHON" -m src.bench.sequence \
+python -m src.bench.sequence \
   --scenario data/datasets/navcraft/qa_campaign_v2/scenario.json \
   --map cache/wall_maps/QaLdnwvtxbs-L1/map.json \
   --model-config <model-config.json> --output runs/<new-run> --gpu 1
@@ -57,17 +59,17 @@ Each episode records `result.json`, public files under `workspace/`, and private
 
 Bench loads prepared `map.json` files from `cache/wall_maps/<scene>-<start-height-mm>/`; `doctor` reports how many are present. Sequence runs accept an explicit `--map`. Existing maps and their provenance are preserved. Blank map space is not a traversability guarantee.
 
-The former semantic wall-slice builder and its tests are archived in [archive/wall_maps](archive/wall_maps/README.md). Wall construction is no longer a Bench command or runtime dependency.
+The former semantic wall-slice builder and its tests are archived in `cache/archive/` (local files only). Wall construction is no longer a Bench command or runtime dependency.
 
 ## Checks
 
 ```bash
 npm run check
 npm run test:pi
-"$NAVCRAFT_PYTHON" -m pytest -q
-"$NAVCRAFT_PYTHON" scripts/check_harness.py local --gpu 0
-"$NAVCRAFT_PYTHON" scripts/check_harness.py probe --model sol --gpu 0
-"$NAVCRAFT_PYTHON" scripts/check_pilot_geometry.py --help
+python -m pytest -q
+python -m src.bench.checks.harness local --gpu 0
+python -m src.bench.checks.harness probe --model sol --gpu 0
+python -m src.bench.checks.pilot_geometry --help
 ```
 
 Integration probes and program-assisted physical references are recorded separately from model navigation scores. The Core keeps three recent image rounds and uses native compaction with a short visible summary plus the public factual head and two complete interaction rounds.
@@ -80,7 +82,7 @@ Super depth is stored privately as uint16 PNG with 0.001 metres per integer. A v
 
 ```bash
 # Physical tool validation; no model calls. Use a new output directory each time.
-"$NAVCRAFT_PYTHON" scripts/check_super_tools.py --gpu 1 \
+python -m src.bench.checks.super_tools --gpu 1 \
   --output cache/validation/super-tools-check
 ```
 

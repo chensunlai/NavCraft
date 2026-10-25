@@ -1,0 +1,6 @@
+extends:
+  - ../providers/221.yaml
+  - ../runtime/navigation.yaml
+model: gpt-6-astra
+reasoning_effort: high
+concurrency: 1

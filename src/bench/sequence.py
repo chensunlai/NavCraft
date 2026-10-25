@@ -18,6 +18,7 @@ from src.harness.session import PromptLimits, open_session
 from .metrics import spl
 from .runner import INFRASTRUCTURE_REASONS, validate_single_floor
 from .samples import read_config
+from src.common.config import parse_config_args
 
 
 def inside(point, polygon):
@@ -288,11 +289,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scenario", type=Path, required=True)
     parser.add_argument("--map", type=Path, required=True)
-    parser.add_argument("--model-config", type=Path, required=True)
+    parser.add_argument("--model-config", type=Path, action="append", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--gpu", type=int, choices=(0, 1), required=True)
     parser.add_argument("--scenes", type=Path, default=Path("data/nas/scene_datasets"))
-    args = parser.parse_args()
+    args = parse_config_args(parser)
     result = run_sequence(Path(__file__).resolve().parents[2], read_config(args.model_config), args.scenario,
                           args.map, args.output, {"gpu": args.gpu, "scenes": str(args.scenes.resolve())})
     print(json.dumps({"directory": str(args.output), "status": result["status"], "completed_rounds": result["completed_rounds"]}))

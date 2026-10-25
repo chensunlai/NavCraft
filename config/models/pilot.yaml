@@ -1,0 +1,4 @@
+models:
+  deepseek: config/models/deepseek.yaml
+  qwen27: config/models/qwen27.yaml
+  sol: config/models/sol.yaml

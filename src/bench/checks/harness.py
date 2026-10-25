@@ -6,13 +6,12 @@ import json
 import math
 import os
 from pathlib import Path
-import sys
 
-REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO))
+REPO = Path(__file__).resolve().parents[3]
 
 from src.bench.samples import load_episodes, map_directory, read_config
 from src.common.io import write_json
+from src.common.config import merge_config
 from src.environment import Environment
 from src.harness.session import PromptLimits, open_session
 
@@ -20,12 +19,14 @@ from src.harness.session import PromptLimits, open_session
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=["local", "probe", "compaction"])
-    parser.add_argument("--model", choices=["deepseek", "qwen27", "sol"], default="sol")
+    parser.add_argument("--model", choices=["deepseek", "qwen27", "sol", "astra"], default="sol")
+    parser.add_argument("--config", type=Path, action="append")
+    parser.add_argument("--model-config", type=Path, action="append", default=[])
     parser.add_argument("--gpu", type=int, choices=[0, 1], default=0)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     os.environ.setdefault("__EGL_VENDOR_LIBRARY_FILENAMES", "/usr/share/glvnd/egl_vendor.d/10_nvidia.json")
-    pilot = read_config(REPO / "config/pilot.yaml")
+    pilot = read_config(args.config or [REPO / "config/pilot.yaml"])
     episode = load_episodes(REPO, pilot["episodes"][:1])[0]
     output = args.output or REPO / "runs" / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + f"-lite-{args.mode}-{args.model}")
     output.mkdir(parents=True, exist_ok=False)
@@ -50,7 +51,7 @@ def main():
             result = {"kind": "integration_check", "model_called": False, "panorama_restored": True,
                       "actions": checks, "path_length": env.path_length, "gpu": args.gpu}
         else:
-            config = read_config(REPO / pilot["models"][args.model])
+            config = merge_config(read_config(REPO / pilot["models"][args.model]), read_config(args.model_config))
             if args.mode == "compaction":
                 config = {**config, "compaction_threshold": 6000}
             session = open_session(REPO, config, output, env, map_directory(REPO, episode) / "map.json")

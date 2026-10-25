@@ -4,7 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 
-import yaml
+from src.common.config import read_config
 
 from src.dataset.episodes import create_source
 
@@ -17,10 +17,6 @@ SOURCES = {
              "selection_file": "data/samples/goat20/selected/goat20.json",
              "goat_max_description_words": 55},
 }
-
-
-def read_config(path):
-    return yaml.safe_load(Path(path).read_text(encoding="utf-8"))
 
 
 def load_episodes(repo, ids):

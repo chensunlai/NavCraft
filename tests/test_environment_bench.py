@@ -269,4 +269,4 @@ def test_pilot_exact_ids_and_alternation():
     assert config["environment"]["gpus"] == [0, 1]
     configs = [read_config(repo / path) for path in config["models"].values()]
     assert [c["concurrency"] for c in configs] == [1, 4, 2]
-    assert all(c["credentials"] == ".env.harness" for c in configs)
+    assert all(c["credentials"] == ".env.harness-test" for c in configs)
