@@ -299,6 +299,9 @@ class HarnessSession:
         row = self.observations.capture(observation, self.environment.steps, **metadata)
         if self.super_tools:
             self.super_tools.record_frame(observation, row, body_pose)
+        elif observation.depth is not None and getattr(self.environment, "config", {}).get("private_depth"):
+            from .super_tools import SuperTools
+            SuperTools(self).record_frame(observation, row, body_pose)
         semantic = getattr(observation, "semantic", None)
         if semantic is not None:
             directory = self.private / "semantics"

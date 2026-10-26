@@ -45,10 +45,10 @@ def setup(tmp_path):
                           [0, 0, 0, 1], [], "fixture")
     environments, sessions = [], []
 
-    def make(name, state=None):
-        env = Environment(episode, {"gpu": 0, "tool_tier": "super"}, tmp_path / name / "env", FakeSimulator)
+    def make(name, state=None, tool_tier="super"):
+        env = Environment(episode, {"gpu": 0, "tool_tier": tool_tier, "private_depth": True}, tmp_path / name / "env", FakeSimulator)
         environments.append(env)
-        session = open_session(Path(__file__).resolve().parents[1], config, tmp_path / name / "run", env,
+        session = open_session(Path(__file__).resolve().parents[1], {**config, "tool_tier": tool_tier}, tmp_path / name / "run", env,
                                scene, state, start_core=False, client_factory=Client)
         sessions.append(session)
         return session
@@ -115,3 +115,35 @@ def test_snapshot_rejects_busy_sessions(setup, tmp_path):
     session._busy = True
     with pytest.raises(RuntimeError, match="busy"):
         session.snapshot(tmp_path / "bad")
+
+
+def test_basic_label_capture_keeps_depth_private_without_enabling_super_tools(setup):
+    from src.harness.geometry import Geometry
+    session = setup("basic-labels", tool_tier="basic")
+    assert session.super_tools is None
+    assert "locate" not in {tool["name"] for tool in session.tool_specs}
+    depth, camera = Geometry(session.workspace, session.private, session.transform).load_frame(session.current["frame"])
+    assert depth.shape == (480, 640) and depth[240, 320] == 2
+    assert "depth" not in json.dumps(session.observations.get(session.current["frame"]))
+
+
+def test_motion_window_allows_one_closing_round_without_repeating_motion(setup):
+    class MovingClient(Client):
+        def run_prompt(self, text, images, handler, seconds, **kwargs):
+            kwargs["on_event"]({"type": "event", "event": {"type": "message_end", "data": {
+                "message": {"role": "assistant"}}}})
+            handler("one-step", "nav_step", {"actions": ["move_forward"]})
+            self.denied = handler("extra-step", "nav_step", {"actions": ["move_forward"]})
+            self.saved = handler("closing-memory", "memory_edit", {"operations": [
+                {"op": "create", "id": "O01", "type": "object", "fields": {"name": "chair"}}]})
+            return {"reason": "window_end"}
+
+    session = setup("window")
+    session._client_factory = MovingClient
+    session.begin_script("Find a chair.")
+    session.script_tool("nav_observe", {"mode": "current"})
+    result = session.continue_run(PromptLimits(max_actions=1, max_turns=6))
+    assert result.reason == "window_end" and result.actions == 1
+    assert session.client.denied["result"]["isError"]
+    assert not session.client.saved["result"]["isError"]
+    assert ("configure", {"maxTurns": 2}) in session.client.calls
