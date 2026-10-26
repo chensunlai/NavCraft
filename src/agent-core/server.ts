@@ -1,10 +1,12 @@
 import { createInterface } from "node:readline";
-import { resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Readable, Writable } from "node:stream";
 import type { AssistantMessage, ImageContent, TextContent, ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { convertToLlm, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { runtime, type RuntimeOptions } from "./session.js";
 import type { ExecutionPolicy } from "./sandbox.js";
 import type { PublicCheckpoint } from "./compaction.js";
@@ -27,7 +29,7 @@ export interface ToolReply {
   call_id: string;
   result: RemoteToolResult;
   checkpoint?: PublicCheckpoint;
-  control?: { stop_remaining_tools?: boolean; end_run?: boolean };
+  control?: { stop_remaining_tools?: boolean; end_run?: boolean; end_after_turn?: boolean };
 }
 
 interface Request { id: string; op: string; args?: Record<string, any>; }
@@ -46,6 +48,8 @@ interface PromptRun {
   globalRequestStart: number;
   unansweredCalls: Map<string, ToolCall>;
   startedCalls: Set<string>;
+  turns: number;
+  maxTurns?: number;
   lastMessage?: AgentMessage;
   lastAssistant?: AssistantMessage;
 }
@@ -62,6 +66,7 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
   let initializing = false;
   let closed = false;
   let endRun = false;
+  let endAfterTurn = false;
   let stopRemainingTools = false;
   let failureReason: string | undefined;
   let toolTimeoutSeconds = 120;
@@ -155,6 +160,12 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
         const previousFinish = active.session.agent.finishTurn;
         active.session.agent.finishTurn = async (context, signal) => {
           const decision = await previousFinish?.(context, signal);
+          if (!endRun && context.message.stopReason !== "error" && context.message.stopReason !== "aborted"
+              && context.message.stopReason !== "length" && (endAfterTurn
+              || (currentPrompt?.maxTurns !== undefined && currentPrompt.turns >= currentPrompt.maxTurns))) {
+            endRun = true;
+            failureReason ??= "window_end";
+          }
           return endRun ? { action: "end" } : decision || undefined;
         };
         active.session.subscribe((event) => {
@@ -162,6 +173,7 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
           if (event.type === "message_end" && currentPrompt) {
             currentPrompt.lastMessage = event.message;
             if (event.message.role === "assistant") {
+              currentPrompt.turns += 1;
               currentPrompt.lastAssistant = event.message;
               for (const block of event.message.content) if (block.type === "toolCall") currentPrompt.unansweredCalls.set(block.id, block);
             }
@@ -194,6 +206,7 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
         if (reply.checkpoint !== undefined) checkpoint = reply.checkpoint;
         if (reply.control?.stop_remaining_tools) stopRemainingTools = true;
         if (reply.control?.end_run) { endRun = true; stopRemainingTools = true; }
+        if (reply.control?.end_after_turn) endAfterTurn = true;
         call.cleanup();
         call.accept({ content: [...reply.result.content, ...labelledImages(visual, reply.result.images ?? [], reply.result.image_labels)], details: reply.result.details, isError: reply.result.isError });
         return { accepted: true, call_id: reply.call_id };
@@ -203,8 +216,49 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
         call.cleanup(); call.reject(error instanceof Error ? error : new Error(String(error))); throw error;
       }
     }
+    if (request.op === "export_state") {
+      if (running || promptStarting || pending.size || closed) throw new Error("Cannot export a busy or closed session");
+      const unpaired = new Set<string>();
+      for (const message of active!.session.messages) {
+        if (message.role === "assistant") {
+          for (const block of message.content) if (block.type === "toolCall") unpaired.add(block.id);
+        } else if (message.role === "toolResult") unpaired.delete(message.toolCallId);
+      }
+      if (unpaired.size) throw new Error("Cannot export a session with unmatched tool calls");
+      const messages = await Promise.all(convertToLlm(active!.session.messages).map(async (message) => {
+        if (!Array.isArray(message.content)) return message;
+        const content = await Promise.all(message.content.map(async (block) => {
+          if (block.type !== "image") return block;
+          const bytes = Buffer.from(block.data, "base64");
+          const hash = createHash("sha256").update(bytes).digest("hex");
+          const ext = block.mimeType === "image/jpeg" ? "jpg" : block.mimeType === "image/webp" ? "webp" : "png";
+          const ref = `observations/session/${hash}.${ext}`;
+          await mkdir(join(workspace, "observations/session"), { recursive: true });
+          await writeFile(join(workspace, ref), bytes);
+          return { type: "image", path: ref };
+        }));
+        return { ...message, content };
+      }));
+      return { messages, session_id: active!.session.sessionManager.getSessionId(),
+        session_file: active!.session.sessionManager.getSessionFile() };
+    }
     if (request.op === "set_checkpoint") { checkpoint = args.checkpoint; return { updated: true, revision: checkpoint?.revision }; }
     if (request.op === "configure") {
+      if (args.maxTurns !== undefined) {
+        if (!currentPrompt || !Number.isInteger(args.maxTurns) || args.maxTurns < 1
+            || args.maxTurns < currentPrompt.turns) {
+          throw new Error("maxTurns must be positive and not precede the active run's current turn");
+        }
+        currentPrompt.maxTurns = args.maxTurns;
+      }
+      if (args.allowedTools !== undefined) {
+        if (running || promptStarting) throw new Error("Cannot change tools during an active run");
+        const available = new Set(active!.session.getAllTools().map(tool => tool.name));
+        if (!Array.isArray(args.allowedTools) || args.allowedTools.some((name: unknown) => typeof name !== "string" || !available.has(name))) {
+          throw new Error("allowedTools must contain registered tool names");
+        }
+        active!.session.setActiveToolsByName(args.allowedTools);
+      }
       if (args.maxRequests !== undefined) {
         if (!Number.isInteger(args.maxRequests) || args.maxRequests < active!.budget.charged) {
           throw new Error("maxRequests must be an integer at least the charged requests already used");
@@ -213,32 +267,40 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
         active!.budget.exhausted = false;
       }
       if (args.compaction) active!.settingsManager.applyOverrides({ compaction: args.compaction });
-      const applied = { configured: true, compaction: active!.settingsManager.getCompactionSettings(active!.session.model) };
+      const applied = { configured: true, compaction: active!.settingsManager.getCompactionSettings(active!.session.model),
+        allowedTools: active!.session.getActiveToolNames(), maxTurns: currentPrompt?.maxTurns };
       active!.trace.emit("runtime_configured", applied);
       if (args.maxRequests !== undefined) active!.trace.emit("request_limit_configured", {
         maxRequests: active!.budget.caseLimit, used: active!.budget.used,
       });
       return applied;
     }
-    if (request.op === "prompt") {
+    if (request.op === "prompt" || request.op === "continue") {
       if (running || promptStarting || closed) throw new Error("A prompt is already running or the Core is closed");
       const text = args.text ?? args.message;
-      if (typeof text !== "string") throw new Error("prompt requires args.text");
+      if (request.op === "prompt" && typeof text !== "string") throw new Error("prompt requires args.text");
+      if (request.op === "continue" && (args.text !== undefined || args.message !== undefined || args.images?.length)) {
+        throw new Error("continue cannot append user text or images");
+      }
       const seconds = args.seconds ?? 600;
       if (!Number.isFinite(seconds) || seconds <= 0) throw new Error("prompt seconds must be positive");
+      if (args.maxTurns !== undefined && (!Number.isInteger(args.maxTurns) || args.maxTurns < 1)) {
+        throw new Error("maxTurns must be a positive integer");
+      }
       promptStarting = true;
       let visual: ImageContent[];
       try { visual = await loadImages(workspace, args.images, executionPolicy); }
       finally { promptStarting = false; }
       if (closed) throw new Error("Core closed before prompt start");
       interrupted.clear();
-      endRun = false; stopRemainingTools = false; failureReason = undefined;
+      endRun = false; endAfterTurn = false; stopRemainingTools = false; failureReason = undefined;
       const current = active!;
       const prompt: PromptRun = {
         id: request.id, messageStart: current.session.messages.length,
         sessionEntryStart: current.session.sessionManager.getLeafId(),
         requestStart: current.budget.used, globalRequestStart: current.budget.totalUsed,
         unansweredCalls: new Map(), startedCalls: new Set(),
+        turns: 0, maxTurns: args.maxTurns,
       };
       currentPrompt = prompt;
       current.trace.emit("prompt_started", {
@@ -272,6 +334,7 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
           requests: current.budget.used, global_requests: current.budget.totalUsed,
           prompt_requests: current.budget.used - prompt.requestStart,
           request_start: prompt.requestStart, global_request_start: prompt.globalRequestStart,
+          turns: prompt.turns,
           message_start: prompt.messageStart, message_end: current.session.messages.length,
           session_entry_start: prompt.sessionEntryStart, session_entry_end: current.session.sessionManager.getLeafId(),
           ...(error ? { error } : {}),
@@ -294,7 +357,10 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
           void current.session.abort();
         };
         timer = setTimeout(checkDeadline, seconds * 1000);
-        try { await current.session.prompt(text, { images: visual }); }
+        try {
+          if (request.op === "continue") await current.session.continueRun();
+          else await current.session.prompt(text, { images: visual });
+        }
         catch (cause) { error = String(cause); }
         finally { clearTimeout(timer); }
         // Deferred public checkpoints can follow the final assistant message.

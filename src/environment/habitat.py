@@ -2,6 +2,7 @@
 
 import json
 import math
+from copy import deepcopy
 from pathlib import Path
 
 from .base import ACTIONS, turn_action
@@ -21,7 +22,7 @@ class Environment:
         if tool_tier not in ("basic", "super"):
             raise ValueError("tool_tier must be basic or super")
         self.episode = episode
-        self.config = {**config, **SENSORS, "depth": tool_tier == "super"}
+        self.config = {**config, **SENSORS, "depth": tool_tier == "super" or config.get("private_depth", False)}
         self.directory = Path(directory).resolve()
         self.directory.mkdir(parents=True, exist_ok=True)
         if simulator_factory is None:
@@ -89,6 +90,22 @@ class Environment:
         self.motion_trajectory = [self.position()]
         self.trajectory_breaks = []
         self.current = None
+
+    def state(self):
+        """Private reproducible cut state, including counters and true motion history."""
+        return deepcopy({"pose": self.pose(), "steps": self.steps, "path_length": self.path_length,
+                "frame": self._frame, "trajectory": self.trajectory,
+                "motion_trajectory": self.motion_trajectory,
+                "trajectory_breaks": self.trajectory_breaks, "motions": self.motions})
+
+    def restore_state(self, state):
+        if self.steps:
+            raise ValueError("Cut state can only be restored before movement")
+        self.restore_pose(state["pose"])
+        for name in ("steps", "path_length", "trajectory", "motion_trajectory", "trajectory_breaks", "motions"):
+            if name in state:
+                setattr(self, name, deepcopy(state[name]))
+        self._frame = state.get("frame", 0)
 
     def relocate(self, pose):
         """Explicit host relocation; preserve budgets and break the plotted path."""

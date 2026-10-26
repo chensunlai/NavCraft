@@ -90,12 +90,20 @@ class CoreClient:
         return response.get("data")
 
     def run_prompt(self, text, images, tool_handler, seconds, on_event=None,
-                   cancel_event=None, prompt_id=None):
+                   cancel_event=None, prompt_id=None, mode="prompt", max_turns=None):
         """Pump callbacks while Pi runs; never wait for settled before handling tools."""
         prompt_id = prompt_id or uuid.uuid4().hex
         wait_before = wait_seconds(self.directory)
-        self.request("prompt", {"text": text, "images": images, "seconds": seconds},
-                     request_id=prompt_id)
+        if mode not in {"prompt", "continue"}:
+            raise ValueError("mode must be prompt or continue")
+        args = {"seconds": seconds}
+        if mode == "prompt":
+            args.update(text=text, images=images)
+        elif text or images:
+            raise ValueError("Continuation cannot append text or images")
+        if max_turns is not None:
+            args["maxTurns"] = max_turns
+        self.request(mode, args, request_id=prompt_id)
         deadline = time.monotonic() + seconds + 5
         abort_sent = False
         while True:

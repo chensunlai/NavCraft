@@ -207,7 +207,7 @@ test('actual Pi compaction persists the short summary and restores public facts 
     for (const message of [round(4), round(5), round(6), round(7)].flat()) {
       if (message.role === 'assistant' || message.role === 'toolResult') active.session.sessionManager.appendMessage(message);
     }
-    await active.session.prompt('Continue');
+    await active.session.continueRun();
     assert.equal(active.budget.used, 2);
     assert.equal(payloads[0].reasoning_effort, 'xhigh');
     assert.equal(payloads[0].max_completion_tokens, 8192);
@@ -226,6 +226,7 @@ test('actual Pi compaction persists the short summary and restores public facts 
     assert.match(input, /observe-2/);
     assert.match(input, /observe-3/);
     assert.match(input, /observe-7/);
+    assert.ok(!(payloads[1].messages as { role: string; content: unknown }[]).some(message => message.role === 'user' && message.content === 'Continue'));
     checkpoint.content = 'PUBLIC FACTS current_request=Find a table; target_frames=[]';
     checkpoint.images = ['observations/current.png'];
     checkpoint.image_labels = ['[CURRENT f_after_moving]'];

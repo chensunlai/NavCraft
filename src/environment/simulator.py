@@ -84,6 +84,7 @@ def camera_parameters(config: SensorConfig) -> dict:
 class HabitatSimulator:
     def __init__(self, episode, config: dict):
         self.config = SensorConfig.from_dict(config)
+        self.private_semantic = bool(config.get("private_semantic", False))
         scene_id = episode.scene_id.removeprefix("data/scene_datasets/")
         scene = Path(config["scenes"]) / scene_id
         if not scene.is_file():
@@ -343,12 +344,19 @@ class HabitatSimulator:
         if self.config.depth:
             depth = directory / f"depth_f_{frame:04d}.png"
             save_depth(depth, observations["depth"])
+        semantic = None
+        if self.private_semantic:
+            private = workspace / "private/semantic"
+            private.mkdir(parents=True, exist_ok=True)
+            semantic = private / f"f_{frame:04d}.npy"
+            np.save(semantic, np.asarray(observations["semantic"], dtype=np.int32), allow_pickle=False)
         return Observation(
             f"f_{frame:04d}",
             rgb,
             depth,
             self.pose(),
             camera_parameters(self.config),
+            semantic,
         )
 
     def panorama(self, workspace: Path, frame_ids: list[int]) -> list[Observation]:

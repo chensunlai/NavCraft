@@ -104,6 +104,143 @@ test("explicit state history imports paired calls and public images into a fresh
   } finally { await f.close(); }
 });
 
+test("native continuation adds no user message and decision windows finish every tool receipt", async () => {
+  const f = await setup([
+    message([
+      { type: "toolCall", id: "first", name: "inspect_local", arguments: { label: "one" } },
+      { type: "toolCall", id: "second", name: "inspect_local", arguments: { label: "two" } },
+    ], "toolUse"),
+    message([{ type: "text", text: "continued without another question" }], "stop"),
+  ]);
+  try {
+    await f.initialize({ initialMessages: [
+      { role: "user", content: "Original navigation request", timestamp: 0 },
+      message([{ type: "toolCall", id: "prefix", name: "inspect_local", arguments: { label: "old" } }], "toolUse"),
+      { role: "toolResult", toolCallId: "prefix", toolName: "inspect_local", content: [{ type: "text", text: "Original observed evidence" }], isError: false, timestamp: 1 },
+    ] });
+    f.send("window", "continue", { maxTurns: 1 });
+    for (const callId of ["first", "second"]) {
+      const call = await f.wait(record => record.type === "tool_request" && record.call_id === callId);
+      f.send(`reply-${callId}`, "tool_reply", { call_id: call.call_id,
+        result: { content: [{ type: "text", text: `${callId} actual receipt` }] } });
+    }
+    const first = await f.wait(record => record.type === "settled" && record.prompt_id === "window");
+    assert.equal(first.reason, "window_end");
+    assert.equal(first.turns, 1);
+    assert.equal(f.produced(), 1);
+    f.send("snapshot", "export_state");
+    const snapshot = await f.wait(record => record.id === "snapshot");
+    assert.equal(snapshot.ok, true, snapshot.error);
+    assert.equal(snapshot.data.messages.filter((m: { role: string }) => m.role === "user").length, 1);
+    assert.equal(snapshot.data.messages.at(-1).toolCallId, "second");
+    f.send("resume", "continue");
+    const second = await f.wait(record => record.type === "settled" && record.prompt_id === "resume");
+    assert.equal(second.reason, "model_finished");
+    assert.equal(second.answer, "continued without another question");
+    assert.equal(f.inputs[1].messages.filter((m: { role: string }) => m.role === "user").length, 1);
+    assert.deepEqual(f.inputs[1].messages.filter((m: { role: string }) => m.role === "toolResult").map((m: { toolCallId: string }) => m.toolCallId), ["prefix", "first", "second"]);
+  } finally { await f.close(); }
+});
+
+test("end_after_turn preserves remaining calls and exported images use immutable public paths", async () => {
+  const f = await setup([message([
+    { type: "toolCall", id: "one", name: "inspect_local", arguments: { label: "one" } },
+    { type: "toolCall", id: "two", name: "inspect_local", arguments: { label: "two" } },
+  ], "toolUse")]);
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+  try {
+    await writeFile(join(f.workspace, "observations", "old.png"), png);
+    await f.initialize();
+    f.send("window", "prompt", { text: "Inspect both places", images: ["observations/old.png"] });
+    await f.wait(record => record.type === "tool_request" && record.call_id === "one");
+    f.send("busy-snapshot", "export_state");
+    assert.equal((await f.wait(record => record.id === "busy-snapshot")).ok, false);
+    f.send("one-reply", "tool_reply", { call_id: "one", result: { content: [{ type: "text", text: "one" }] }, control: { end_after_turn: true } });
+    await f.wait(record => record.type === "tool_request" && record.call_id === "two");
+    f.send("two-reply", "tool_reply", { call_id: "two", result: { content: [{ type: "text", text: "two" }] } });
+    assert.equal((await f.wait(record => record.type === "settled")).reason, "window_end");
+    assert.equal(f.produced(), 1);
+    f.send("snapshot", "export_state");
+    const snapshot = await f.wait(record => record.id === "snapshot");
+    assert.equal(snapshot.ok, true, snapshot.error);
+    const image = snapshot.data.messages.flatMap((m: { content: unknown }) => Array.isArray(m.content) ? m.content : []).find((block: { type: string }) => block.type === "image");
+    assert.match(image.path, /^observations\/session\/[a-f0-9]{64}\.png$/);
+    assert.equal(image.data, undefined);
+    assert.deepEqual(await readFile(join(f.workspace, image.path)), png);
+    const receipts = snapshot.data.messages.filter((m: { role: string }) => m.role === "toolResult");
+    assert.equal(receipts.length, 2);
+    assert.equal(receipts.every((m: { isError: boolean }) => !m.isError), true);
+  } finally { await f.close(); }
+});
+
+test("continuation rejects a completed assistant response instead of inserting a synthetic prompt", async () => {
+  const f = await setup([message([{ type: "text", text: "done" }], "stop")]);
+  try {
+    await f.initialize();
+    f.send("first", "prompt", { text: "Answer once" });
+    await f.wait(record => record.type === "settled" && record.prompt_id === "first");
+    f.send("invalid", "continue");
+    const stopped = await f.wait(record => record.type === "settled" && record.prompt_id === "invalid");
+    assert.equal(stopped.reason, "runtime_error");
+    assert.match(stopped.error, /runnable context/);
+    assert.equal(f.produced(), 1);
+    f.send("wrong-input", "continue", { text: "not a continuation" });
+    assert.equal((await f.wait(record => record.id === "wrong-input")).ok, false);
+    f.send("wrong-limit", "prompt", { text: "next", maxTurns: 0 });
+    assert.equal((await f.wait(record => record.id === "wrong-limit")).ok, false);
+  } finally { await f.close(); }
+});
+
+test("tool permissions change between runs and are reflected in the native model loadout", async () => {
+  const f = await setup([
+    message([{ type: "text", text: "read-only answer" }], "stop"),
+    message([{ type: "toolCall", id: "restored", name: "inspect_local", arguments: { label: "again" } }], "toolUse"),
+  ]);
+  try {
+    await f.initialize();
+    f.send("restricted", "configure", { allowedTools: [] });
+    assert.deepEqual((await f.wait(record => record.id === "restricted")).data.allowedTools, []);
+    f.send("qa", "prompt", { text: "Answer without tools" });
+    await f.wait(record => record.type === "settled" && record.prompt_id === "qa");
+    assert.deepEqual(f.inputs[0].messages.flatMap((m: { role: string; toolsAdded?: { name: string }[] }) => m.role === "system" ? m.toolsAdded ?? [] : []), []);
+    f.send("invalid-tools", "configure", { allowedTools: ["not_registered"] });
+    assert.equal((await f.wait(record => record.id === "invalid-tools")).ok, false);
+    f.send("restore", "configure", { allowedTools: ["inspect_local"] });
+    assert.deepEqual((await f.wait(record => record.id === "restore")).data.allowedTools, ["inspect_local"]);
+    f.send("next", "prompt", { text: "Inspect again" });
+    await f.wait(record => record.type === "tool_request" && record.call_id === "restored");
+    f.send("reply", "tool_reply", { call_id: "restored", result: { content: [{ type: "text", text: "inspected" }] }, control: { end_after_turn: true } });
+    assert.equal((await f.wait(record => record.type === "settled" && record.prompt_id === "next")).reason, "window_end");
+    assert.deepEqual(f.inputs[1].messages.flatMap((m: { role: string; toolsAdded?: { name: string }[] }) => m.role === "system" ? m.toolsAdded ?? [] : []).map((tool: { name: string }) => tool.name), ["inspect_local"]);
+  } finally { await f.close(); }
+});
+
+test("an active window can reserve exactly one closing round without interrupting its receipt", async () => {
+  const f = await setup([
+    message([{ type: "toolCall", id: "move", name: "inspect_local", arguments: { label: "movement" } }], "toolUse"),
+    message([{ type: "toolCall", id: "record", name: "inspect_local", arguments: { label: "closing record" } }], "toolUse"),
+  ]);
+  try {
+    await f.initialize();
+    f.send("window", "prompt", { text: "Act then record", maxTurns: 6 });
+    await f.wait(record => record.type === "tool_request" && record.call_id === "move");
+    f.send("reserve", "configure", { maxTurns: 2 });
+    const configured = await f.wait(record => record.id === "reserve");
+    assert.equal(configured.ok, true, configured.error);
+    assert.equal(configured.data.maxTurns, 2);
+    f.send("move-reply", "tool_reply", { call_id: "move", result: { content: [{ type: "text", text: "motion budget reached" }] } });
+    await f.wait(record => record.type === "tool_request" && record.call_id === "record");
+    f.send("past", "configure", { maxTurns: 1 });
+    assert.equal((await f.wait(record => record.id === "past")).ok, false);
+    f.send("record-reply", "tool_reply", { call_id: "record", result: { content: [{ type: "text", text: "record saved" }] } });
+    const settled = await f.wait(record => record.type === "settled");
+    assert.equal(settled.reason, "window_end");
+    assert.equal(settled.turns, 2);
+    assert.equal(f.produced(), 2);
+    assert.equal(f.records.some(record => record.event?.type === "tool_call_cancelled"), false);
+  } finally { await f.close(); }
+});
+
 test("Responses explicitly sends non-strict Python tool schemas without requiring optional alternatives", async () => {
   const originalFetch = globalThis.fetch;
   const payloads: any[] = [];
