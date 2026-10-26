@@ -152,6 +152,48 @@ def test_map_pixels_and_near_query_use_global_memory_and_current_body(session):
     assert far["total"] == 0
 
 
+def test_location_updates_accumulate_evidence_but_explicit_replacement_is_respected(session):
+    first = session.current["frame"]
+    _, second = call(session, "observe", {})
+    _, third = call(session, "observe", {})
+    second, third = second["frame"], third["frame"]
+    _, created = call(session, "memory_edit", {"operations": [{
+        "op": "create", "id": "O01", "type": "object", "fields": {
+            "name": "chair", "location": {"image": first, "pixel": [320, 240]}}}]})
+    assert "error" not in created
+    _, updated = call(session, "memory_edit", {"operations": [
+        {"op": "update", "id": "O01", "fields": {
+            "location": {"image": frame, "pixel": [320, 240]}}}
+        for frame in (second, third)]})
+    assert "error" not in updated
+    assert session.memory.entities[0]["evidence"] == [first, second, third]
+    _, replaced = call(session, "memory_edit", {"operations": [{
+        "op": "update", "id": "O01", "fields": {
+            "evidence": [second], "location": {"image": third, "pixel": [320, 240]}}}]})
+    assert "error" not in replaced
+    assert session.memory.entities[0]["evidence"] == [second, third]
+
+
+def test_location_updates_keep_evidence_from_same_batch_merge(session):
+    frames = [session.current["frame"]]
+    for _ in range(4):
+        _, observed = call(session, "observe", {})
+        frames.append(observed["frame"])
+    operations = [{"op": "create", "id": identifier, "type": "object", "fields": {
+        "name": "chair", "location": {"image": frame, "pixel": [320, 240]}}}
+        for identifier, frame in zip(("O01", "O02"), frames)]
+    operations.extend([
+        {"op": "merge", "keep": "O01", "remove": ["O02"], "fields": {
+            "location": {"image": frames[2], "pixel": [320, 240]}}},
+        *({"op": "update", "id": "O01", "fields": {
+            "location": {"image": frame, "pixel": [320, 240]}}} for frame in frames[3:]),
+    ])
+    _, result = call(session, "memory_edit", {"operations": operations})
+    assert "error" not in result
+    assert len(session.memory.entities) == 1
+    assert session.memory.entities[0]["evidence"] == frames
+
+
 def test_door_single_pixel_location_and_goto_provenance(session):
     frame = session.current["frame"]
     _, result = call(session, "memory_edit", {"operations": [{
