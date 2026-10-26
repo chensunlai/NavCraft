@@ -236,3 +236,66 @@ def test_publish_excludes_declared_non_floor_and_does_not_invent_missing_layer(t
     assert document['source']['excluded_levels'] == [{'id': 'L2', 'reason': 'source_marks_non_floor'}]
     with pytest.raises(ValueError, match='exactly one floor'):
         load_wall_map(directory, [0, 3, 0])
+
+
+def test_publish_without_queue_preserves_existing_asset_index(tmp_path):
+    directory = publish(tmp_path)
+    root = tmp_path / 'maps'
+    mapping = {'hssd-hab/scenes/house.scene_instance.json': directory.relative_to(root).as_posix()}
+    (root / 'index.json').write_text(json.dumps(mapping))
+    publish_tree(root, root)
+    assert json.loads((root / 'index.json').read_text()) == mapping
+    assert map_directory(root, next(iter(mapping))) == directory
+
+
+def test_build_run_publishes_only_ready_and_checked_scenes(tmp_path):
+    source = publish(tmp_path)
+    build = tmp_path / 'build'
+    build.mkdir()
+    output = tmp_path / 'published'
+    scenes, summaries = [], []
+    cases = [('house', 'ready_for_review', 'ready_for_review', True),
+             ('running', 'running', 'running', False),
+             ('stale_summary', 'ready_for_review', 'running', True),
+             ('unchecked', 'ready_for_review', 'ready_for_review', False),
+             ('pending', 'pending', 'pending', False)]
+    for scene_id, summary_status, result_status, checked in cases:
+        path = source if scene_id == 'house' else tmp_path / 'maps/hm3d/val' / scene_id
+        path.mkdir(parents=True, exist_ok=True)
+        if scene_id != 'house':
+            # Deliberately invalid: these sources must not be parsed at all.
+            (path / 'scene.json').write_text('in-progress write')
+        result = build / f'{scene_id}.json'
+        result.write_text(json.dumps({'scene_id': scene_id, 'status': result_status,
+                                     'validation': {'structural_pass': checked}}))
+        scenes.append({'scene_id': scene_id, 'output_dir': str(path)})
+        summaries.append({'scene_id': scene_id, 'status': summary_status, 'result': str(result)})
+    (build / 'plan.json').write_text(json.dumps({'settings': {'repo': str(tmp_path)}, 'scenes': scenes}))
+    (build / 'summary.json').write_text(json.dumps({'scenes': summaries}))
+    results = publish_tree(tmp_path / 'maps', output, build_run=build)
+    assert sum(row['status'] == 'published' for row in results) == 1
+    assert sum(row['status'] == 'skipped' for row in results) == 4
+    assert (output / 'hm3d/val/00001-house/map.json').is_file()
+    assert not (output / 'hm3d/val/running').exists()
+    assert {row['scene'].split('/')[-1] for row in results if row['status'] == 'skipped'} == {
+        'running', 'stale_summary', 'unchecked', 'pending'}
+
+
+def test_publish_rechecks_build_result_before_replacing_frozen_map(tmp_path, monkeypatch):
+    from src.dataset import maps
+    directory = publish(tmp_path)
+    before = (directory / 'map.json').read_bytes()
+    result = tmp_path / 'result.json'
+    result.write_text(json.dumps({'scene_id': 'house', 'status': 'ready_for_review',
+                                 'validation': {'structural_pass': True}}))
+    check = maps._ready_result
+    checks = []
+    def resumed_build(path, scene_id):
+        checks.append(path)
+        if len(checks) == 2:
+            result.write_text(json.dumps({'scene_id': 'house', 'status': 'running'}))
+        check(path, scene_id)
+    monkeypatch.setattr(maps, '_ready_result', resumed_build)
+    with pytest.raises(ValueError, match='not finished'):
+        publish_map(directory, directory, build_result=result)
+    assert (directory / 'map.json').read_bytes() == before

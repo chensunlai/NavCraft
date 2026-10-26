@@ -55,7 +55,15 @@ def _archive_coordinates(scene):
         raise ValueError("Archive map coordinates must use metres")
 
 
-def publish_map(source, destination):
+def _ready_result(path, scene_id):
+    result = json.loads(Path(path).read_text())
+    if (result.get("scene_id") != scene_id or result.get("status") != "ready_for_review"
+            or result.get("validation", {}).get("structural_pass") is not True
+            or result.get("active_turn_id")):
+        raise ValueError("Build result is not finished and structurally checked")
+
+
+def publish_map(source, destination, *, build_result=None):
     """Convert a completed archive to one geometry-only map.json, atomically.
 
     Source can be an archive root with raw/, or the directory containing
@@ -73,6 +81,8 @@ def publish_map(source, destination):
         return json.loads(raw)
 
     scene = read("scene.json")
+    if build_result is not None:
+        _ready_result(build_result, scene["scene_id"])
     if scene.get("status") in {"partial", "blocked", "building", "pending"}:
         raise ValueError("Cannot publish an unfinished scene archive")
     _archive_coordinates(scene)
@@ -149,6 +159,8 @@ def publish_map(source, destination):
     if any(hashlib.sha256((source / name).read_bytes()).hexdigest() != digest
            for name, digest in hashes.items()):
         raise ValueError("Archive changed while publishing; retry after its build finishes")
+    if build_result is not None:
+        _ready_result(build_result, scene["scene_id"])
     write_json(destination / "map.json", value)
     return destination / "map.json"
 
@@ -202,37 +214,68 @@ def prepare_map(source, start_position, private_directory, layer="walls"):
     return destination
 
 
-def publish_tree(source_root, output_root, queues=()):
-    """Publish only declared scene directories, without walking raw assets."""
+def _build_sources(build_run, source_root):
+    """Select completed scenes from one frozen batch, never scan its raw tree."""
+    build_run = Path(build_run)
+    plan = json.loads((build_run / "plan.json").read_text())
+    summary = json.loads((build_run / "summary.json").read_text())
+    rows = {row["scene_id"]: row for row in summary["scenes"]}
+    repo = Path(plan["settings"]["repo"])
+    sources, skipped = [], []
+    for scene in plan["scenes"]:
+        source = (repo / scene["output_dir"]).resolve()
+        relative = source.relative_to(source_root.resolve()).as_posix()
+        row = rows.get(scene["scene_id"], {"status": "pending"})
+        try:
+            if row["status"] != "ready_for_review":
+                raise ValueError(f"Build status: {row['status']}")
+            result = repo / row["result"]
+            _ready_result(result, scene["scene_id"])
+        except (OSError, ValueError, KeyError) as error:
+            skipped.append({"scene": relative, "status": "skipped", "reason": str(error)})
+            continue
+        sources.append((source, result))
+    return sources, skipped
+
+
+def publish_tree(source_root, output_root, queues=(), build_run=None):
+    """Publish a finished batch, or a previously copied frozen archive tree."""
     from tqdm import tqdm
     source_root, output_root = Path(source_root), Path(output_root)
-    paths = set()
-    for pattern in ("*/*/scene.json", "*/*/*/scene.json", "*/*/raw/scene.json", "*/*/*/raw/scene.json"):
-        paths.update(source_root.glob(pattern))
-    sources = sorted({p.parent.parent if p.parent.name == "raw" else p.parent for p in paths})
-    results = []
-    published = set()
-    for source in tqdm(sources, desc="Publish maps", unit="scene"):
+    if build_run is not None:
+        source_root = source_root.resolve()
+        sources, results = _build_sources(build_run, source_root)
+    else:
+        paths = set()
+        for pattern in ("*/*/scene.json", "*/*/*/scene.json", "*/*/raw/scene.json", "*/*/*/raw/scene.json"):
+            paths.update(source_root.glob(pattern))
+        sources = [(p, None) for p in sorted({p.parent.parent if p.parent.name == "raw" else p.parent for p in paths})]
+        results = []
+    for source, result in tqdm(sources, desc="Publish maps", unit="scene"):
         relative = source.relative_to(source_root)
         try:
-            path = publish_map(source, output_root / relative)
+            path = publish_map(source, output_root / relative, build_result=result)
             results.append({"scene": relative.as_posix(), "status": "published", "path": str(path)})
-            published.add(relative.as_posix())
         except (OSError, ValueError, KeyError, TypeError) as error:
             results.append({"scene": relative.as_posix(), "status": "error", "error": str(error)})
-    index = {}
+    index_path = output_root / "index.json"
+    index = json.loads(index_path.read_text()) if index_path.exists() else {}
+    for asset, relative in index.items():
+        canonical_scene_id(asset)
+        if Path(relative).is_absolute() or ".." in Path(relative).parts:
+            raise ValueError("Invalid published map index path")
     for queue_path in queues:
         queue = json.loads(Path(queue_path).read_text())
         scene_root, archive_root = Path(queue["scene_root"]), Path(queue["output_root"])
         for scene in queue["scenes"]:
             relative = Path(scene["output_dir"]).relative_to(archive_root).as_posix()
-            if relative not in published:
+            if not (output_root / relative / "map.json").is_file():
                 continue
             asset = canonical_scene_id(Path(scene["scene_path"]).relative_to(scene_root).as_posix())
             if asset in index and index[asset] != relative:
                 raise ValueError(f"Conflicting map directories for {asset}")
             index[asset] = relative
-    write_json(output_root / "index.json", index)
+    write_json(index_path, index)
     return results
 
 
@@ -242,12 +285,15 @@ def main(argv=None):
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--queue", type=Path, action="append", default=[])
+    parser.add_argument("--build-run", type=Path,
+                        help="Frozen build batch directory; publish only finished, checked scenes")
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args(argv)
-    results = publish_tree(args.source_root, args.output_root, args.queue)
+    results = publish_tree(args.source_root, args.output_root, args.queue, args.build_run)
     write_json(args.report, results)
     print(json.dumps({"published": sum(r["status"] == "published" for r in results),
-                      "errors": sum(r["status"] == "error" for r in results), "report": str(args.report)}))
+                      "errors": sum(r["status"] == "error" for r in results),
+                      "skipped": sum(r["status"] == "skipped" for r in results), "report": str(args.report)}))
     return int(any(r["status"] == "error" for r in results))
 
 
