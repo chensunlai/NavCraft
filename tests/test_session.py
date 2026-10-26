@@ -48,9 +48,9 @@ class FakeClient:
 
     def run_prompt(self, text, images, handler, seconds, **kwargs):
         self.prompts += 1
-        handler(f"move-{self.prompts}", "nav_step", {"actions": ["move_forward"]})
+        handler(f"move-{self.prompts}", "move", {"mode": "steps", "actions": ["move_forward"]})
         handler(f"submit-{self.prompts}", "submit", {"answer": str(self.prompts)})
-        self.after_submit = handler(f"late-{self.prompts}", "nav_step", {"actions": ["move_forward"]})
+        self.after_submit = handler(f"late-{self.prompts}", "move", {"mode": "steps", "actions": ["move_forward"]})
         return {"reason": "host_end", "requests": self.prompts}
 
     def close(self):
@@ -101,19 +101,19 @@ def test_refresh_after_host_change_preserves_memory_and_session(session):
 
 
 def test_duplicate_tool_id_does_not_repeat_motion(session):
-    args = {"actions": ["move_forward"]}
-    first = session._tool("same", "nav_step", args)
-    assert session._tool("same", "nav_step", args) == first
+    args = {"mode": "steps", "actions": ["move_forward"]}
+    first = session._tool("same", "move", args)
+    assert session._tool("same", "move", args) == first
     assert session.environment.steps == 1
-    assert session._tool("same", "nav_step", {"actions": ["turn_left"]})["result"]["isError"]
+    assert session._tool("same", "move", {"mode": "steps", "actions": ["turn_left"]})["result"]["isError"]
     assert session.environment.steps == 1
 
 
 def test_batch_validated_before_moving_and_budget_enforced(session):
-    invalid = session._tool("bad", "nav_step", {"actions": ["move_forward", "fly"]})
+    invalid = session._tool("bad", "move", {"mode": "steps", "actions": ["move_forward", "fly"]})
     assert invalid["result"]["isError"] and session.environment.steps == 0
     session._action_end = 1
-    reply = session._tool("limited", "nav_step", {"actions": ["move_forward"] * 6})
+    reply = session._tool("limited", "move", {"mode": "steps", "actions": ["move_forward"] * 6})
     assert session.environment.steps == 1 and reply["control"]["end_run"]
     assert "budget" not in reply["result"]["content"][0]["text"]
 
@@ -122,7 +122,7 @@ def test_target_has_no_private_pose_and_panorama_restores_current(session):
     fid = session.register_target(session.environment.image)
     target = session.observations.get(fid)
     assert target["pose"] is None and target["step"] is None
-    reply = session._tool("pano", "nav_observe", {"mode": "panorama"})
+    reply = session._tool("pano", "observe", {"mode": "panorama"})
     metadata = json.loads(reply["result"]["content"][0]["text"])
     assert len(metadata["views"]) == 6
     assert session.current["frame"] == metadata["views"][0]["frame"]
@@ -165,7 +165,7 @@ def test_tools_and_public_data_boundary(session):
     for identifier, name, args in [
         ("read", "memory_read", {"ids": ["R01"]}),
         ("map", "map_view", {"view": "full"}),
-        ("image", "view_images", {"frames": [{"frame": session.current["frame"], "crop": [0, 0, .5, .5]}]}),
+        ("image", "view_images", {"images": [{"image": session.current["frame"], "crop": [0, 0, .5, .5]}]}),
     ]:
         reply = session._tool(identifier, name, args)
         assert not reply["result"]["isError"]
@@ -174,55 +174,88 @@ def test_tools_and_public_data_boundary(session):
         assert not any(word in json.dumps(reply["result"]) for word in ("rotation_xyzw", "world_from_optical", "success", "goal_id", "budget_remaining"))
 
 
-def test_task_memory_replaces_reads_clears_and_preserves_other_memory(session):
-    from src.harness.trace import read_trace
-
-    def call(call_id, args):
-        reply = session._tool(call_id, "task_memory", args)
-        assert not reply["result"]["isError"]
-        return reply, json.loads(reply["result"]["content"][0]["text"])
-
-    assert call("empty-notes", {"action": "read"})[1] == {"content": ""}
-    session._tool("spatial-record", "memory_edit", {"operations": [
-        {"op": "create", "id": "R01", "type": "room", "fields": {"name": "Hall"}}]})
-    original_entities = session.memory.entities
-    call("first-notes", {"action": "edit", "content": "Inspect the left exit."})
-    notes = "Left approach blocked.\nTry the right side; destination still uncertain."
-    reply, value = call("replace-notes", {"action": "edit", "content": notes})
-    assert value == {"updated": True}
-    assert json.loads(reply["checkpoint"]["content"].split("\n", 1)[1])["task_memory"] == notes
-    assert call("read-notes", {"action": "read"})[1] == {"content": notes}
-    assert session.memory.entities == original_entities
-    assert session.environment.steps == 0
-
+def test_free_workspace_notes_persist_without_fixed_task_memory(session):
+    notes = session.workspace / "scratch/route-notes.md"
+    notes.write_text("Left approach blocked. Try the right side.")
     session.prompt("First target")
     session.prompt("Next target")
-    assert json.loads(session.task_memory_path.read_text()) == {"content": notes}
-    assert json.loads(session.checkpoint()["content"].split("\n", 1)[1])["task_memory"] == notes
-    # prompt has submitted; use a new prompt to exercise tools through the normal lifecycle.
-    def clear_notes(*args, **kwargs):
-        call("clear-notes", {"action": "edit", "content": ""})
-        assert call("cleared-notes", {"action": "read"})[1] == {"content": ""}
-        return {"reason": "model_finished", "requests": 0}
-    session.client.run_prompt = clear_notes
-    session.prompt("Clear obsolete plans")
-    changes = [event for event in read_trace(session.private / "trace.jsonl") if event["type"] == "task_memory_changed"]
-    assert len(changes) == 3
-    assert changes[1]["data"] == {"before": {"content": "Inspect the left exit."}, "after": {"content": notes}}
+    assert notes.read_text() == "Left approach blocked. Try the right side."
+    assert not (session.workspace / "memory/task.json").exists()
+    assert "task_memory" not in {tool["name"] for tool in session.tool_specs}
+    facts = json.loads(session.checkpoint()["content"].split("\n", 1)[1])
+    assert "task_memory" not in facts
+    assert facts["scratch_files"] == ["scratch/route-notes.md"]
+    assert notes.read_text() not in session.checkpoint()["content"]
 
 
-@pytest.mark.parametrize("args", [{"action": "append", "content": "bad"}, {"action": "edit"},
-                                  {"action": "edit", "content": 7}, {"action": "read", "content": "bad"},
-                                  {"content": "missing action"}])
-def test_invalid_task_memory_call_preserves_notes(session, args):
-    session._tool("seed-notes", "task_memory", {"action": "edit", "content": "Keep this plan."})
-    before = session.task_memory_path.read_bytes()
-    revision = session.checkpoint()["revision"]
-    reply = session._tool("bad-notes", "task_memory", args)
-    assert reply["result"]["isError"]
-    assert session.task_memory_path.read_bytes() == before
-    assert session.checkpoint()["revision"] == revision
-    assert not session._broken
+def test_move_with_panorama_returns_one_reusable_image_and_keeps_motion_receipt(session):
+    arguments = {"mode": "steps", "actions": ["move_forward", "move_right"], "after": "panorama"}
+    receipt = session._tool("move-and-look", "move", arguments)
+    value = json.loads(receipt["result"]["content"][0]["text"])
+    assert not receipt["result"]["isError"]
+    assert value["done"] == [["move_forward", 1], ["move_right", 1]]
+    assert session.environment.steps == 2
+    assert value["after"]["executed"] and len(value["after"]["views"]) == 6
+    assert value["after"]["pose"] == session.current["pose"]
+    assert value["frame"] == value["after"]["views"][0]["frame"]
+    assert len(receipt["result"]["images"]) == 1
+    assert session.observations.image(value["after"]["image"])["path"] == receipt["result"]["images"][0]
+    assert session.observations.resolve_pixel(value["after"]["image"], [320, 260]) == (
+        value["after"]["views"][0]["frame"], [320, 234])
+    assert session._observations == 1
+    assert session._tool("move-and-look", "move", arguments) == receipt
+    assert session.environment.steps == 2 and session._observations == 1
+
+
+def test_observation_limit_is_per_prompt_and_shared_with_combined_move(session, monkeypatch):
+    receipts = []
+
+    def run_prompt(text, images, handler, seconds, **kwargs):
+        turn = len(receipts)
+        combined = handler(f"combined-{turn}", "move", {
+            "mode": "steps", "actions": ["move_forward"], "after": "panorama"})
+        extra = handler(f"extra-{turn}", "observe", {"mode": "current"})
+        receipts.append((combined, extra))
+        return {"reason": "completed"}
+
+    monkeypatch.setattr(session.client, "run_prompt", run_prompt)
+    for index in range(2):
+        result = session.prompt(f"Request {index}", limits=PromptLimits(max_observations=1))
+        assert result.actions == 1
+        combined, extra = receipts[-1]
+        assert not combined["result"]["isError"]
+        assert json.loads(combined["result"]["content"][0]["text"])["after"]["executed"]
+        assert extra["result"]["isError"]
+    assert session.environment.steps == 2 and session._observations == 2
+
+
+def test_observation_limit_does_not_erase_an_executed_move(session):
+    session._observation_end = 0
+    arguments = {"mode": "steps", "actions": ["move_forward"], "after": "panorama"}
+    receipt = session._tool("move-no-observation", "move", arguments)
+    value = json.loads(receipt["result"]["content"][0]["text"])
+    assert not receipt["result"]["isError"] and value["done"] == [["move_forward", 1]]
+    assert value["after"]["executed"] is False
+    assert "Observation limit" in value["after"]["reason"]
+    assert receipt["result"]["images"] == [session.current["path"]]
+    assert session.environment.steps == 1 and session._observations == 0
+    assert session._tool("move-no-observation", "move", arguments) == receipt
+    assert session.environment.steps == 1
+
+
+def test_failed_combined_observation_preserves_motion_and_ends_execution(session, monkeypatch):
+    def broken_panorama():
+        raise RuntimeError("fixture capture failure")
+
+    monkeypatch.setattr(session.environment, "panorama", broken_panorama)
+    receipt = session._tool("move-capture-failed", "move", {
+        "mode": "steps", "actions": ["move_forward"], "after": "panorama"})
+    value = json.loads(receipt["result"]["content"][0]["text"])
+    assert not receipt["result"]["isError"] and value["done"] == [["move_forward", 1]]
+    assert not value["after"]["executed"]
+    assert session.environment.steps == 1 and session._broken
+    assert receipt["control"]["end_run"] and session._stop_reason == "environment_error"
+    assert receipt["result"]["images"] == [session.current["path"]]
 
 
 def test_map_heading_and_bounds():
@@ -295,3 +328,42 @@ def test_memory_schema_exposes_legal_values_and_references():
     assert fields["connects"]["minItems"] == fields["connects"]["maxItems"] == 2
     assert fields["room"]["pattern"] == "^R[0-9]{2,4}$"
     assert "name" in fields and "evidence" in fields
+
+
+def test_small_memory_query_returns_details_and_bounded_evidence(session):
+    frames = [session.current["frame"], session.refresh_observation()["frame"],
+              session.refresh_observation()["frame"]]
+    edit = session._tool("two-candidates", "memory_edit", {"operations": [
+        {"op": "create", "id": identifier, "type": "object", "fields": {
+            "name": name, "category": "chair", "description": description,
+            "point": [.5, .5], "evidence": frames}}
+        for identifier, name, description in (
+            ("O01", "Wooden chair", "Wooden chair beside the window."),
+            ("O02", "Office chair", "Black chair beside the desk."))]})
+    written = json.loads(edit["result"]["content"][0]["text"])
+    assert {entity["id"] for entity in written["entities"]} == {"O01", "O02"}
+    assert all(entity["point"] == [.5, .5] for entity in written["entities"])
+    receipt = session._tool("candidates", "memory_read", {"filter": {"category": "chair"}})
+    records = json.loads(receipt["result"]["content"][0]["text"])["entities"]
+    assert [entity["description"] for entity in records] == [
+        "Wooden chair beside the window.", "Black chair beside the desk."]
+    assert all([item["frame"] for item in entity["evidence"]] == frames for entity in records)
+    assert 1 <= len(receipt["result"]["images"]) <= 2
+    assert len(set(receipt["result"]["images"])) == len(receipt["result"]["images"])
+    assert session.environment.steps == 0
+
+
+def test_map_returns_highlighted_memory_connections_without_changing_records(session):
+    session._tool("rooms-and-door", "memory_edit", {"operations": [
+        {"op": "create", "id": "R01", "type": "room", "fields": {"name": "Hall", "anchor": [.4, .5]}},
+        {"op": "create", "id": "R02", "type": "room", "fields": {"name": "Kitchen", "anchor": [.6, .5]}},
+        {"op": "create", "id": "D01", "type": "door", "fields": {
+            "name": "Kitchen entrance", "point": [.5, .5], "connects": ["R01", "R02"], "passage": "passed"}},
+    ]})
+    before = session.memory.path.read_bytes()
+    receipt = session._tool("mapped-door", "map_view", {"view": "full", "highlight": ["D01"]})
+    value = json.loads(receipt["result"]["content"][0]["text"])
+    assert len(value["records"]) <= 12
+    door = next(record for record in value["records"] if record["id"] == "D01")
+    assert door["connects"] == ["R01", "R02"] and door["passage"] == "passed"
+    assert session.memory.path.read_bytes() == before and session.environment.steps == 0

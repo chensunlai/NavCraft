@@ -20,7 +20,8 @@ import numpy as np
 from src.bench.runner import validate_single_floor
 from src.common.progress import Progress
 from src.dataset.maps import prepare_map
-from src.bench.samples import load_episodes, plan, read_config
+from src.bench.samples import load_episodes, plan
+from src.common.config import read_config
 from src.common.io import write_json
 from src.environment import Environment
 

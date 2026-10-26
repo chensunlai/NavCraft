@@ -46,45 +46,46 @@ def main():
     env = Environment(episode, {"gpu": args.gpu, "tool_tier": "super", "scenes": str(REPO / "data/nas/scene_datasets")},
                       output / "private/environment")
     records = []
-    progress = Progress("Super tools", ["nav_observe", "locate", "memory_edit", "memory_read", "map_view", "nav_face", "nav_goto", "validate"])
+    progress = Progress("Super tools", ["observe", "projection", "memory_edit", "memory_read", "map_view", "face", "approach", "validate"])
     try:
         with open_session(REPO, {"model": "offline", "tool_tier": "super", "credentials": str(credentials)},
                           output, env, scene_map, client_factory=OfflineClient) as session:
-            def call(name, arguments):
-                progress.set(name, "running")
+            def call(name, arguments, stage=None):
+                stage = stage or name
+                progress.set(stage, "running")
                 receipt = session._tool(f"offline-{len(records)}", name, arguments)
                 value = json.loads(receipt["result"]["content"][0]["text"])
                 records.append({"tool": name, "arguments": arguments, "result": value,
                                 "images": receipt["result"]["images"]})
-                progress.set(name, "failed" if receipt["result"]["isError"] else "finished")
+                progress.set(stage, "failed" if receipt["result"]["isError"] else "finished")
                 if receipt["result"]["isError"]:
                     raise ValueError(value)
                 return value
 
-            pano = call("nav_observe", {"mode": "panorama", "project": True})
+            pano = call("observe", {"mode": "panorama", "project": True})
             candidate = None
             for view in pano["views"]:
                 for x, y in [(x, y) for y in (400, 440, 470, 360, 320) for x in (320, 200, 440, 100, 540)]:
-                    point = session.super_tools.geometry.resolve_frame(view["frame"], [x, y])
+                    point = session.spatial.geometry.resolve_frame(view["frame"], [x, y])
                     if not point["valid"] or not .7 <= point["distance"] <= 2.5 or not -.05 <= point["height"] <= .15:
                         continue
-                    world, _ = session.super_tools.geometry.resolve_frame_point(view["frame"], [x, y])
+                    world, _ = session.spatial.geometry.resolve_frame_point(view["frame"], [x, y])
                     endpoint = env.near_point(world, .2)
                     route = env.shortest_path([endpoint]) if endpoint is not None else []
                     if route and len(route) == 2:
-                        candidate = {"frame": view["frame"], "pixel": [x, y]}
+                        candidate = {"image": view["frame"], "pixel": [x, y]}
                         break
                 if candidate:
                     break
             if candidate is None:
                 raise ValueError("No visible nearby floor point suitable for the physical replay")
-            call("locate", {"source": candidate["frame"], "points": [candidate["pixel"]]})
+            call("map_view", {"project": {"source": candidate["image"], "points": [candidate["pixel"]]}}, stage="projection")
             call("memory_edit", {"operations": [{"op": "create", "id": "O01", "type": "object", "fields": {
-                "name": "Selected floor point", "at": candidate}}]})
+                "name": "Selected floor point", "location": candidate}}]})
             call("memory_read", {"near": {"self": 5}})
-            call("map_view", {"view": {"ego": 3}, "overlay": [candidate["frame"]]})
-            aligned = call("nav_face", {"target": candidate})
-            moved = call("nav_goto", {"target": {"entity": "O01"}, "max_actions": 24})
+            call("map_view", {"view": {"ego": 3}, "overlay": [candidate["image"]]})
+            aligned = call("move", {"mode": "face", "target": candidate}, stage="face")
+            moved = call("move", {"mode": "approach", "target": {"entity": "O01"}, "max_actions": 24}, stage="approach")
             checks = {"face_aligned": abs(aligned["bearing_after"]) <= 1,
                       "goto_reached_selected_point": moved["reached"],
                       "actual_actions": env.steps > 0, "actual_path_m": env.path_length,

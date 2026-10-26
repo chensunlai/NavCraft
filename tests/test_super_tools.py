@@ -48,25 +48,25 @@ def call(session, name, args):
     return receipt, json.loads(receipt["result"]["content"][0]["text"])
 
 
-def test_super_schemas_are_opt_in_and_share_task_memory():
-    basic = specifications()
-    assert len(basic) == 8
-    super_tools = {t["name"]: t for t in specifications("super")}
-    assert len(super_tools) == 11
-    assert {"locate", "nav_face", "nav_goto", "task_memory"} <= super_tools.keys()
-    assert next(t for t in basic if t["name"] == "task_memory") == super_tools["task_memory"]
-    assert "grid" not in basic[0]["parameters"]["properties"]
-    assert "grid" not in super_tools["nav_observe"]["parameters"]["properties"]
-    assert "grid" not in super_tools["view_images"]["parameters"]["properties"]
+def test_tool_names_stay_consistent_and_geometry_is_opt_in():
+    names = {"observe", "move", "map_view", "view_images", "memory_read", "memory_edit", "submit"}
+    basic = {tool["name"]: tool for tool in specifications()}
+    super_tools = {tool["name"]: tool for tool in specifications("super")}
+    assert set(basic) == set(super_tools) == names
+    assert basic["move"]["parameters"]["properties"]["mode"]["enum"] == ["steps"]
+    assert set(super_tools["move"]["parameters"]["properties"]["mode"]["enum"]) == {"steps", "face", "approach"}
+    assert "project" in basic["map_view"]["parameters"]["properties"]
+    assert "project" in super_tools["map_view"]["parameters"]["properties"]
+    assert "grid" not in super_tools["observe"]["parameters"]["properties"]
     with pytest.raises(ValueError):
         specifications("unknown")
 
 
 def test_private_depth_and_panorama_capture_bearing(session):
-    receipt, panorama = call(session, "nav_observe", {"mode": "panorama", "project": True})
+    receipt, panorama = call(session, "observe", {"mode": "panorama", "project": True})
     assert not receipt["result"]["isError"]
     assert len(receipt["result"]["images"]) == 2
-    point = session.super_tools.geometry.resolve_frame(panorama["views"][1]["frame"], [319.5, 239.5])
+    point = session.spatial.geometry.resolve_frame(panorama["views"][1]["frame"], [319.5, 239.5])
     assert point["bearing"] == pytest.approx(60, abs=.1)
     assert session.environment.steps == 0
     public_files = list(session.workspace.rglob("*"))
@@ -75,58 +75,59 @@ def test_private_depth_and_panorama_capture_bearing(session):
     assert "world_from_optical" not in public_index and "depth_scale" not in public_index
     assert all((session.workspace / p).is_file() for p in receipt["result"]["images"])
     target = session.register_target(session.environment.observe().rgb)
-    _, located = call(session, "locate", {"source": target, "points": [[320, 240]]})
+    _, located = call(session, "map_view", {"project": {"source": target, "points": [[320, 240]]}})
     assert located["points"][0] == {"label": "P1", "error": "depth_unavailable"}
 
 
 def test_locate_returns_numbered_map_without_motion_or_memory_edits(session):
     before = session.memory.path.read_bytes()
-    receipt, value = call(session, "locate", {"source": session.current["frame"],
-                                             "points": [[280, 240], [-1, 0], [360, 240]]})
+    receipt, value = call(session, "map_view", {"project": {"source": session.current["frame"],
+                                             "points": [[280, 240], [-1, 0], [360, 240]]}})
     assert not receipt["result"]["isError"]
     assert [point["label"] for point in value["points"]] == ["P1", "P2", "P3"]
     assert value["points"][1] == {"label": "P2", "error": "pixel_out_of_bounds"}
     assert len(receipt["result"]["images"]) == 1
     assert (session.workspace / receipt["result"]["images"][0]).is_file()
-    assert set(value) == {"source", "points", "view_id"}
+    assert {"points", "view_id", "records"} <= value.keys()
     assert set(value["points"][0]) == {"label", "uv"}
     labels = {item["id"] for item in session.renderer.last_label_layout}
     assert {"P1", "P3"} <= labels and "P2" not in labels
     assert session.memory.path.read_bytes() == before and session.environment.steps == 0
     # The returned annotated view remains a usable map pixel source.
-    _, mapped = call(session, "locate", {"source": value["view_id"], "points": [[384, 380]]})
+    _, mapped = call(session, "map_view", {"project": {"source": value["view_id"], "points": [[384, 380]]}})
     assert "uv" in mapped["points"][0]
     assert mapped["view_id"] != value["view_id"]
 
 
-def test_locate_all_invalid_preserves_failure_reasons_without_empty_map(session):
-    receipt, value = call(session, "locate", {"source": session.current["frame"], "points": [[-1, 0]]})
+def test_map_projection_keeps_per_point_errors_without_changing_memory(session):
+    receipt, value = call(session, "map_view", {"project": {"source": session.current["frame"], "points": [[-1, 0]]}})
     assert not receipt["result"]["isError"]
     assert value["points"] == [{"label": "P1", "error": "pixel_out_of_bounds"}]
-    assert not receipt["result"]["images"] and "view_id" not in value
+    assert len(receipt["result"]["images"]) == 1 and "view_id" in value
+    assert session.memory.entities == []
 
 
-def test_at_edit_is_atomic_and_provenance_cannot_be_reused_for_other_coordinates(session):
+def test_location_edit_is_atomic_and_provenance_cannot_be_reused_for_other_coordinates(session):
     frame = session.current["frame"]
     create = {"op": "create", "id": "O01", "type": "object", "fields": {
-        "name": "chair", "at": {"frame": frame, "pixel": [320, 240]}}}
+        "name": "chair", "location": {"image": frame, "pixel": [320, 240]}}}
     _, result = call(session, "memory_edit", {"operations": [create]})
     assert "error" not in result
     entity = session.memory.entities[0]
-    assert "at" not in entity and entity["evidence"] == [frame]
-    assert session.super_tools.target({"entity": "O01"})["observed"]
+    assert "location" not in entity and entity["evidence"] == [frame]
+    assert session.spatial.target({"entity": "O01"})["observed"]
     before = session.memory.entities
     _, result = call(session, "memory_edit", {"operations": [
         {"op": "update", "id": "O01", "fields": {"name": "changed"}},
         {"op": "create", "id": "O02", "type": "object", "fields": {
-            "name": "invalid", "at": {"frame": frame, "pixel": [-1, 0]}}}]})
+            "name": "invalid", "location": {"image": frame, "pixel": [-1, 0]}}}]})
     assert "error" in result and session.memory.entities == before
     # Later geometry in the same atomic batch cannot inherit the old pixel's origin.
     create["id"] = "O02"
     _, result = call(session, "memory_edit", {"operations": [create,
         {"op": "update", "id": "O02", "fields": {"point": [.6, .6]}}]})
     assert "error" not in result
-    assert not session.super_tools.target({"entity": "O02"})["observed"]
+    assert not session.spatial.target({"entity": "O02"})["observed"]
     create["id"] = "O03"
     _, result = call(session, "memory_edit", {"operations": [create, {"op": "delete", "id": "O03"}]})
     assert "error" not in result
@@ -135,11 +136,11 @@ def test_at_edit_is_atomic_and_provenance_cannot_be_reused_for_other_coordinates
 def test_map_pixels_and_near_query_use_global_memory_and_current_body(session):
     _, view = call(session, "map_view", {"view": {"ego": 2}})
     _, result = call(session, "memory_edit", {"operations": [{
-        "op": "create", "id": "D01", "type": "door", "coordinate_ref": view["view_id"],
-        "fields": {"name": "front", "point": [384, 207]}}]})
+        "op": "create", "id": "D01", "type": "door",
+        "fields": {"name": "front", "location": {"image": view["view_id"], "pixel": [384, 207]}}}]})
     assert "error" not in result
     assert session.memory.entities[0]["point"] == pytest.approx([.5, .45])
-    assert not session.super_tools.target({"entity": "D01"})["observed"]
+    assert not session.spatial.target({"entity": "D01"})["observed"]
     _, near = call(session, "memory_read", {"near": {"self": 2}})
     assert near["total"] == 1
     assert near["entities"][0]["distance"] == 1
@@ -155,44 +156,44 @@ def test_door_single_pixel_location_and_goto_provenance(session):
     frame = session.current["frame"]
     _, result = call(session, "memory_edit", {"operations": [{
         "op": "create", "id": "D01", "type": "door", "fields": {
-            "name": "doorway", "at": {"frame": frame, "pixel": [320, 240]}}}]})
+            "name": "doorway", "location": {"image": frame, "pixel": [320, 240]}}}]})
     assert "error" not in result
     door = session.memory.entities[0]
-    assert door["point"] == session.super_tools.geometry.resolve_frame(frame, [320, 240])["uv"]
-    assert door["evidence"] == [frame] and "segment" not in door and "at" not in door
-    assert session.super_tools.target({"entity": "D01"})["observed"]
-    _, movement = call(session, "nav_goto", {"target": {"entity": "D01"}})
+    assert door["point"] == session.spatial.geometry.resolve_frame(frame, [320, 240])["uv"]
+    assert door["evidence"] == [frame] and "segment" not in door and "location" not in door
+    assert session.spatial.target({"entity": "D01"})["observed"]
+    _, movement = call(session, "move", {"mode": "approach", "target": {"entity": "D01"}})
     assert movement["planner"] == "local" and movement["reached"]
     before = session.memory.entities
     _, result = call(session, "memory_edit", {"operations": [
         {"op": "update", "id": "D01", "fields": {"name": "changed"}},
         {"op": "create", "id": "D02", "type": "door", "fields": {
-            "name": "invalid", "at": {"frame": frame, "pixels": [[300, 240], [340, 240]]}}},
+            "name": "invalid", "location": {"image": frame, "pixels": [[300, 240], [340, 240]]}}},
     ]})
     assert "error" in result and session.memory.entities == before
     _, result = call(session, "memory_edit", {"operations": [{
         "op": "update", "id": "D01", "fields": {"point": [.6, .6]}}]})
     assert "error" not in result
-    assert not session.super_tools.target({"entity": "D01"})["observed"]
-    _, movement = call(session, "nav_goto", {"target": {"entity": "D01"}, "max_actions": 1})
+    assert not session.spatial.target({"entity": "D01"})["observed"]
+    _, movement = call(session, "move", {"mode": "approach", "target": {"entity": "D01"}, "max_actions": 1})
     assert movement["planner"] == "straight"
 
 
 def test_face_uses_actual_budgeted_micro_turns_and_idempotent_calls(session):
     target = {"uv": [.55, .45]}
-    reply = session._tool("face-once", "nav_face", {"target": target})
+    reply = session._tool("face-once", "move", {"mode": "face", "target": target})
     result = json.loads(reply["result"]["content"][0]["text"])
     assert result["stop"] == "aligned" and abs(result["bearing_after"]) <= 1
     assert session.environment.steps == 2
     assert session.environment.path_length == 0
     turns = [motion["turn_degrees"] for motion in session.environment.motions]
     assert turns == pytest.approx([30, 15])
-    assert session._tool("face-once", "nav_face", {"target": target}) == reply
+    assert session._tool("face-once", "move", {"mode": "face", "target": target}) == reply
     assert session.environment.steps == 2
 
 
 def test_goto_local_and_straight_do_not_submit_or_read_task_goals(session):
-    _, result = call(session, "nav_goto", {"target": {"frame": session.current["frame"], "pixel": [320, 240]}})
+    _, result = call(session, "move", {"mode": "approach", "target": {"image": session.current["frame"], "pixel": [320, 240]}})
     assert result["planner"] == "local" and result["reached"]
     assert result["remaining"] <= .6
     assert session.environment.steps > 0 and session.environment.path_length > 0
@@ -202,7 +203,7 @@ def test_goto_local_and_straight_do_not_submit_or_read_task_goals(session):
     def forbidden(*args, **kwargs):
         raise AssertionError("UV must not use NavMesh")
     session.environment.near_point = forbidden
-    _, straight = call(session, "nav_goto", {"target": {"uv": [.5, .3]}, "max_actions": 1})
+    _, straight = call(session, "move", {"mode": "approach", "target": {"uv": [.5, .3]}, "max_actions": 1})
     assert straight["planner"] == "straight" and straight["stop"] == "max_actions"
 
 
@@ -212,11 +213,11 @@ def test_goto_stops_on_blocked_and_shared_action_budget(session):
         return MotionResult(collision=True, blocked=True), session.environment.observe()
     original = session.environment.step
     session.environment.step = blocked
-    _, result = call(session, "nav_goto", {"target": {"uv": [.5, .3]}})
+    _, result = call(session, "move", {"mode": "approach", "target": {"uv": [.5, .3]}})
     assert result["stop"] == "blocked" and not result["reached"]
     session.environment.step = original
     session._action_end = session.environment.steps + 2
-    receipt, result = call(session, "nav_goto", {"target": {"uv": [.7, .5]}})
+    receipt, result = call(session, "move", {"mode": "approach", "target": {"uv": [.7, .5]}})
     assert receipt["control"]["end_run"]
     assert session.environment.steps == session._action_end
     assert result["stop"] == "interrupted"
@@ -224,8 +225,8 @@ def test_goto_stops_on_blocked_and_shared_action_budget(session):
 
 def test_goto_stops_before_core_timeout_without_extra_motion(session, monkeypatch):
     ticks = iter([0, 0, 91])
-    monkeypatch.setattr("src.harness.super_tools.time.monotonic", lambda: next(ticks))
-    _, result = call(session, "nav_goto", {"target": {"uv": [.5, .3]}})
+    monkeypatch.setattr("src.harness.spatial.time.monotonic", lambda: next(ticks))
+    _, result = call(session, "move", {"mode": "approach", "target": {"uv": [.5, .3]}})
     assert result["stop"] == "time_limit" and not result["reached"]
     assert session.environment.steps == 1
     assert not session._submitted
@@ -234,23 +235,23 @@ def test_goto_stops_before_core_timeout_without_extra_motion(session, monkeypatc
 def test_local_planning_refuses_remote_and_cross_floor_routes(session):
     frame = session.current["frame"]
     _, result = call(session, "memory_edit", {"operations": [{"op": "create", "id": "O01", "type": "object",
-        "fields": {"name": "point", "at": {"frame": frame, "pixel": [320, 240]}}}]})
+        "fields": {"name": "point", "location": {"image": frame, "pixel": [320, 240]}}}]})
     assert "error" not in result
     session.environment.shortest_path = lambda *args: [[0, 0, 0], [0, 1, -2]]
-    receipt, result = call(session, "nav_goto", {"target": {"entity": "O01"}})
+    receipt, result = call(session, "move", {"mode": "approach", "target": {"entity": "O01"}})
     assert result["stop"] == "outside_local_scope" and session.environment.steps == 0
     assert not result["reached"]
     assert receipt["result"]["images"] == []
 
 
 def test_already_aligned_face_does_not_repeat_the_same_rgb(session):
-    receipt, result = call(session, "nav_face", {"target": {"uv": [.5, .4]}})
+    receipt, result = call(session, "move", {"mode": "face", "target": {"uv": [.5, .4]}})
     assert result["stop"] == "aligned" and result["done"] == []
     assert receipt["result"]["images"] == [] and session.environment.steps == 0
 
 
 def test_motion_limits_are_validated_before_action(session):
     for args in ({"max_actions": True}, {"max_actions": 41}, {"stop_distance": math.nan}):
-        receipt, result = call(session, "nav_goto", {"target": {"uv": [.6, .6]}, **args})
+        receipt, result = call(session, "move", {"mode": "approach", "target": {"uv": [.6, .6]}, **args})
         assert receipt["result"]["isError"] and "error" in result
         assert session.environment.steps == 0

@@ -9,9 +9,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
 
-from src.bench.samples import load_episodes, map_directory, read_config
+from src.bench.samples import load_episodes, map_directory
+from src.common.config import merge_config, read_config
 from src.common.io import write_json
-from src.common.config import merge_config
 from src.common.progress import Progress
 from src.dataset.maps import prepare_map
 from src.environment import Environment
