@@ -117,6 +117,30 @@ def test_snapshot_rejects_busy_sessions(setup, tmp_path):
         session.snapshot(tmp_path / "bad")
 
 
+def test_snapshot_never_dereferences_scratch_links_into_host_files(setup, tmp_path):
+    session = setup("links")
+    secret = tmp_path / "host-private.txt"
+    secret.write_text("host data must not become a workspace file")
+    (session.workspace / "scratch/host-link").symlink_to(secret)
+    session.snapshot(tmp_path / "linked-cut")
+    assert (tmp_path / "linked-cut/workspace/scratch/host-link").is_symlink()
+    restored = setup("links-restored", read_snapshot(tmp_path / "linked-cut"))
+    assert (restored.workspace / "scratch/host-link").is_symlink()
+
+
+def test_restored_receipt_does_not_repeat_an_already_executed_action(setup, tmp_path):
+    session = setup("receipt-source")
+    session.begin_script("Find a chair.")
+    result = session.script_tool("nav_step", {"actions": ["move_forward"]})
+    call_id = session._history[-2]["content"][0]["id"]
+    session.snapshot(tmp_path / "receipt-cut")
+    restored = setup("receipt-restored", read_snapshot(tmp_path / "receipt-cut"))
+    previous = restored.environment.steps
+    replayed = restored._tool(call_id, "nav_step", {"actions": ["move_forward"]})
+    assert replayed["result"] == result["result"]
+    assert restored.environment.steps == previous
+
+
 def test_basic_label_capture_keeps_depth_private_without_enabling_super_tools(setup):
     from src.harness.geometry import Geometry
     session = setup("basic-labels", tool_tier="basic")

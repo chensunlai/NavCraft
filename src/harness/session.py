@@ -113,7 +113,7 @@ class HarnessSession:
                 for name in ("scene", "observations", "memory", "scratch"):
                     source = Path(state["workspace"]) / name
                     if source.exists():
-                        shutil.copytree(source, self.workspace / name, dirs_exist_ok=True)
+                        shutil.copytree(source, self.workspace / name, dirs_exist_ok=True, symlinks=True)
             if state.get("private_dir"):
                 for name in ("depth", "semantics", "location_sources.json", "memory_used_ids.json"):
                     source = Path(state["private_dir"]) / name
@@ -143,6 +143,7 @@ class HarnessSession:
             self.current = (self.observations.get(state["current_frame"]) if state.get("current_frame")
                             else self._capture(environment.observe()))
             self._history = deepcopy(state.get("history", []))
+            self._calls = deepcopy(state.get("tool_receipts", {}))
             self._current_request = state.get("current_request", "")
             self._target_frames = list(state.get("target_frames", []))
             self._prompts = list(state.get("submitted_requests", []))
@@ -235,7 +236,7 @@ class HarnessSession:
         exported = self.client.request("export_state") if self.client else {"messages": deepcopy(self._history)}
         history = exported["messages"]
         destination.mkdir(parents=True)
-        shutil.copytree(self.workspace, destination / "workspace")
+        shutil.copytree(self.workspace, destination / "workspace", symlinks=True)
         for name in ("depth", "semantics", "location_sources.json", "memory_used_ids.json"):
             source = self.private / name
             if source.is_dir():
@@ -252,6 +253,8 @@ class HarnessSession:
                  "current_request": getattr(self, "_current_request", ""),
                  "target_frames": self._target_frames, "submitted_requests": self._prompts,
                  "image_counter": self._image_counter,
+                 "tool_receipts": {identifier: [arguments, {key: value for key, value in receipt.items() if key != "checkpoint"}]
+                                   for identifier, (arguments, receipt) in self._calls.items()},
                  "environment": self.environment.state() if hasattr(self.environment, "state") else None}
         if session_file:
             state["session_file"] = "private/pi-session.jsonl"
