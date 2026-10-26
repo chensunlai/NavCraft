@@ -51,7 +51,7 @@ def test_config_required_arguments_aliases_types_and_cli_priority(tmp_path):
 
 def test_default_pilot_matches_explicit_composition():
     explicit = read_config([REPO / 'config/models/pilot.yaml', REPO / 'config/environments/habitat.yaml',
-                            REPO / 'config/budgets/navigation.yaml', REPO / 'config/tasks/pilot.yaml'])
+                            REPO / 'config/budgets/navigation.yaml', REPO / 'config/tasks/pilot.yaml', REPO / 'config/maps/scene_dataset.yaml'])
     assert read_config(REPO / 'config/pilot.yaml') == explicit
     for name in ('deepseek', 'qwen27', 'sol', 'astra'):
         config = read_config(REPO / f'config/models/{name}.yaml')

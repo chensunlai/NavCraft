@@ -1,6 +1,7 @@
 """One real Habitat RGB-D/tool replay; no model requests or benchmark score."""
 
 from src.common.progress import Progress
+from src.dataset.maps import prepare_map
 
 import argparse
 import json
@@ -41,13 +42,14 @@ def main():
     credentials = output / "offline.env"
     credentials.write_text("NAVCRAFT_TEST_BASE_URL=http://offline.invalid\nNAVCRAFT_TEST_API_KEY=offline\n")
     episode = load_episodes(REPO, [args.episode])[0]
+    scene_map = prepare_map(map_directory(REPO, episode), episode.start_position, output / "private")
     env = Environment(episode, {"gpu": args.gpu, "tool_tier": "super", "scenes": str(REPO / "data/nas/scene_datasets")},
                       output / "private/environment")
     records = []
     progress = Progress("Super tools", ["nav_observe", "locate", "memory_edit", "memory_read", "map_view", "nav_face", "nav_goto", "validate"])
     try:
         with open_session(REPO, {"model": "offline", "tool_tier": "super", "credentials": str(credentials)},
-                          output, env, map_directory(REPO, episode) / "map.json", client_factory=OfflineClient) as session:
+                          output, env, scene_map, client_factory=OfflineClient) as session:
             def call(name, arguments):
                 progress.set(name, "running")
                 receipt = session._tool(f"offline-{len(records)}", name, arguments)

@@ -13,6 +13,7 @@ from src.bench.samples import load_episodes, map_directory, read_config
 from src.common.io import write_json
 from src.common.config import merge_config
 from src.common.progress import Progress
+from src.dataset.maps import prepare_map
 from src.environment import Environment
 from src.harness.session import PromptLimits, open_session
 
@@ -57,7 +58,9 @@ def main():
             config = merge_config(read_config(REPO / pilot["models"][args.model]), read_config(args.model_config))
             if args.mode == "compaction":
                 config = {**config, "compaction_threshold": 6000}
-            session = open_session(REPO, config, output, env, map_directory(REPO, episode) / "map.json")
+            scene_map = prepare_map(map_directory(REPO, episode, pilot["maps"]["root"]),
+                                    episode.start_position, output / "private", pilot["maps"].get("layer", "walls"))
+            session = open_session(REPO, config, output, env, scene_map)
             question = ("This is a tool integration check. Reopen the current frame with view_images and inspect the full map. "
                         "Use bash to write and run scratch/check.py, importing navlib and printing the current public pose. "
                         "Record one room named 'current area' at your current map position, using the current frame as evidence, "

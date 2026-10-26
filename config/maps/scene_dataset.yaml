@@ -1,0 +1,3 @@
+maps:
+  root: data/scene_map_datasets
+  layer: walls

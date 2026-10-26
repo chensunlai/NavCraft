@@ -19,6 +19,7 @@ import numpy as np
 
 from src.bench.runner import validate_single_floor
 from src.common.progress import Progress
+from src.dataset.maps import prepare_map
 from src.bench.samples import load_episodes, plan, read_config
 from src.common.io import write_json
 from src.environment import Environment
@@ -111,7 +112,9 @@ def main():
                   "goal_radius_m": .2, "maximum_actions": 500, "status": "initializing"}
         env = None
         target = None
+        scene_map = None
         try:
+            scene_map = prepare_map(job["map"], episode.start_position, folder / "private", job.get("map_layer", "walls"))
             env = Environment(episode, {"gpu": args.gpu, "scenes": str((REPO / config['environment']['scenes']).resolve())}, folder / "environment")
             initial = env.observe()
             record["initial_rgb"] = str(initial.rgb.relative_to(output))
@@ -149,7 +152,7 @@ def main():
                 write_json(folder / "trajectory.json", {"endpoints": env.trajectory, "microsteps": env.motion_trajectory})
                 env.sim.sim.pathfinder.save_nav_mesh(str(folder / "current.navmesh"))
                 try:
-                    record["wall_path_intersections"] = overlay(env, episode, json.loads(Path(job["map"]).read_text()), target, folder / "geometry.png")
+                    record["wall_path_intersections"] = overlay(env, episode, json.loads(scene_map.read_text()), target, folder / "geometry.png")
                     record["overlay"] = str((folder / "geometry.png").relative_to(output))
                 finally:
                     env.close()

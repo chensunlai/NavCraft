@@ -1,0 +1,2 @@
+queue: data/samples/scene_build_queue_nonhssd_100.json
+skill: src/dataset/build_maps/build_scenes_map_skill_v2

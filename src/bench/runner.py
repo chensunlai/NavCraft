@@ -8,6 +8,7 @@ import traceback
 from src.common.io import redact, write_json
 from src.common.progress import Progress
 from src.environment import Environment
+from src.dataset.maps import prepare_map
 from .metrics import score_episode, score_goal
 
 INFRASTRUCTURE_REASONS = {
@@ -87,7 +88,7 @@ def execute_goals(environment, session, episode, limits, directory):
     return complete_goal_rows(rows, episode.goals), finish_reason, infrastructure_error
 
 
-def run_episode(repo, model_config, episode, environment_config, scene_map, directory, limits):
+def run_episode(repo, model_config, episode, environment_config, scene_map, directory, limits, *, map_layer="walls"):
     from src.harness.session import PromptLimits, open_session
 
     repo, directory = Path(repo), Path(directory)
@@ -101,8 +102,7 @@ def run_episode(repo, model_config, episode, environment_config, scene_map, dire
     environment = session = None
     rows = []
     try:
-        if not Path(scene_map).is_file():
-            raise FileNotFoundError(f"Prepare the wall map before running: {scene_map}")
+        scene_map = prepare_map(scene_map, episode.start_position, directory / "private", map_layer)
         environment = Environment(episode, {**environment_config, "tool_tier": model_config.get("tool_tier", "basic")},
                                   directory / "private/environment")
         preflight = validate_single_floor(environment, episode)

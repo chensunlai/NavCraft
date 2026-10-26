@@ -129,7 +129,36 @@ def test_target_has_no_private_pose_and_panorama_restores_current(session):
     assert session.environment.steps == 0
 
 
-def test_all_seven_tools_and_public_data_boundary(session):
+def test_checkpoint_tracks_only_the_current_requests_target_images(session):
+    first = session.register_target(session.environment.image)
+    second = session.register_target(session.environment.image)
+    instruction = "Find the first pictured object.\nUse the side entrance, then stop beside it."
+    session.prompt(instruction, images=[first])
+    checkpoint = session.checkpoint()
+    facts = json.loads(checkpoint["content"].split("\n", 1)[1])
+    assert facts["target_frames"] == [first]
+    assert facts["current_request"] == instruction
+    assert checkpoint["image_labels"] == [f"[CURRENT {session.current['frame']}]", f"[TARGET {first}]"]
+    assert checkpoint["images"][1] == session.observations.get(first)["path"]
+
+    session.refresh_observation()
+    assert session.checkpoint()["images"][1] == checkpoint["images"][1]
+    assert json.loads(session.checkpoint()["content"].split("\n", 1)[1])["current_request"] == instruction
+    with pytest.raises(FileNotFoundError):
+        session.prompt("Invalid next request", images=[second, "missing.jpg"])
+    assert session.checkpoint()["image_labels"][-1] == f"[TARGET {first}]"
+
+    session.prompt("Find the second pictured object", images=[second])
+    assert session.checkpoint()["image_labels"][-1] == f"[TARGET {second}]"
+    assert session.observations.get(first)["path"] not in session.checkpoint()["images"]
+    session.prompt("Find a chair")
+    checkpoint = session.checkpoint()
+    assert json.loads(checkpoint["content"].split("\n", 1)[1])["target_frames"] == []
+    assert checkpoint["images"] == [session.current["path"]]
+    assert session.observations.get(first) and session.observations.get(second)
+
+
+def test_tools_and_public_data_boundary(session):
     session._tool("edit", "memory_edit", {"operations": [
         {"op": "create", "id": "R01", "type": "room", "fields": {"name": "room", "anchor": [.5, .5], "evidence": [session.current["frame"]]}}]})
     assert session.memory.entities[0]["id"] == "R01"
@@ -143,6 +172,57 @@ def test_all_seven_tools_and_public_data_boundary(session):
         for ref in reply["result"]["images"]:
             assert (session.workspace / ref).is_file()
         assert not any(word in json.dumps(reply["result"]) for word in ("rotation_xyzw", "world_from_optical", "success", "goal_id", "budget_remaining"))
+
+
+def test_task_memory_replaces_reads_clears_and_preserves_other_memory(session):
+    from src.harness.trace import read_trace
+
+    def call(call_id, args):
+        reply = session._tool(call_id, "task_memory", args)
+        assert not reply["result"]["isError"]
+        return reply, json.loads(reply["result"]["content"][0]["text"])
+
+    assert call("empty-notes", {"action": "read"})[1] == {"content": ""}
+    session._tool("spatial-record", "memory_edit", {"operations": [
+        {"op": "create", "id": "R01", "type": "room", "fields": {"name": "Hall"}}]})
+    original_entities = session.memory.entities
+    call("first-notes", {"action": "edit", "content": "Inspect the left exit."})
+    notes = "Left approach blocked.\nTry the right side; destination still uncertain."
+    reply, value = call("replace-notes", {"action": "edit", "content": notes})
+    assert value == {"updated": True}
+    assert json.loads(reply["checkpoint"]["content"].split("\n", 1)[1])["task_memory"] == notes
+    assert call("read-notes", {"action": "read"})[1] == {"content": notes}
+    assert session.memory.entities == original_entities
+    assert session.environment.steps == 0
+
+    session.prompt("First target")
+    session.prompt("Next target")
+    assert json.loads(session.task_memory_path.read_text()) == {"content": notes}
+    assert json.loads(session.checkpoint()["content"].split("\n", 1)[1])["task_memory"] == notes
+    # prompt has submitted; use a new prompt to exercise tools through the normal lifecycle.
+    def clear_notes(*args, **kwargs):
+        call("clear-notes", {"action": "edit", "content": ""})
+        assert call("cleared-notes", {"action": "read"})[1] == {"content": ""}
+        return {"reason": "model_finished", "requests": 0}
+    session.client.run_prompt = clear_notes
+    session.prompt("Clear obsolete plans")
+    changes = [event for event in read_trace(session.private / "trace.jsonl") if event["type"] == "task_memory_changed"]
+    assert len(changes) == 3
+    assert changes[1]["data"] == {"before": {"content": "Inspect the left exit."}, "after": {"content": notes}}
+
+
+@pytest.mark.parametrize("args", [{"action": "append", "content": "bad"}, {"action": "edit"},
+                                  {"action": "edit", "content": 7}, {"action": "read", "content": "bad"},
+                                  {"content": "missing action"}])
+def test_invalid_task_memory_call_preserves_notes(session, args):
+    session._tool("seed-notes", "task_memory", {"action": "edit", "content": "Keep this plan."})
+    before = session.task_memory_path.read_bytes()
+    revision = session.checkpoint()["revision"]
+    reply = session._tool("bad-notes", "task_memory", args)
+    assert reply["result"]["isError"]
+    assert session.task_memory_path.read_bytes() == before
+    assert session.checkpoint()["revision"] == revision
+    assert not session._broken
 
 
 def test_map_heading_and_bounds():

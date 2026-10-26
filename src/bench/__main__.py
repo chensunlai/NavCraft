@@ -37,7 +37,7 @@ def main(argv=None):
         episode = load_episodes(REPO, [job["episode_id"]])[0]
         config = merge_config(read_config(job["model_config"]), job.get("model_overrides", {}))
         result = run_episode(REPO, config, episode, job["environment"], job["map"],
-                             job["directory"], job["limits"])
+                             job["directory"], job["limits"], map_layer=job.get("map_layer", "walls"))
         print(json.dumps({"episode_id": episode.id, "status": result["status"]}))
         return 0 if result["status"] == "completed" else 1
     config = read_config(args.config or [REPO / "config/pilot.yaml"])
@@ -61,13 +61,15 @@ def main(argv=None):
                           "models": {name: {"python_exists": Path(model.get("python", sys.executable)).is_file(),
                                             "concurrency": model["concurrency"]}
                                      for name, model in models.items()},
-                          "maps_ready": sum(Path(j["map"]).is_file() for j in prepared["jobs"]),
+                          "maps_ready": sum(j["map_error"] is None for j in prepared["jobs"]),
+                          "map_issues": [{"episode": j["episode_id"], "error": j["map_error"]}
+                                         for j in prepared["jobs"] if j["map_error"]],
                           "dispatch_order": prepared["dispatch_order"]}, indent=2))
         return 0
-    missing = [j["map"] for j in prepared["jobs"] if not Path(j["map"]).is_file()]
+    missing = [j for j in prepared["jobs"] if j["map_error"]]
     if missing:
-        parser.error("Prepared wall maps are missing; Bench only loads existing map.json files. "
-                     "Expected paths: " + ", ".join(dict.fromkeys(missing)))
+        parser.error("Published maps are unavailable or invalid: " + "; ".join(
+            f"{j['episode_id']}: {j['map_error']}" for j in missing))
     from .batch import run_batch
     output = args.output or REPO / "runs" / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-pilot")
     models = list(config["models"]) if args.model == "all" else [args.model]

@@ -4,6 +4,7 @@ from src.common.progress import Progress
 
 import argparse
 from copy import deepcopy
+from collections import Counter
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -121,12 +122,32 @@ def _round_summary(row, specification, model):
     return summary
 
 
-def _model_export(model_dir, output, assets):
+def _record(model_dir):
     result = _read(model_dir / "result.json")
     scenario = _read(model_dir / "private/scenario.json")
+    if not result or scenario:
+        return result, scenario
+    episode = _read(model_dir / "private/episode.json")
+    if not episode or len(episode.get("goals", [])) != 1:
+        return result, None
+    prompt = next((e["data"]["text"] for e in read_trace(model_dir / "private/trace.jsonl")
+                   if e["type"] == "prompt_start"), "")
+    metrics = result.get("environment", {}).get("metrics", {})
+    row = {**metrics, "round": 1, "id": episode["id"], "kind": "navigation",
+           "status": result["status"], "success": bool(metrics["success"]) if result["status"] == "completed" else None,
+           "actions": metrics.get("steps", 0), "requests": metrics.get("requests", 0),
+           "arrived": metrics.get("navigation_error", float("inf")) < metrics.get("success_distance", 0)}
+    scenario = {"scene_id": episode["scene_id"], "protocol": episode["benchmark"], "record_kind": "episode",
+                "rounds": [{"id": episode["id"], "instruction": prompt}]}
+    return {**result, "rounds": [row], "planned_navigation": 1,
+            "metrics": {"navigation_successes": int(bool(row["success"]))}}, scenario
+
+
+def _model_export(model_dir, output, assets, model_id=None):
+    result, scenario = _record(model_dir)
     if not result or not scenario:
         return None
-    model = model_dir.name
+    model = model_id or model_dir.name
     frames = {row["frame"]: row for row in
               (json.loads(line) for line in (model_dir / "workspace/observations/index.jsonl").read_text().splitlines() if line.strip())}
     rows = result.get("rounds", [])
@@ -138,6 +159,8 @@ def _model_export(model_dir, output, assets):
             raise ValueError(f"Result and frozen task IDs disagree: {model}")
         summary = _round_summary(row, specification, model)
         replay = _read(model_dir / f"private/rounds/{row['round']:02d}-{row['id']}.json", {})
+        if scenario.get("record_kind") == "episode":
+            replay = {"trajectory": result.get("environment", {}).get("motion_trajectory", [])}
         details.append({"model": model, "number": row["round"], "instruction": specification["instruction"],
                         "summary": summary, "frames": [], "trajectory": replay.get("trajectory", []),
                         "trajectory_source": "Private recorded physical microstep path, for reviewer verification only.",
@@ -251,6 +274,14 @@ def _model_export(model_dir, output, assets):
                 if path:
                     detail["evidence"][fid] = {"url": assets.image(path)["url"],
                                                "step": frame.get("step"), "pose": frame.get("pose")}
+        if scenario.get("record_kind") == "episode":
+            tools = [event for event in detail["events"] if event["type"] == "tool"]
+            counts = dict(Counter(event["name"] for event in tools))
+            memory_info = {"entities": len(detail["memory_after"]), "tools": counts,
+                           "tool_errors": sum(event["error"] for event in tools)}
+            rows[index]["memory"] = memory_info
+            detail["summary"].update(memory=memory_info, entities=memory_info["entities"],
+                                     tool_errors=memory_info["tool_errors"])
         _write(output / detail["summary"]["detail"], detail)
     tools = [row.get("memory", {}).get("tools", {}) for row in rows]
     return {"id": model, "label": result["model"], "effort": result["reasoning_effort"], "status": result["status"],
@@ -272,19 +303,21 @@ def export_sequence(run_dir, output_dir) -> Path:
     output.mkdir(parents=True, exist_ok=True)
     assets = _Assets(output)
     models, scene_map, scenario = [], None, None
-    directories = sorted(path for path in run_dir.iterdir() if path.is_dir() and (path / "result.json").is_file())
+    direct = (run_dir / "result.json").is_file()
+    directories = [run_dir] if direct else sorted(path for path in run_dir.iterdir() if path.is_dir() and (path / "result.json").is_file())
     progress = Progress("Export models", [path.name for path in directories])
     for model_dir in directories:
         progress.set(model_dir.name, "running")
-        model = _model_export(model_dir, output, assets)
+        model_id = model_dir.parent.name if direct and model_dir.name[:3].isdigit() else model_dir.name
+        model = _model_export(model_dir, output, assets, model_id)
         progress.set(model_dir.name, "finished" if model is not None else "failed")
         if model is not None:
             models.append(model)
             scene_map = scene_map or _read(model_dir / "workspace/scene/map.json")
-            scenario = scenario or _read(model_dir / "private/scenario.json")
+            scenario = scenario or _record(model_dir)[1]
     if not models:
-        raise ValueError("No saved continuous-task model runs found")
-    index = {"title": "NavCraft · 连续任务与空间记忆", "generated_at": datetime.now(timezone.utc).isoformat(),
+        raise ValueError("No supported saved task runs found")
+    index = {"title": "NavCraft · 导航任务回放", "record_kind": scenario.get("record_kind", "sequence"), "generated_at": datetime.now(timezone.utc).isoformat(),
              "models": models, "map": {key: scene_map[key] for key in ("origin", "size_m", "walls")},
              "scene_id": scenario["scene_id"], "protocol": scenario.get("protocol"),
              "notes": ["Reasoning blocks, HTTP records, credentials and private task labels are excluded from the conversation.",

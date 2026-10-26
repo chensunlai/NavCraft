@@ -81,3 +81,15 @@ def test_rgb_overlay_uses_the_same_ego_projection_without_editing_memory(rendere
 def test_ego_radius_must_be_positive_finite_metres(renderer, radius):
     with pytest.raises(ValueError, match="ego must"):
         renderer.render({"pos": [.5, .5], "heading": 0}, [], view={"ego": radius})
+
+
+def test_full_view_crops_wall_box_without_changing_global_coordinates(renderer):
+    path = renderer.workspace / "scene/map.json"
+    data = {"origin": [-10, -10], "size_m": 30,
+            "walls": [[[0, 0], [12, 0]], [[12, 0], [12, 4]]],}
+    path.write_text(json.dumps(data))
+    result = renderer.render({"pos": [.5, .4], "heading": 0}, [], view="full")
+    assert result["bounds"] == pytest.approx([9/30, 9/30, 23/30, 15/30])
+    assert result["image_size"][0] > result["image_size"][1]
+    assert uv(result, 38, 34) == pytest.approx([9/30, 9/30])
+    assert json.loads(path.read_text()) == data

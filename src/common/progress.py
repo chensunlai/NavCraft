@@ -1,21 +1,12 @@
-"""Small task-count progress bars on stderr, also readable in redirected logs."""
+"""Thread-safe task states displayed through tqdm on stderr."""
 
 from collections import Counter
 import sys
 from threading import Lock
 
+from tqdm import tqdm
+
 TERMINAL = {"finished", "ready", "partial", "failed"}
-
-
-def progress_line(label, states):
-    counts = Counter(states.values())
-    total = len(states)
-    ended = sum(counts[state] for state in TERMINAL)
-    width = 24
-    filled = int(width * ended / total) if total else 0
-    details = " ".join(f"{key}={counts[key]}" for key in
-                       ("ready", "finished", "partial", "failed", "running", "waiting", "pending") if counts[key])
-    return f"{label} [{'#' * filled}{'-' * (width - filled)}] {ended}/{total} ended | {details}"
 
 
 class Progress:
@@ -24,18 +15,39 @@ class Progress:
         self.states = dict.fromkeys(keys, "pending")
         self.states.update(initial or {})
         self.lock = Lock()
-        self.show()
+        ended, details = self._summary()
+        # Keep carriage-return rendering through `2>&1 | tee` in tmux too.
+        self.bar = tqdm(total=len(self.states), initial=ended, desc=label,
+                        postfix=details, file=sys.stderr, disable=False,
+                        dynamic_ncols=True, mininterval=.2, unit="task",
+                        bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} ended "
+                                   "[{elapsed}<{remaining}{postfix}]")
+        if ended == len(self.states):
+            self.bar.close()
 
-    def show(self):
-        print(progress_line(self.label, self.states), file=sys.stderr, flush=True)
+    def _summary(self):
+        counts = Counter(self.states.values())
+        ended = sum(counts[state] for state in TERMINAL)
+        details = " ".join(f"{key}={counts[key]}" for key in
+                           ("ready", "finished", "partial", "failed", "running", "waiting", "pending")
+                           if counts[key])
+        return ended, details
 
     def set(self, key, state):
         with self.lock:
             if key not in self.states:
                 raise KeyError(key)
-            # Already completed items loaded during resume must not move backwards.
+            # Completed items loaded during resume must not move backwards.
             if self.states[key] in TERMINAL and state in {"running", "waiting"}:
                 return
-            if self.states[key] != state:
-                self.states[key] = state
-                self.show()
+            if self.states[key] == state:
+                return
+            self.states[key] = state
+            ended, details = self._summary()
+            self.bar.set_postfix_str(details, refresh=False)
+            self.bar.update(ended - self.bar.n)
+            if ended == len(self.states):
+                self.bar.close()
+            else:
+                # Show dispatch/retry changes even when no task has ended yet.
+                self.bar.refresh()

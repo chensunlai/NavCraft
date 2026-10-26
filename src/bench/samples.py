@@ -7,6 +7,7 @@ from pathlib import Path
 from src.common.config import read_config
 
 from src.dataset.episodes import create_source
+from src.dataset.maps import map_directory as scene_map_directory, load_wall_map
 
 SOURCES = {
     "objnav": {"root": "data/datasets/objectnav/hm3d/v2", "split": "val",
@@ -36,10 +37,8 @@ def load_episodes(repo, ids):
     return [loaded[i] for i in ids]
 
 
-def map_directory(repo, episode):
-    scene = Path(episode.scene_id).name.split(".")[0]
-    height_mm = round(episode.start_position[1] * 1000)
-    return Path(repo) / "cache/wall_maps" / f"{scene}-{height_mm}"
+def map_directory(repo, episode, root="data/scene_map_datasets"):
+    return scene_map_directory(Path(repo) / root, episode.scene_id)
 
 
 def plan(repo, config):
@@ -50,12 +49,23 @@ def plan(repo, config):
     hashes = {family: hashlib.sha256((repo / SOURCES[family]["selection_file"]).read_bytes()).hexdigest()
               for family in {e.benchmark for e in episodes}}
     jobs = []
+    maps = config["maps"]
     for i, episode in enumerate(episodes):
         scene = repo / config["environment"]["scenes"] / episode.scene_id.removeprefix("data/scene_datasets/")
         if not scene.is_file():
             raise FileNotFoundError(scene)
+        directory = map_directory(repo, episode, maps["root"])
+        info, error = None, None
+        try:
+            _, info = load_wall_map(directory, episode.start_position, maps.get("layer", "walls"))
+            expected = Path(episode.scene_id).name.split(".")[0]
+            if info["scene_id"] != expected:
+                raise ValueError(f"Expected scene {expected}, map declares {info['scene_id']}")
+        except (OSError, ValueError, KeyError, TypeError) as exception:
+            error = str(exception)
         jobs.append({"index": i, "episode_id": episode.id, "benchmark": episode.benchmark,
                      "scene": str(scene.resolve()), "floor_height": episode.start_position[1],
-                     "map": str(map_directory(repo, episode) / "map.json"),
+                     "map": str(directory), "map_layer": maps.get("layer", "walls"),
+                     "map_source": info, "map_error": error,
                      "planned_goals": len(episode.goals)})
     return {"selection_sha256": hashes, "dispatch_order": config["episodes"], "jobs": jobs}

@@ -213,6 +213,33 @@ return {html:$('#main').innerHTML,first:adjacentRounds(model(),1),last:adjacentR
 })()""")
     assert not result["history"]
     assert "Sol、Astra、Qwen 都" not in result["html"] and "四个模型" not in result["html"]
-    assert "Astra · 连续任务记录" in result["html"] and "进行中" in result["html"]
+    assert "Astra · 导航任务记录" in result["html"] and "进行中" in result["html"]
     assert result["first"] == {"next": 2} and result["last"] == {"previous": 1}
     assert result["numbers"] == [1, 2, 3]
+
+
+def test_direct_benchmark_episode_uses_saved_verdict_and_public_prompt(tmp_path):
+    run = fixture_run(tmp_path)
+    model = run / 'sol'
+    (model / 'private/scenario.json').unlink()
+    write_json(model / 'private/episode.json', {'id': 'objnav:val:scene:chair:1', 'scene_id': 'hm3d/val/scene.glb',
+               'benchmark': 'objnav', 'goals': [{'positions': [[99, 99, 99]]}]})
+    write_json(model / 'result.json', {'model': 'test-model', 'reasoning_effort': 'high', 'status': 'completed',
+               'environment': {'metrics': {'success': 1, 'submitted': True, 'navigation_error': .06,
+                   'success_distance': 1., 'steps': 52, 'requests': 16, 'path_length': 9.63, 'reason': 'submitted'},
+                   'motion_trajectory': [[0, 0, 0], [1, 0, 0]]}})
+    output = tmp_path / 'site'
+    export_sequence(model, output)
+    index = json.loads((output / 'data/index.json').read_text())
+    assert index['record_kind'] == 'episode'
+    assert index['scene_id'] == 'hm3d/val/scene.glb'
+    entry = index['models'][0]
+    assert entry['successes'] == entry['navigation_total'] == 1
+    assert entry['rounds'][0]['success'] is True
+    detail = json.loads((output / entry['rounds'][0]['detail']).read_text())
+    assert detail['summary']['actions'] == 52
+    assert detail['summary']['navigation_error'] == .06
+    assert detail['trajectory'] == [[0, 0, 0], [1, 0, 0]]
+    assert detail['frames'] and detail['events']
+    assert not (model / 'private/scenario.json').exists()
+    assert '99,99,99' not in json.dumps(detail, separators=(',', ':'))

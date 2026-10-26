@@ -20,6 +20,7 @@ from .runner import INFRASTRUCTURE_REASONS, validate_single_floor
 from .samples import read_config
 from src.common.config import parse_config_args
 from src.common.progress import Progress
+from src.dataset.maps import prepare_map
 
 
 def inside(point, polygon):
@@ -221,7 +222,8 @@ def run_sequence(repo, model_config, scenario_path, scene_map, directory, enviro
         write_json(directory / "private/preflight.json", preflight)
         if not preflight["passed"]:
             raise ValueError("Single-floor/relocation preflight failed; inspect private/preflight.json")
-        session = open_session(repo, model_config, directory, environment, Path(scene_map))
+        scene_map = prepare_map(scene_map, scenario["start_position"], directory / "private")
+        session = open_session(repo, model_config, directory, environment, scene_map)
         rooms = {room["id"]: room for room in scenario.get("private_rooms", [])}
         for index, specification in enumerate(scenario["rounds"], 1):
             progress.set(specification["id"], "running")

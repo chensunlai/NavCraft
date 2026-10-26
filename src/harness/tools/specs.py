@@ -38,7 +38,7 @@ def specifications(tool_tier="basic"):
                    {"mode": {"type": "string", "enum": ["current", "panorama"]}}),
         definition("nav_step", "Execute 1–6 atomic actions sequentially. Translate 0.25m or turn 30deg. Translation may slide and auto-turn by at most 15deg per action. The returned pose and RGB describe actual motion; blocked stops the batch.",
                    {"actions": {"type": "array", "items": {"type": "string", "enum": list(ACTIONS)}, "minItems": 1, "maxItems": 6}}, ["actions"]),
-        definition("map_view", "Render the fixed map-up wall map, recorded entities, current pose and path. Blank space need not be traversable. Example: view={around_self:6} requests a 6-metre radius.",
+        definition("map_view", "Render the fixed map-up wall map, recorded entities, current pose and path. Full view fits the wall bounding box with at most 1m padding on each side; returned bounds use unchanged global UV coordinates. Blank space need not be traversable. Example: view={around_self:6} requests a 6-metre radius.",
                    {"view": {"anyOf": [{"type": "string", "enum": ["explored", "full"]},
                                          {"type": "object", "properties": {"around": ids}, "required": ["around"], "additionalProperties": False},
                                          {"type": "object", "properties": {"around_self": {"type": "number", "exclusiveMinimum": 0}}, "required": ["around_self"], "additionalProperties": False}]},
@@ -60,6 +60,8 @@ def specifications(tool_tier="basic"):
                            "id": string, "type": {"type": "string", "enum": ["room", "door", "object"]},
                            "fields": fields, "keep": string, "remove": {**ids, "minItems": 1}},
                            "required": ["op"], "additionalProperties": False}}}, ["operations"]),
+        definition("task_memory", "Read or replace the entire task notebook. read returns content; edit requires content and replaces it, not appends. Empty content clears it. Keep concise plans, attempted routes, evidence and unresolved hypotheses. Notes persist across requests and compaction until replaced; update them when the goal changes. They are your notes, not verified facts. Spatial entities belong in memory_edit.",
+                   {"action": {"type": "string", "enum": ["read", "edit"]}, "content": string}, ["action"]),
         definition("submit", "Submit completion of the current request. If the user asked a question, provide answer. This acknowledgement does not reveal an evaluation outcome.", {"answer": string}),
     ]
     if tool_tier == "super":

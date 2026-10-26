@@ -3,6 +3,7 @@
 MODELS_CONFIG="config/models/pilot.yaml"
 TASK_CONFIG="config/tasks/pilot.yaml"
 ENV_CONFIG="config/environments/habitat.yaml"
+MAP_CONFIG="config/maps/scene_dataset.yaml"
 BUDGET_CONFIG="config/budgets/navigation.yaml"
 PROVIDER_CONFIG="config/providers/221.yaml"
 TOOLS_CONFIG="config/tools/basic.yaml"
@@ -15,7 +16,7 @@ set -euo pipefail
 cd "$REPO_ROOT"
 
 # Modes: local (no model), probe, compaction.
-python -m src.bench.checks.harness local --config "$MODELS_CONFIG" --config "$ENV_CONFIG" \
+python -m src.bench.checks.harness local --config "$MODELS_CONFIG" --config "$ENV_CONFIG" --config "$MAP_CONFIG" \
   --config "$BUDGET_CONFIG" --config "$TASK_CONFIG" \
   --model-config "$PROVIDER_CONFIG" --model-config "$TOOLS_CONFIG" --model-config "$RUNTIME_CONFIG" \
   --model sol --gpu 0 --output "$OUTPUT"

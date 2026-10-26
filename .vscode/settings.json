@@ -1,0 +1,18 @@
+{
+  "files.exclude": {
+    "**/.*": true,
+    "**/node_modules": true,
+    "**/__pycache__": true,
+    "**/*.pyc": true,
+    "**/*.egg-info": true,
+    "**/dist": true,
+    "**/*.tsbuildinfo": true,
+    "cache": true,
+    "archive": true,
+    "build": true,
+    "tests": true,
+    "package-lock.json": true,
+    "package.json": true,
+    "pyproject.toml": true
+  }
+}

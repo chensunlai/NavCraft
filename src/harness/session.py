@@ -77,6 +77,7 @@ class HarnessSession:
         self._action_end = None
         self._requests = 0
         self._prompts = []
+        self._target_frames = []
         self._image_counter = 0
         self._revision = 0
         for name in ("scene", "observations", "memory", "scratch"):
@@ -92,6 +93,11 @@ class HarnessSession:
             if state.get("observations"):
                 shutil.copytree(state["observations"], self.workspace / "observations", dirs_exist_ok=True)
             write_json(self.workspace / "memory/entities.json", state.get("memory", []))
+            task_notes = state.get("task_memory", "")
+            if not isinstance(task_notes, str):
+                raise ValueError("task_memory must be text")
+            self.task_memory_path = self.workspace / "memory/task.json"
+            write_json(self.task_memory_path, {"content": task_notes})
             self.observations = Observations(self.workspace, self.transform)
             self.memory = MemoryStore(self.workspace, self.private)
             self.renderer = MapRenderer(self.workspace, self.memory)
@@ -142,12 +148,16 @@ class HarnessSession:
     def checkpoint(self):
         entities = [{key: entity.get(key) for key in ("id", "type", "name", "room")}
                     for entity in self.memory.entities]
+        targets = [self.observations.get(frame) for frame in self._target_frames]
         facts = {"current_request": getattr(self, "_current_request", ""),
                  "submitted_requests": self._prompts, "pose": self.current["pose"],
-                 "frame": self.current["frame"], "entities": entities}
+                 "frame": self.current["frame"], "target_frames": self._target_frames,
+                 "entities": entities,
+                 "task_memory": json.loads(self.task_memory_path.read_text())["content"]}
         return {"content": "Public facts (no evaluation outcome):\n" + json.dumps(facts, ensure_ascii=False),
-                "images": [self.current["path"]],
-                "image_labels": [f"[CURRENT {self.current['frame']}]"], "revision": self._revision}
+                "images": [self.current["path"], *[row["path"] for row in targets]],
+                "image_labels": [f"[CURRENT {self.current['frame']}]", *[f"[TARGET {row['frame']}]" for row in targets]],
+                "revision": self._revision}
 
     def register_target(self, image):
         return self.observations.add(image, kind="target")["frame"]
@@ -324,6 +334,21 @@ class HarnessSession:
         value["view_id"] = mapped["view_id"]
         return self._reply(value, [mapped["map"]], [f"[MAP {mapped['view_id']} | locate points]"])
 
+    def _task_memory(self, action, content=None):
+        if action not in {"read", "edit"}:
+            raise ValueError("action must be read or edit")
+        if action == "read":
+            if content is not None:
+                raise ValueError("read does not accept content")
+            return self._reply(json.loads(self.task_memory_path.read_text()))
+        if not isinstance(content, str):
+            raise ValueError("edit requires text content")
+        before = self.trace.store(json.loads(self.task_memory_path.read_text()))
+        write_json(self.task_memory_path, {"content": content})
+        self._revision += 1
+        self.trace.emit("task_memory_changed", {"before": before, "after": self.trace.store({"content": content})})
+        return self._reply({"updated": True})
+
     def _execute(self, name, args):
         definition = next((tool for tool in self.tool_specs if tool["name"] == name), None)
         if definition is None or not isinstance(args, dict) or set(args) - definition["parameters"]["properties"].keys():
@@ -338,6 +363,8 @@ class HarnessSession:
             return self._step(**args)
         if name == "view_images":
             return self._images(**args)
+        if name == "task_memory":
+            return self._task_memory(**args)
         if name == "memory_read":
             result = self.super_tools.near(**args) if "near" in args else self.memory.read(**args)
             return self._reply(result, error="error" in result)
@@ -401,13 +428,17 @@ class HarnessSession:
             # must not leave the session busy or create an incomplete prompt record.
             refs = [self.current["path"]]
             captions = [f"Image 1: [CURRENT {self.current['frame']}]"]
+            target_frames = []
             for ref in images:
                 if ref in self.observations.items:
                     row = self.observations.get(ref)
                 else:
                     row = self.observations.get(self.register_target(ref))
                 refs.append(row["path"])
+                target_frames.append(row["frame"])
                 captions.append(f"Image {len(refs)}: [TARGET {row['frame']}]")
+            self._target_frames = target_frames
+            self._revision += 1
             self._busy = True
         started, prompt_id = time.monotonic(), uuid.uuid4().hex
         before, action_start = charged_requests(self.private), self.environment.steps

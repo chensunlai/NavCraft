@@ -48,12 +48,13 @@ def call(session, name, args):
     return receipt, json.loads(receipt["result"]["content"][0]["text"])
 
 
-def test_super_schemas_are_opt_in_and_basic_remains_seven_tools():
+def test_super_schemas_are_opt_in_and_share_task_memory():
     basic = specifications()
-    assert len(basic) == 7
+    assert len(basic) == 8
     super_tools = {t["name"]: t for t in specifications("super")}
-    assert len(super_tools) == 10
-    assert {"locate", "nav_face", "nav_goto"} <= super_tools.keys()
+    assert len(super_tools) == 11
+    assert {"locate", "nav_face", "nav_goto", "task_memory"} <= super_tools.keys()
+    assert next(t for t in basic if t["name"] == "task_memory") == super_tools["task_memory"]
     assert "grid" not in basic[0]["parameters"]["properties"]
     assert "grid" not in super_tools["nav_observe"]["parameters"]["properties"]
     assert "grid" not in super_tools["view_images"]["parameters"]["properties"]

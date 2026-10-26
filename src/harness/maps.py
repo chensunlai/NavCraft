@@ -71,7 +71,15 @@ class MapRenderer:
             bounds = [min(p[0] for p in corners), min(p[1] for p in corners),
                       max(p[0] for p in corners), max(p[1] for p in corners)]
         elif view == "full":
-            bounds = [0., 0., 1., 1.]
+            # Crop the display, not the shared coordinate system.
+            wall_points = [point for segment in data["walls"] for point in segment]
+            if wall_points:
+                bounds = [max(0., (min(p[i] for p in wall_points) - 1 - data["origin"][i]) / size)
+                          for i in (0, 1)] + [
+                              min(1., (max(p[i] for p in wall_points) + 1 - data["origin"][i]) / size)
+                              for i in (0, 1)]
+            else:
+                bounds = [0., 0., 1., 1.]
         else:
             if view == "explored":
                 points = list(trajectory or []) + [pose["pos"]] + [p["uv"] for p in located_points]

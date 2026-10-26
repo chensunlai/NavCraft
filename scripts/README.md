@@ -29,6 +29,7 @@
 | 服务 | `config/providers/221.yaml` | 凭据文件、API 协议，不保存密钥 |
 | 模型 | `config/models/{deepseek,qwen27,sol,astra}.yaml` | 模型名、effort、模型并发 |
 | 模型集合 | `config/models/{pilot,all}.yaml` | pilot 三模型或包含 Astra 的四模型注册表 |
+| 地图 | `config/maps/scene_dataset.yaml` | 已发布地图根目录和 walls / wall_real 图层 |
 | 环境 | `config/environments/habitat.yaml` | 场景根目录、GPU 池、随机种子 |
 | 任务 | `config/tasks/` | 冻结 episode 列表、连续任务与地图路径、场景构建队列 |
 | 预算 | `config/budgets/navigation.yaml` | 完整导航的动作、请求、时间限制 |
@@ -36,7 +37,7 @@
 | 上下文 | `config/runtime/navigation.yaml` | 上下文容量与压缩阈值 |
 | 构图 | `config/build_maps/{runtime,walls,full}.yaml` | 运行限制、GPU 池、构建阶段和工作空间模式 |
 
-导航脚本用多个 `--config` 合并任务/环境/预算/模型注册表，用多个 `--model-config` 组合实际模型配置。连续任务使用同一模型配置格式；其轮次预算来自冻结 scenario，不用 pilot 预算覆盖。构图脚本复用同一模型与服务配置，读取其中 model/effort/credentials，不继承模型推理并发作为场景构建并发。
+导航脚本用多个 `--config` 合并任务/环境/地图/预算/模型注册表，用多个 `--model-config` 组合实际模型配置。连续任务使用同一模型配置格式；其轮次预算来自冻结 scenario，不用 pilot 预算覆盖。构图脚本复用同一模型与服务配置，读取其中 model/effort/credentials，不继承模型推理并发作为场景构建并发。
 
 合并规则：后面的文件覆盖前面的同名字段；字典递归合并，列表整体替换，最后显式传入的模块参数优先。`extends` 相对当前 YAML 解析，其余路径相对仓库根目录。`config/pilot.yaml` 仅作为原有模块命令的默认组合入口，不再重复维护样本。
 
@@ -52,6 +53,14 @@
 
 ## 进度显示
 
-有限任务统一输出文本进度条到 stderr，可直接看终端，也会随 `2>&1` 保存到日志。批量评测按 episode、连续任务按轮次、构图按场景统计；检查、报告和网页导出按检查项或模型统计。`ended` 表示执行已结束，不等于成功；`ready/finished`、`partial`、`failed`、`running`、`waiting`、`pending` 分开显示。模型任务成功率仍以评分报告为准。网页服务器是持续服务，没有虚构的完成百分比。
+有限任务统一使用 tqdm 在 stderr 原地刷新进度条，显示耗时、预计剩余时间与状态计数；并发更新由锁保护。通过 `2>&1 | tee` 也保留原地刷新，保存的日志包含回车控制符，可用支持终端控制符的查看方式读取。批量评测按 episode、连续任务按轮次、构图按场景统计；检查、报告和网页导出按检查项或模型统计。`ended` 表示执行已结束，不等于成功；`ready/finished`、`partial`、`failed`、`running`、`waiting`、`pending` 分开显示。模型任务成功率仍以评分报告为准。网页服务器是持续服务，没有虚构的完成百分比。
 
 在 tmux 中直接运行任务脚本即可看到任务自身输出的进度条，不需要额外查看程序。已经启动的旧进程不会热加载新代码，本次不为此中断任务；后续启动或恢复时生效。
+
+## 已发布地图接入
+
+正式 Bench 默认读取 `data/scene_map_datasets`，用任务中的场景相对路径匹配原始资产和地图目录。`MAP_CONFIG` 指定地图配置，`maps.layer` 选择 `walls` 或 `wall_real`。`doctor.sh` 只检查加载条件；缺图、缺楼层或高度匹配不明确都会列出问题，运行入口不会默默跳过样本或回退旧地图。
+
+转换后的纯几何图写进当次运行的 `private/map.json`，源路径、楼层、图层和校验和写入 `private/map_source.json`。不改原始地图和任务标签，不在 Bench 中补墙或补目标视点。连续任务仍可显式指定已有标准 `map.json`，或改为新的场景地图目录。
+
+新增非 HSSD 100 景清单冻结后，可运行 `bash scripts/build_maps_nonhssd100.sh`；复用 provider/model/runtime/stage 配置，只换 `config/tasks/scene_maps_nonhssd100.yaml`。当前已启动自动筛选→冻结→建图任务，tmux 为 `build-nonhssd100`，不要同时用脚本重复派发同一批场景。

@@ -32,12 +32,16 @@ export function completeRoundStarts(messages: AgentMessage[]): number[] {
 }
 
 /** Change the request projection only; full images remain in the saved session. */
-export function pruneImages(messages: AgentMessage[]): AgentMessage[] {
+export function pruneImages(messages: AgentMessage[], pinnedImages: ImageContent[] = []): AgentMessage[] {
   const starts = completeRoundStarts(messages);
   const cutoff = starts.length > 3 ? starts[starts.length - 3] : 0;
   let checkpointCurrent = '';
   let latestCurrent = '';
   let latestImage = '';
+  // Match image bytes, not captions: initial user prompts can bundle several captions.
+  // Keep one occurrence per public checkpoint image, preferring the factual head.
+  const pins = new Map(pinnedImages.map(image => [image.data, '']));
+  const checkpointPins = new Set<string>();
   for (let m = 0; m < messages.length; m++) {
     const message = messages[m];
     if (!('content' in message) || !Array.isArray(message.content)) continue;
@@ -45,6 +49,10 @@ export function pruneImages(messages: AgentMessage[]): AgentMessage[] {
       const block = message.content[i];
       if (block.type !== 'image') continue;
       latestImage = `${m}:${i}`;
+      if (pins.has(block.data) && !checkpointPins.has(block.data)) {
+        pins.set(block.data, latestImage);
+        if (message.role === 'custom' && message.customType === 'public_checkpoint') checkpointPins.add(block.data);
+      }
       const label = message.content[i - 1];
       if (label?.type === 'text' && /\[CURRENT\b/.test(label.text)) {
         latestCurrent = latestImage;
@@ -54,11 +62,12 @@ export function pruneImages(messages: AgentMessage[]): AgentMessage[] {
     }
   }
   const keep = checkpointCurrent || latestCurrent || latestImage;
+  const pinned = new Set(pins.values());
   return messages.map((message, index) => {
     if (index >= cutoff || !('content' in message) || !Array.isArray(message.content)) return message;
     const content = message.content;
     return { ...message, content: content.map((block, i) => {
-      if (block.type !== 'image' || `${index}:${i}` === keep) return block;
+      if (block.type !== 'image' || `${index}:${i}` === keep || pinned.has(`${index}:${i}`)) return block;
       const previous = content[i - 1];
       const label = previous?.type === 'text' ? previous.text.match(/\[(?:CURRENT|HISTORY|MAP|TARGET)[^\]]*\]/)?.[0] : undefined;
       return { type: 'text' as const, text: `${label ?? 'Earlier image'} Removed from context. Reopen the source image if needed.` };
@@ -165,12 +174,13 @@ export function createCheckpointCompaction(sharedStream: StreamFn,
     pi.on('context', async (event, ctx) => {
       // Reload the persisted factual head when reopening an existing Pi session.
       facts ??= ctx.sessionManager.buildSessionProjection().messages.findLast(message => message.role === 'custom' && message.customType === 'public_checkpoint');
+      const state = await checkpoint();
       if (facts) {
-        const state = await checkpoint();
         if (state) facts = await factualHead(ctx.cwd, state, policy);
       }
       const messages = event.messages.filter(message => !(message.role === 'custom' && message.customType === 'public_checkpoint'));
-      return { messages: pruneImages(facts ? [facts, ...messages] : messages) };
+      const pinned = state ? await loadImages(ctx.cwd, state.images, policy) : [];
+      return { messages: pruneImages(facts ? [facts, ...messages] : messages, pinned) };
     });
   };
 }

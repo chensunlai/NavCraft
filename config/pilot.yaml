@@ -4,3 +4,4 @@ extends:
   - environments/habitat.yaml
   - budgets/navigation.yaml
   - tasks/pilot.yaml
+  - maps/scene_dataset.yaml

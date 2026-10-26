@@ -14,6 +14,7 @@ def test_waiting_is_not_completion_and_resume_is_monotonic(capsys):
     assert progress.states['a'] == 'ready'
     progress.set('b', 'failed')
     assert '3/3 ended' in capsys.readouterr().err
+    assert progress.bar.disable  # Completed bars release their terminal line.
 
 
 def test_parallel_progress_counts_unique_tasks(capsys):
@@ -24,6 +25,16 @@ def test_parallel_progress_counts_unique_tasks(capsys):
         progress.set(index, 'finished')
     with ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(complete, range(20)))
-    lines = capsys.readouterr().err.splitlines()
-    assert '20/20 ended | finished=20' in lines[-1]
-    assert len(lines) == 41  # Initial + two transitions per unique task.
+    text = capsys.readouterr().err
+    assert '20/20 ended' in text and 'finished=20' in text
+    assert progress.bar.n == 20
+    assert 'running=' in text
+    assert '\r' in text
+    assert text.count('\n') == 1  # Refresh in place; newline only on completion.
+
+
+def test_empty_and_already_finished_progress_close_immediately(capsys):
+    for keys, initial in [([], {}), (['a'], {'a': 'ready'})]:
+        progress = Progress('Maps', keys, initial)
+        assert progress.bar.disable
+    assert capsys.readouterr().err.count('\n') == 2

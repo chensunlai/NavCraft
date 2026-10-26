@@ -68,6 +68,35 @@ test('incomplete tool batches are kept and never counted as a completed round', 
   assert.equal(pruneImages(messages).length, messages.length);
 });
 
+test('active target survives pruning before compaction and loses its pin on goal change', () => {
+  const target = { type: 'image' as const, data: 'target', mimeType: 'image/png' };
+  const next = { ...target, data: 'next-target' };
+  const request: AgentMessage = { role: 'user', timestamp: 0, content: [
+    { type: 'text', text: 'Image 1: [CURRENT f_0]\nImage 2: [TARGET f_target]' },
+    { ...target, data: 'initial-view' }, target, next,
+  ] };
+  const messages = [request, ...[round(0, true), round(1), round(2), round(3), round(4)].flat()];
+  const images = (pins: typeof target[]) => pruneImages(messages, pins).flatMap(message =>
+    'content' in message && Array.isArray(message.content)
+      ? message.content.filter(block => block.type === 'image').map(block => block.data) : []);
+  assert.ok(images([target]).includes('target'));
+  assert.ok(!images([next]).includes('target'));
+  assert.ok(images([next]).includes('next-target'));
+  assert.ok(!images([]).includes('next-target'));
+});
+
+test('checkpoint target survives further rounds without pinning historical duplicates', () => {
+  const target = { type: 'image' as const, data: 'target', mimeType: 'image/png' };
+  const checkpoint: AgentMessage = { role: 'custom', customType: 'public_checkpoint', display: false,
+    timestamp: 0, content: [{ type: 'text', text: '[TARGET f_target]' }, target] };
+  const old: AgentMessage = { role: 'user', timestamp: 0, content: [target] };
+  const messages = [checkpoint, old, ...[round(0, true), round(1), round(2), round(3), round(4)].flat()];
+  const projected = pruneImages(messages, [target]);
+  assert.match(JSON.stringify(projected[0]), /"type":"image"/);
+  assert.doesNotMatch(JSON.stringify(projected[1]), /"type":"image"/);
+  assert.equal(completeRoundStarts(projected).length, 5);
+});
+
 test('compaction starts before an entire assistant batch and retains two rounds', () => {
   const manager = SessionManager.inMemory('/tmp');
   manager.appendMessage({ role: 'user', content: 'Find the chair', timestamp: 0 });
@@ -140,7 +169,10 @@ test('actual Pi compaction persists the short summary and restores public facts 
   await writeFile(join(workspace, 'observations', 'reference.webp'), Buffer.from('UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEAAQAcJaQAA3AA/v89WAAAAA==', 'base64'));
   const original = globalThis.fetch;
   const payloads: Record<string, unknown>[] = [];
-  const checkpoint = { content: 'PUBLIC FACTS current_request=Find chair; frame=f_latest', revision: 4,
+  const instruction = 'Find the pictured chair beside the window. Use the left entrance, not the doorway behind the sofa.';
+  const systemPrompt = 'Navigation fixture: maintain evidence-backed memory.\nA submission acknowledgement is not a success score.';
+  const taskNotes = 'Attempted left approach; next inspect the right side. Destination remains uncertain.';
+  const checkpoint = { content: `PUBLIC FACTS current_request=${instruction}; frame=f_latest; task_memory=${taskNotes}`, revision: 4,
     images: ['observations/current.png', 'observations/reference.webp'],
     image_labels: ['[CURRENT f_latest]', '[TARGET f_reference]'] };
   globalThis.fetch = async (_input, init) => {
@@ -159,7 +191,7 @@ test('actual Pi compaction persists the short summary and restores public facts 
       api: 'openai-completions', coding: false, compact: false, thinkingLevel: 'xhigh',
       compaction: { reserveTokens: 8768, keepRecentTokens: 100 },
       python: process.env.NAVCRAFT_TEST_PYTHON ?? '/home/chen/.local/anaconda3/envs/vln/bin/python',
-      systemPrompt: 'Navigation fixture', executionPolicy: { readOnly: ['scene', 'observations', 'memory'], readWrite: ['scratch'] },
+      systemPrompt, executionPolicy: { readOnly: ['scene', 'observations', 'memory'], readWrite: ['scratch'] },
       tools: [{ name: 'nav_observe', label: 'Observe', description: 'Fixture observation',
         parameters: { type: 'object', properties: {} }, execute: async () => ({ content: [{ type: 'text', text: 'fixture' }], details: {} }) }],
       initialMessages: [{ role: 'user', content: 'OLD DISCARDED HISTORY '.repeat(1000), timestamp: 0 },
@@ -169,14 +201,21 @@ test('actual Pi compaction persists the short summary and restores public facts 
     const result = await active.session.compact();
     assert.equal(result.summary, 'Door identity uncertain; inspect its other side.');
     assert.equal(active.budget.used, 1);
-    checkpoint.content = 'PUBLIC FACTS current_request=Find chair; frame=f_after_moving';
+    checkpoint.content = `PUBLIC FACTS current_request=${instruction}; frame=f_after_moving; task_memory=${taskNotes}`;
     checkpoint.image_labels = ['[CURRENT f_after_moving]', '[TARGET f_reference]'];
     checkpoint.revision = 5;
+    for (const message of [round(4), round(5), round(6), round(7)].flat()) {
+      if (message.role === 'assistant' || message.role === 'toolResult') active.session.sessionManager.appendMessage(message);
+    }
     await active.session.prompt('Continue');
     assert.equal(active.budget.used, 2);
     assert.equal(payloads[0].reasoning_effort, 'xhigh');
     assert.equal(payloads[0].max_completion_tokens, 8192);
     const input = JSON.stringify(payloads[1]);
+    const systemMessages = (payloads[1].messages as { role: string; content: unknown }[]).filter(message => message.role === 'system' || message.role === 'developer');
+    assert.ok(JSON.stringify(systemMessages).includes(JSON.stringify(systemPrompt).slice(1, -1)));
+    assert.ok(input.includes(instruction));
+    assert.ok(input.includes(taskNotes));
     assert.match(input, /PUBLIC FACTS/);
     assert.match(input, /CURRENT f_after_moving/);
     assert.match(input, /data:image\/webp;base64/);
@@ -186,6 +225,16 @@ test('actual Pi compaction persists the short summary and restores public facts 
     assert.doesNotMatch(input, /observe-0|observe-1/);
     assert.match(input, /observe-2/);
     assert.match(input, /observe-3/);
+    assert.match(input, /observe-7/);
+    checkpoint.content = 'PUBLIC FACTS current_request=Find a table; target_frames=[]';
+    checkpoint.images = ['observations/current.png'];
+    checkpoint.image_labels = ['[CURRENT f_after_moving]'];
+    checkpoint.revision = 6;
+    await active.session.prompt('Next goal: find a table');
+    assert.match(JSON.stringify(payloads[2]), /Find a table/);
+    assert.ok(JSON.stringify(payloads[2]).includes(JSON.stringify(systemPrompt).slice(1, -1)));
+    assert.ok(!JSON.stringify(payloads[2]).includes(instruction));
+    assert.doesNotMatch(JSON.stringify(payloads[2]), /TARGET f_reference|data:image\/webp;base64/);
   } finally {
     active?.session.dispose();
     globalThis.fetch = original;
