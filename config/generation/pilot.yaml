@@ -1,0 +1,19 @@
+extends:
+  - ../models/sol.yaml
+  - ../environments/habitat.yaml
+  - ../tools/super.yaml
+output: data/generated/spatial-pilot-20261026
+concurrency: 1
+generation:
+  seed: 0
+  scene_count: 3
+  dev_scene_count: 1
+  snapshots_per_scene: 6
+  maps_root: data/scene_map_datasets
+  tasks: [5a, 5c, 6a, 6c, 13d, 1b, 1n, 14b]
+  per_task: 10
+  teacher_per_task: 2
+  attempts: 2
+environment:
+  gpu: 0
+  seed: 0

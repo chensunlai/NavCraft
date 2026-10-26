@@ -15,6 +15,7 @@
 | `check_geometry.sh` | 重放 pilot 几何与动作可达性检查，不请求模型 |
 | `check_super_tools.sh` | 真实环境中的 Super 工具检查，不请求模型 |
 | `build_maps.sh` | 默认 Sol high、16 并发，按队列构建 wall/wall_real 与楼梯，使用场景 `raw/` 工作空间 |
+| `generate_dataset.sh` | 准备真实场景与切点，生成 8 类空间任务，单并发 Sol 验收并导出训练记录 |
 | `compare_map_builds.sh` | Sol/Astra high 同场景完整构图，各占 GPU 0/1，独立 Home、工作空间和场景产物 |
 | `report.sh` | 从已有 pilot 记录重新计算并生成报告 |
 | `export_viewer.sh` | 从已有连续任务记录导出静态图文网页 |
@@ -36,6 +37,7 @@
 | 工具 | `config/tools/{basic,super}.yaml` | 工具集合及局部规划方式 |
 | 上下文 | `config/runtime/navigation.yaml` | 上下文容量与压缩阈值 |
 | 构图 | `config/build_maps/{runtime,walls,full}.yaml` | 运行限制、GPU 池、构建阶段和工作空间模式 |
+| 数据生成 | `config/generation/pilot.yaml` | 场景划分、题型配额、教师抽样及生成目录，复用已有模型/环境/工具配置 |
 
 导航脚本用多个 `--config` 合并任务/环境/地图/预算/模型注册表，用多个 `--model-config` 组合实际模型配置。连续任务使用同一模型配置格式；其轮次预算来自冻结 scenario，不用 pilot 预算覆盖。构图脚本复用同一模型与服务配置，读取其中 model/effort/credentials，不继承模型推理并发作为场景构建并发。
 
