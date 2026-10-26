@@ -7,7 +7,7 @@ import shutil
 import time
 
 from src.common.io import write_json
-from src.common.coordinates import bearing_distance, uv_to_world, world_to_uv
+from src.common.coordinates import bearing_distance, body_forward, uv_to_world, world_to_uv
 from .geometry import Geometry
 from .memory import location
 
@@ -31,12 +31,11 @@ class SpatialTools:
         depth = directory / (row["frame"] + ".png")
         shutil.copyfile(observation.depth, depth)
         body_pose = body_pose or pose
-        qx, qy, qz, qw = body_pose["rotation_xyzw"]
         record = {"frame": row["frame"], "depth": depth.name,
                   "depth_scale": camera["depth_scale"], "K": camera["K"],
                   "world_from_optical": pose["world_from_optical"],
                   "body_position": body_pose["position"],
-                  "body_forward": [-2 * (qx * qz + qw * qy), 0, -(1 - 2 * (qx * qx + qy * qy))],
+                  "body_forward": body_forward(body_pose["rotation_xyzw"]),
                   "floor_height": self.session.transform["floor_height"],
                   "width": camera["width"], "height": camera["height"],
                   "depth_min": camera["depth_min"], "depth_max": camera["depth_max"]}

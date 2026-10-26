@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from src.common.coordinates import xz_to_uv
+from src.common.coordinates import apply_affine, invert_affine, xz_to_uv
 from .memory import MemoryStore, location
 from .map_labels import layout_labels
 
@@ -57,18 +57,12 @@ class MapRenderer:
             scale = 692 / (2 * radius / size)
             width = height = 768
             cx, cy = 384., 380.
-            affine = [[cosine / scale, -sine / scale,
-                       pose["pos"][0] - (cosine * cx - sine * cy) / scale],
-                      [sine / scale, cosine / scale,
-                       pose["pos"][1] - (sine * cx + cosine * cy) / scale]]
-
-            def ego_pixel(point):
-                du, dv = point[0] - pose["pos"][0], point[1] - pose["pos"][1]
-                return (cx + scale * (cosine * du + sine * dv),
-                        cy + scale * (-sine * du + cosine * dv))
-
-            corners = [[a * x + b * y + c for a, b, c in affine]
-                       for x, y in ((38, 34), (730, 34), (730, 726), (38, 726))]
+            u, v = pose["pos"]
+            uv_to_pixel = [[scale * cosine, scale * sine, cx - scale * (cosine * u + sine * v)],
+                           [-scale * sine, scale * cosine, cy + scale * (sine * u - cosine * v)]]
+            affine = invert_affine(uv_to_pixel)
+            corners = [apply_affine(affine, point)
+                       for point in ((38, 34), (730, 34), (730, 726), (38, 726))]
             bounds = [min(p[0] for p in corners), min(p[1] for p in corners),
                       max(p[0] for p in corners), max(p[1] for p in corners)]
         elif view == "full":
@@ -112,14 +106,13 @@ class MapRenderer:
             span_u, span_v = bounds[2] - bounds[0], bounds[3] - bounds[1]
             scale = 692 / max(span_u, span_v)
             width, height = round(span_u * scale) + 76, round(span_v * scale) + 76
-            affine = [[1 / scale, 0., bounds[0] - 38 / scale],
-                      [0., 1 / scale, bounds[1] - 34 / scale]]
+            uv_to_pixel = [[scale, 0., 38 - bounds[0] * scale],
+                           [0., scale, 34 - bounds[1] * scale]]
+            affine = invert_affine(uv_to_pixel)
 
-            def north_pixel(point):
-                return (38 + (point[0] - bounds[0]) * scale,
-                        34 + (point[1] - bounds[1]) * scale)
+        def pixel(point):
+            return tuple(apply_affine(uv_to_pixel, point))
 
-        pixel = ego_pixel if ego else north_pixel
         plot_bounds = [38., 34., float(width - 38), float(height - 42)]
         image = Image.new("RGB", (width, height), "#ffffff")
         draw = ImageDraw.Draw(image)

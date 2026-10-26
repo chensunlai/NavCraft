@@ -32,22 +32,64 @@ def uv_to_world(uv, transform, height=None):
     return [x, transform["floor_height"] if height is None else height, z]
 
 
+def body_forward(rotation_xyzw):
+    """Rotate Habitat's local -Z forward axis into the world (unit XYZW quaternion)."""
+    qx, qy, qz, qw = rotation_xyzw
+    return [-2 * (qx * qz + qw * qy), 2 * (qw * qx - qy * qz),
+            -(1 - 2 * (qx * qx + qy * qy))]
+
+
+def heading_from_forward(forward):
+    """Horizontal map heading: zero faces -Z, right-positive, in [0,360)."""
+    fx, _, fz = _finite(forward, 3, "Body forward")
+    if math.hypot(fx, fz) < 1e-12:
+        raise ValueError("Body forward has no horizontal direction")
+    return math.degrees(math.atan2(fx, -fz)) % 360
+
+
 def map_pose(pose, transform):
-    """Publish a Habitat body pose; quaternion order is [x,y,z,w]."""
-    qx, qy, qz, qw = pose["rotation_xyzw"]
-    fx = -2 * (qx * qz + qw * qy)
-    fz = -(1 - 2 * (qx * qx + qy * qy))
+    """Publish a Habitat body pose; round only at the public boundary."""
+    heading = heading_from_forward(body_forward(pose["rotation_xyzw"]))
     return {"pos": [round(v, 4) for v in world_to_uv(pose["position"], transform)],
-            "heading": round(math.degrees(math.atan2(fx, -fz)) % 360, 2) % 360}
+            "heading": round(heading, 2) % 360}
+
+
+def relative_xz(dx, dz, heading):
+    """Metric horizontal displacement to body-relative bearing and distance."""
+    distance = math.hypot(dx, dz)
+    angle = ((math.degrees(math.atan2(dx, -dz)) - heading + 180) % 360 - 180
+             if distance > 1e-9 else 0.)
+    return {"bearing_degrees": angle, "distance_m": distance}
 
 
 def bearing_distance(pose, uv, transform):
     """Direction relative to the current body (right-positive), and metres."""
     dx, dz = [(uv[i] - pose["pos"][i]) * transform["size_m"] for i in (0, 1)]
-    distance = math.hypot(dx, dz)
-    angle = ((math.degrees(math.atan2(dx, -dz)) - pose["heading"] + 180) % 360 - 180
-             if distance > 1e-9 else 0.)
-    return {"bearing_degrees": angle, "distance_m": distance}
+    return relative_xz(dx, dz, pose["heading"])
+
+
+def project_uv(pose, bearing_deg, distance_m, transform):
+    """Body-relative horizontal bearing/distance to global UV."""
+    angle = math.radians(pose["heading"] + bearing_deg)
+    distance = distance_m / transform["size_m"]
+    return [pose["pos"][0] + math.sin(angle) * distance,
+            pose["pos"][1] - math.cos(angle) * distance]
+
+
+def apply_affine(matrix, point):
+    """Apply a 2x3 display transform without rounding or clipping."""
+    x, y = point
+    return [a * x + b * y + c for a, b, c in matrix]
+
+
+def invert_affine(matrix):
+    """Invert a 2x3 display transform; view changes never alter global UV."""
+    (a, b, c), (d, e, f) = matrix
+    det = a * e - b * d
+    if not math.isfinite(det) or det == 0:
+        raise ValueError("Display transform must be finite and invertible")
+    return [[e / det, -b / det, (b * f - e * c) / det],
+            [-d / det, a / det, (d * c - a * f) / det]]
 
 
 def validate_map(value):

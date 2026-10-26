@@ -18,6 +18,8 @@
 
 公开世界/UV/方位换算使用 `common.coordinates`。朝向 0° 对应世界 -Z，右转为正；地图裁剪和旋转不改变存储坐标。
 
+`maps._source_point` 是构图 `[X,-Z]` 到运行 `[X,Z]` 的唯一换算入口，墙端点与楼层范围共用它。指定图层中的护栏、外围和补全边界随墙段一起保留，不按 `kind` 静默过滤。楼层选择与两图层共享画布仍在 Dataset 完成；Harness 不再次翻转 Z。
+
 ## 场景定位与校验
 
 `scene_id` 是相对仿真资产根目录的 POSIX 路径，如 `hm3d/val/00829-QaLdnwvtxbs/QaLdnwvtxbs.basis.glb`。官方数据的已知前缀在读取时规范化一次。HM3D/MP3D 的表征目录与资产目录对应；HSSD 用资产文件名中的场景 ID 查找唯一 split 目录，找不到或跨 split 重复时明确报错，不另存资产索引副本。

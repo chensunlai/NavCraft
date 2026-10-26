@@ -40,6 +40,13 @@ def _number(value):
     return float(value)
 
 
+def _source_point(point):
+    """The sole source-plan [X,-Z] -> runtime [X,Z] boundary, both in metres."""
+    if not isinstance(point, list) or len(point) != 2:
+        raise ValueError("Source map points require two coordinates")
+    return [_number(point[0]), -_number(point[1])]
+
+
 def _scene_coordinates(scene):
     declaration = next((scene[key] for key in ("coordinate_system", "coordinates",
                        "coordinate_convention", "map_coordinates") if key in scene), None)
@@ -98,12 +105,9 @@ def _read_geometry(source):
         for name, segments in layers.items():
             walls = []
             for segment in segments:
-                if segment["level"] != level["id"] or segment.get("kind") == "railing":
+                if segment["level"] != level["id"]:
                     continue
-                points = [segment["start"], segment["end"]]
-                if any(not isinstance(p, list) or len(p) != 2 for p in points):
-                    raise ValueError("Wall segments require two 2D endpoints")
-                converted = [[_number(p[0]), -_number(p[1])] for p in points]
+                converted = [_source_point(segment[key]) for key in ("start", "end")]
                 if converted[0] == converted[1]:
                     raise ValueError("Zero-length wall segment")
                 walls.append(converted)
@@ -124,7 +128,7 @@ def _read_geometry(source):
             x, y = [[_number(v) for v in axis] for axis in bounds]
             if x[0] >= x[1] or y[0] >= y[1]:
                 raise ValueError("Invalid scene floor bounds ordering")
-            points.extend([[x[0], -y[1]], [x[1], -y[0]]])
+            points.extend([_source_point([x[0], y[1]]), _source_point([x[1], y[0]])])
         low = [min(p[i] for p in points) - 2 for i in (0, 1)]
         high = [max(p[i] for p in points) + 2 for i in (0, 1)]
         size = math.ceil(max(high[i] - low[i] for i in (0, 1)) / 10) * 10

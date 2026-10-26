@@ -32,7 +32,7 @@ def scene_files(tmp_path):
 def test_conversion_selects_floor_without_semantic_leakage(tmp_path):
     directory = scene_files(tmp_path)
     public, provenance = load_wall_map(directory, [0, .1, 0])
-    assert public['walls'] == [[[-2., -1.], [2., -1.]]]
+    assert public['walls'] == [[[-2., -1.], [2., -1.]], [[0., 0.], [1., -1.]]]
     assert set(public) == {'origin', 'size_m', 'floor_height', 'walls'}
     assert provenance['level'] == 'L1' and provenance['layer'] == 'walls'
     upper, _ = load_wall_map(directory, [0, 3.1, 0])
@@ -136,7 +136,7 @@ def test_worker_materializes_public_map_before_harness(tmp_path, monkeypatch):
                                 {'gpu': 0}, directory, tmp_path / 'run',
                                 {'max_actions': 5, 'max_requests': 2, 'seconds': 10})
     assert result['status'] == 'completed'
-    assert captured[0]['walls'] == [[[-2., -1.], [2., -1.]]]
+    assert captured[0]['walls'] == [[[-2., -1.], [2., -1.]], [[0., 0.], [1., -1.]]]
     assert (tmp_path / 'run/private/map_source.json').is_file()
 
 
@@ -150,7 +150,7 @@ def test_declared_scene_coordinate_fields(tmp_path, declaration, field):
     scene[field] = declaration
     path.write_text(json.dumps(scene))
     public, _ = load_wall_map(directory, [0, .1, 0])
-    assert public['walls'] == [[[-2., -1.], [2., -1.]]]
+    assert public['walls'] == [[[-2., -1.], [2., -1.]], [[0., 0.], [1., -1.]]]
 
 
 def test_layers_share_calibration_even_with_different_geometry_bounds(tmp_path):

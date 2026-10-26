@@ -1,8 +1,7 @@
 """Read-only public navigation helpers; no simulator or private state access."""
 
 import json
-import math
-from coordinates import world_to_uv, uv_to_world, bearing_distance as _bearing_distance
+from coordinates import world_to_uv, uv_to_world, project_uv, bearing_distance as _bearing_distance
 from pathlib import Path
 
 
@@ -31,10 +30,7 @@ def bearing_distance(pose, uv):
 
 
 def project(pose, bearing_deg, distance_m):
-    angle = math.radians(pose["heading"] + bearing_deg)
-    distance = distance_m / _map()["size_m"]
-    return [pose["pos"][0] + math.sin(angle) * distance,
-            pose["pos"][1] - math.cos(angle) * distance]
+    return project_uv(pose, bearing_deg, distance_m, _map())
 
 
 def frame(fid):

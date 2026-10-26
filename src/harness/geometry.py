@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from src.common.coordinates import xz_to_uv
+from src.common.coordinates import apply_affine, heading_from_forward, relative_xz, xz_to_uv
 from .memory import observation_index
 
 
@@ -101,14 +101,11 @@ class Geometry:
             return {"valid": False, "reason": str(error)}
         point = np.asarray(values)
         displacement = point[[0, 2]] - np.asarray(camera["body_position"])[[0, 2]]
-        forward = np.asarray(camera["body_forward"])[[0, 2]]
-        if not np.isfinite(forward).all() or np.linalg.norm(forward) == 0:
-            raise ValueError("Invalid capture body direction")
-        right = np.array([-forward[1], forward[0]])
-        bearing = math.degrees(math.atan2(float(displacement @ right), float(displacement @ forward)))
+        heading = heading_from_forward(camera["body_forward"])
+        relative = relative_xz(float(displacement[0]), float(displacement[1]), heading)
         return {"uv": np.clip(self._uv(point[None])[0], 0, 1).round(4).tolist(),
-                "distance": round(float(np.linalg.norm(displacement)), 3),
-                "bearing": round(bearing, 2),
+                "distance": round(relative["distance_m"], 3),
+                "bearing": round(relative["bearing_degrees"], 2),
                 "height": round(float(point[1] - camera["floor_height"]), 3), "valid": True}
 
     def resolve_map(self, view_id, pixel):
@@ -122,7 +119,7 @@ class Geometry:
         left, top, right, bottom = view["plot_bounds"]
         if not left <= x <= right or not top <= y <= bottom:
             raise ValueError("pixel_outside_map_plot")
-        uv = np.asarray(view["pixel_to_uv"], dtype=float) @ [x, y, 1]
+        uv = np.asarray(apply_affine(view["pixel_to_uv"], [x, y]))
         if not np.isfinite(uv).all() or np.any(uv < -1e-10) or np.any(uv > 1 + 1e-10):
             raise ValueError("outside_canvas")
         return {"uv": np.clip(uv, 0, 1).round(4).tolist()}
