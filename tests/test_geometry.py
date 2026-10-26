@@ -93,16 +93,7 @@ class GeometryTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.geometry.resolve_map("m_0001", pixel)
 
-    def test_batch_limit_and_per_point_failure(self):
-        result = self.geometry.locate("f_0001", [[2, 2], [-1, 2]])
-        self.assertTrue(result["points"][0]["valid"])
-        self.assertFalse(result["points"][1]["valid"])
-        self.assertEqual(result["points"][1]["pixel"], [-1, 2])
-        for points in ([], [[2, 2]] * 11):
-            with self.assertRaises(ValueError):
-                self.geometry.locate("f_0001", points)
-        with self.assertRaises(ValueError):
-            self.geometry.locate("crop_0001", [[2, 2]])
+    def test_invalid_source_and_pixel_references_are_rejected(self):
         with self.assertRaises(ValueError):
             self.geometry.resolve_frame_point("f_0001", [5, 0])
         self.assertFalse(self.geometry.resolve_frame({}, [2, 2])["valid"])

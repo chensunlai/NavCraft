@@ -6,6 +6,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+from src.common.coordinates import xz_to_uv
 from .memory import MemoryStore, location
 from .map_labels import layout_labels
 
@@ -72,11 +73,11 @@ class MapRenderer:
                       max(p[0] for p in corners), max(p[1] for p in corners)]
         elif view == "full":
             # Crop the display, not the shared coordinate system.
-            wall_points = [point for segment in data["walls"] for point in segment]
+            wall_points = [xz_to_uv(*point, data) for segment in data["walls"] for point in segment]
             if wall_points:
-                bounds = [max(0., (min(p[i] for p in wall_points) - 1 - data["origin"][i]) / size)
+                bounds = [max(0., min(p[i] for p in wall_points) - 1 / size)
                           for i in (0, 1)] + [
-                              min(1., (max(p[i] for p in wall_points) + 1 - data["origin"][i]) / size)
+                              min(1., max(p[i] for p in wall_points) + 1 / size)
                               for i in (0, 1)]
             else:
                 bounds = [0., 0., 1., 1.]
@@ -149,7 +150,7 @@ class MapRenderer:
                     b = [value, bounds[3]] if axis == 0 else [bounds[2], value]
                     draw.line([pixel(a), pixel(b)], fill="#e7e9ec", width=1)
         for segment in data["walls"]:
-            uv = [[(p[i] - data["origin"][i]) / size for i in (0, 1)] for p in segment]
+            uv = [xz_to_uv(*p, data) for p in segment]
             draw.line([pixel(p) for p in uv], fill="#262a2f", width=2)
         if len(trajectory or []) > 1:
             breaks = set(trajectory_breaks)
@@ -245,7 +246,7 @@ class MapRenderer:
             draw.polygon([(nx + dx, ny + dy),
                           (nx + dx * .65 - dy * .2, ny + dy * .65 + dx * .2),
                           (nx + dx * .65 + dy * .2, ny + dy * .65 - dx * .2)], fill="#26313d")
-            draw.text((nx + dx - 4, ny + dy - 18), "N", fill="#26313d", font=small)
+            draw.text((nx + dx - 4, ny + dy - 18), "map up", fill="#26313d", font=small)
         else:
             for axis in (0, 1):
                 for metre in range(math.ceil(bounds[axis] * size / 2) * 2,
@@ -265,7 +266,8 @@ class MapRenderer:
         image.save(path)
         result = {"map": path.relative_to(self.workspace).as_posix(), "view_id": path.stem,
                   "bounds": bounds, "pixel_to_uv": affine, "plot_bounds": plot_bounds,
-                  "image_size": [width, height], "warnings": warnings}
+                  "image_size": [width, height], "warnings": warnings,
+                  "visible_ids": [e["id"] for e in entities if location(e) is not None and inside(location(e))]}
         with (output / "index.jsonl").open("a") as stream:
             stream.write(json.dumps({**result, "width": width, "height": height,
                                      "view": view, "pose": pose}, ensure_ascii=False) + "\n")

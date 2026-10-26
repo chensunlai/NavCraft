@@ -235,7 +235,7 @@ def _model_export(model_dir, output, assets, model_id=None):
                      "error": bool(body.get("isError") or value.get("isError")), "truncated": len(text) > TEXT_LIMIT}
             checkpoint = value.get("checkpoint", {})
             current = _frame_ids(checkpoint.get("images", []), frames)
-            if name in {"nav_observe", "nav_step", "nav_face", "nav_goto"}:
+            if name in {"observe", "move"}:
                 captured = list(current)
                 for block in body.get("content", []):
                     if block.get("type") == "text":

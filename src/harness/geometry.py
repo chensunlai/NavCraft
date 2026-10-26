@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from src.common.coordinates import xz_to_uv
 from .memory import observation_index
 
 
@@ -68,7 +69,7 @@ class Geometry:
         return optical @ transform[:3, :3].T + transform[:3, 3]
 
     def _uv(self, points):
-        return (points[:, [0, 2]] - self.transform["origin"]) / self.transform["size_m"]
+        return np.column_stack(xz_to_uv(points[:, 0], points[:, 2], self.transform))
 
     @staticmethod
     def _depth_valid(depth, camera):
@@ -125,21 +126,6 @@ class Geometry:
         if not np.isfinite(uv).all() or np.any(uv < -1e-10) or np.any(uv > 1 + 1e-10):
             raise ValueError("outside_canvas")
         return {"uv": np.clip(uv, 0, 1).round(4).tolist()}
-
-    def locate(self, source, points):
-        if not isinstance(points, list) or not 1 <= len(points) <= 10:
-            raise ValueError("points must contain 1–10 pixel pairs")
-        if not isinstance(source, str) or not source.startswith(("f_", "m_")):
-            raise ValueError("source must be an original frame or saved map view ID")
-        resolve = self.resolve_frame if source.startswith("f_") else self.resolve_map
-        results = []
-        for point in points:
-            try:
-                result = resolve(source, point)
-            except ValueError as error:
-                result = {"valid": False, "reason": str(error)}
-            results.append({"pixel": point, **result})
-        return {"source": source, "points": results}
 
     def overlay(self, frames, max_range=6, minheight=.1, maxheight=1.8):
         """Return at most 50k [u,v,r,g,b] rows from actual RGB-D observations."""

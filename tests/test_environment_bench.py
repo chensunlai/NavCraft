@@ -10,7 +10,8 @@ from PIL import Image
 
 from src.bench.metrics import score_episode, score_goal
 from src.bench.runner import execute_goals, validate_single_floor
-from src.bench.samples import plan, read_config
+from src.bench.samples import plan
+from src.common.config import read_config
 from src.dataset.episodes import EpisodeSpec, create_source
 from src.environment import Environment, MotionResult
 from src.environment.fake import FakeSimulator

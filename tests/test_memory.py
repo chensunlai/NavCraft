@@ -13,7 +13,7 @@ class MemoryTests(unittest.TestCase):
         self.root = Path(self.directory.name) / "workspace"
         (self.root / "observations").mkdir(parents=True)
         (self.root / "observations/index.jsonl").write_text("\n".join(json.dumps({
-            "frame": f"f_{i:04d}", "step": i, "pose": {"pos": [.5, .5], "heading": 0}
+            "frame": f"f_{i:04d}", "kind": "observation", "step": i, "pose": {"pos": [.5, .5], "heading": 0}
         }) for i in range(3)) + "\n")
         self.store = MemoryStore(self.root)
 
@@ -34,7 +34,7 @@ class MemoryTests(unittest.TestCase):
 
     def test_evidence_preserves_panorama_camera_direction(self):
         with (self.root / "observations/index.jsonl").open("a") as stream:
-            stream.write(json.dumps({"frame": "f_0003", "step": 3,
+            stream.write(json.dumps({"frame": "f_0003", "kind": "observation", "step": 3,
                                     "pose": {"pos": [.5, .5], "heading": 90},
                                     "group": "p_one", "yaw": 120}) + "\n")
         self.store.edit([self.create("R01", "room", evidence=["f_0003"])])
@@ -111,6 +111,14 @@ class MemoryTests(unittest.TestCase):
         self.store.edit([self.create("R01", "room")])
         self.assertIn("error", self.store.edit([{"op": "update", "id": "R01", "fields": {"type": "object"}}]))
         self.assertIn("error", self.store.read(ids=["R01"], filter={"type": "room"}))
+
+    def test_target_image_is_not_proof_of_an_observed_entity(self):
+        with (self.root / "observations/index.jsonl").open("a") as stream:
+            stream.write(json.dumps({"frame": "f_0003", "kind": "target", "pose": None}) + "\n")
+        result = self.store.edit([self.create("O01", "object", evidence=["f_0003"])])
+        self.assertIn("observed scene frames", result["error"])
+        self.assertEqual(self.store.entities, [])
+        self.assertNotIn("error", self.store.edit([self.create("O01", "object", evidence=["f_0000"])]))
 
     def test_snapshot_validation_and_id_reservation(self):
         self.store.path.write_text(json.dumps([{"id": "R07", "type": "room", "name": "room", "anchor": None,

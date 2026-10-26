@@ -9,7 +9,7 @@ import { RequestBudget } from '../budget.js';
 import { Trace } from '../trace.js';
 
 const message = (error?: string): any => ({ role: 'assistant', content: error
-  ? [{ type: 'toolCall', id: 'partial', name: 'nav_step', arguments: {} }]
+  ? [{ type: 'toolCall', id: 'partial', name: 'move', arguments: {} }]
   : [{ type: 'text', text: 'ready' }], api: 'openai-responses', provider: 'fixture', model: 'fixture',
   stopReason: error ? 'error' : 'stop', errorMessage: error, timestamp: Date.now(),
   usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
@@ -41,7 +41,7 @@ test('service errors retry without limit, with identical context and one charged
     assert.equal(sent, 8); assert.equal(budget.used, 8); assert.equal(budget.charged, 1);
     assert.deepEqual(waits, [10000, 20000, 40000, 60000, 60000, 60000, 60000]);
     assert.deepEqual(seen.map(e => e.type), ['start', 'done']);
-    assert.equal(JSON.stringify(seen).includes('nav_step'), false);
+    assert.equal(JSON.stringify(seen).includes('move'), false);
     const reopened = new RequestBudget(join(dir, 'requests.json'), 2, new Trace(dir, dir));
     assert.equal(reopened.charged, 1);
   } finally { globalThis.fetch = old; rmSync(dir, { recursive: true, force: true }); }

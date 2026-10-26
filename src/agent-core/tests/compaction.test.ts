@@ -20,11 +20,11 @@ function round(index: number, current = false): AgentMessage[] {
   return [
     { ...assistant(''), content: [
       { type: 'toolCall', id: `read-${index}`, name: 'read', arguments: {} },
-      { type: 'toolCall', id: `observe-${index}`, name: 'nav_observe', arguments: {} },
+      { type: 'toolCall', id: `observe-${index}`, name: 'observe', arguments: {} },
     ], stopReason: 'toolUse' },
     { role: 'toolResult', toolCallId: `read-${index}`, toolName: 'read',
       content: [{ type: 'text', text: 'read receipt' }], isError: false, timestamp: index },
-    { role: 'toolResult', toolCallId: `observe-${index}`, toolName: 'nav_observe',
+    { role: 'toolResult', toolCallId: `observe-${index}`, toolName: 'observe',
       content: [{ type: 'text', text: `[${current ? 'CURRENT' : 'HISTORY'} f_${index}]` },
         { type: 'image', data: `image-${index}`, mimeType: 'image/png' }], isError: false, timestamp: index },
   ];
@@ -99,7 +99,7 @@ test('two overlong summaries fail without truncation or unbounded retries', asyn
 test('reasoning-only, truncated and tool-producing summaries cannot become checkpoints', async () => {
   await assert.rejects(summarize([{ ...assistant(''), content: [{ type: 'thinking', thinking: 'reasoning only' }] }]), /visible text/);
   await assert.rejects(summarize([assistant('partial answer', 'length')]), /token cap/);
-  await assert.rejects(summarize([{ ...assistant(''), content: [{ type: 'toolCall', id: 'call', name: 'nav_step', arguments: {} }] }]), /call a tool/);
+  await assert.rejects(summarize([{ ...assistant(''), content: [{ type: 'toolCall', id: 'call', name: 'move', arguments: {} }] }]), /call a tool/);
 });
 
 test('actual model requests append to a frozen checkpoint until the next compaction', async () => {
@@ -133,7 +133,7 @@ test('actual model requests append to a frozen checkpoint until the next compact
       compaction: { reserveTokens: 8768, keepRecentTokens: 100 },
       python: process.env.NAVCRAFT_TEST_PYTHON ?? '/home/chen/.local/anaconda3/envs/vln/bin/python',
       systemPrompt, executionPolicy: { readOnly: ['scene', 'observations', 'memory'], readWrite: ['scratch'] },
-      tools: [{ name: 'nav_observe', label: 'Observe', description: 'Fixture observation',
+      tools: [{ name: 'observe', label: 'Observe', description: 'Fixture observation',
         parameters: { type: 'object', properties: {} }, execute: async () => ({ content: [{ type: 'text', text: 'fixture' }], details: {} }) }],
       initialMessages: [{ role: 'user', content: 'OLD DISCARDED HISTORY '.repeat(1000), timestamp: 0 },
         ...[round(0), round(1), round(2), round(3)].flat().filter((message): message is AssistantMessage | Extract<AgentMessage, { role: 'toolResult' }> => message.role === 'assistant' || message.role === 'toolResult')],

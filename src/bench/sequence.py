@@ -17,7 +17,7 @@ from src.harness.session import PromptLimits, open_session
 
 from .metrics import spl
 from .runner import INFRASTRUCTURE_REASONS, validate_single_floor
-from .samples import read_config
+from src.common.config import read_config
 from src.common.config import parse_config_args
 from src.common.progress import Progress
 from src.dataset.maps import prepare_map

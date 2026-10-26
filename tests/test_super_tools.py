@@ -107,6 +107,15 @@ def test_map_projection_keeps_per_point_errors_without_changing_memory(session):
     assert session.memory.entities == []
 
 
+@pytest.mark.parametrize("points", [[], [[320, 240]] * 11])
+def test_map_projection_rejects_invalid_batch_sizes(session, points):
+    receipt, value = call(session, "map_view", {
+        "project": {"source": session.current["frame"], "points": points}})
+    assert receipt["result"]["isError"]
+    assert "error" in value and session.environment.steps == 0
+    assert session.memory.entities == []
+
+
 def test_location_edit_is_atomic_and_provenance_cannot_be_reused_for_other_coordinates(session):
     frame = session.current["frame"]
     create = {"op": "create", "id": "O01", "type": "object", "fields": {

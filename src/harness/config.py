@@ -36,7 +36,8 @@ def core_options(config, repo, directory, workspace, tools, checkpoint):
     prompt_path = Path(repo) / "config/prompts/navigation.md"
     system_prompt = prompt_path.read_text()
     if config.get("tool_tier", "basic") == "super":
-        system_prompt += "\nSuper tools are enabled. Depth is private to geometric tools. locate uses original individual-frame pixel coordinates, including after crops or panoramas; map pixels use the saved m_ view ID. nav_face/nav_goto act on your selected point; reached is not task success. map_view with view={ego:6} is heading-up; other views remain map-up. Use memory_edit fields.at to record a selected visual point. Geometry cannot reliably recognize mirrors or glass.\n"
+        system_prompt += "\nSuper geometry is enabled. RGB depth stays private. Shared image/pixel references use the displayed image's pixels, including registered crops and panoramas. A projected pixel is a surface, not necessarily an object centre or doorway. move(face/approach) acts on your selected point; reached is not task success. Memory fields.location can resolve that same reference. Geometry cannot recognize mirrors or glass.\n"
+
     return {"workspace": str(workspace), "directory": str(directory),
             "budgetFile": str(Path(directory) / "private/requests.json"),
             "maxRequests": 150, "totalLimit": None,

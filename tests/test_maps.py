@@ -2,6 +2,7 @@ import importlib.util
 import json
 from pathlib import Path
 import shutil
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -25,7 +26,7 @@ class MapTests(unittest.TestCase):
         (self.root / "scene").mkdir(parents=True)
         (self.root / "observations").mkdir()
         self.pose = {"pos": [.5, .5], "heading": 90}
-        (self.root / "scene/map.json").write_text(json.dumps({"origin": [-5, -5], "size_m": 10,
+        (self.root / "scene/map.json").write_text(json.dumps({"origin": [-5, -5], "size_m": 10, "floor_height": 0,
             "walls": [[[-4, -4], [-4, 4]], [[-4, 4], [4, 4]]]}))
         (self.root / "scene/state.json").write_text(json.dumps({"pose": self.pose}))
         (self.root / "observations/index.jsonl").write_text(json.dumps({"frame": "f_0001", "step": 1, "pose": self.pose}) + "\n")
@@ -61,9 +62,12 @@ class MapTests(unittest.TestCase):
         source = Path(__file__).resolve().parents[1] / "src/harness/navlib.py"
         target = self.root / "scene/navlib.py"
         shutil.copyfile(source, target)
+        shutil.copyfile(source.parents[1] / "common/coordinates.py", target.with_name("coordinates.py"))
         spec = importlib.util.spec_from_file_location("public_navlib", target)
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        # The sandbox exposes scene/ on PYTHONPATH, including the shared helpers.
+        with patch.object(sys, "path", [str(target.parent), *sys.path]):
+            spec.loader.exec_module(module)
         self.assertEqual(module.uv_to_m([.5, .5]), [0., 0.])
         self.assertEqual(module.m_to_uv([0., 0.]), [.5, .5])
         answer = module.bearing_distance(self.pose, [.6, .5])

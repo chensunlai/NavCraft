@@ -11,18 +11,21 @@ import threading
 import time
 import uuid
 
-from PIL import Image
+from jsonschema import Draft7Validator
 
-from src.common.actions import ACTIONS
+from src.common.coordinates import validate_map
+
 from src.common.io import write_json
 
 from .config import core_options
 from .core_client import CoreClient
 from .memory import MemoryStore
 from .maps import MapRenderer
-from .observations import Observations, map_pose
+from .observations import Observations
 from .service_retry import charged_requests, wait_seconds
 from .tools.specs import specifications
+from .tools.runtime import NavigationTools
+from .spatial import SpatialTools
 from .trace import TraceWriter
 
 
@@ -33,6 +36,7 @@ class PromptLimits:
     seconds: float = 3600
     max_path_length: float | None = None
     max_turns: int | None = None
+    max_observations: int | None = None
 
     def __post_init__(self):
         if any(type(v) is not int or v <= 0 for v in (self.max_requests, self.max_actions)):
@@ -41,6 +45,8 @@ class PromptLimits:
             raise ValueError("seconds must be finite and positive")
         if self.max_path_length is not None and (not math.isfinite(self.max_path_length) or self.max_path_length <= 0):
             raise ValueError("max_path_length must be finite and positive")
+        if self.max_observations is not None and (type(self.max_observations) is not int or self.max_observations < 0):
+            raise ValueError("max_observations must be a nonnegative integer")
         if self.max_turns is not None and (type(self.max_turns) is not int or self.max_turns < 1):
             raise ValueError("max_turns must be a positive integer")
 
@@ -71,7 +77,13 @@ class HarnessSession:
         self.config = config
         self.tool_tier = config.get("tool_tier", "basic")
         self.tool_specs = specifications(self.tool_tier)
-        self.super_tools = None
+        self._validators = {tool["name"]: Draft7Validator(tool["parameters"]) for tool in self.tool_specs}
+        self.spatial = None
+        self.tools = NavigationTools(self)
+        self._observations = 0
+        self._observation_end = None
+        self._current_question = None
+        self._question_frames = []
         self.client = None
         self.session_id = None
         self._client_factory = client_factory
@@ -95,7 +107,6 @@ class HarnessSession:
         self._requests = 0
         self._prompts = []
         self._target_frames = []
-        self._image_counter = 0
         self._revision = 0
         for name in ("scene", "observations", "memory", "scratch"):
             (self.workspace / name).mkdir(parents=True, exist_ok=True)
@@ -103,7 +114,9 @@ class HarnessSession:
         try:
             shutil.copyfile(scene_map, self.workspace / "scene/map.json")
             self.transform = json.loads((self.workspace / "scene/map.json").read_text())
+            validate_map(self.transform)
             shutil.copyfile(Path(__file__).with_name("navlib.py"), self.workspace / "scene/navlib.py")
+            shutil.copyfile(Path(__file__).parents[1] / "common/coordinates.py", self.workspace / "scene/coordinates.py")
             state = initial_state or {}
             if state.get("environment"):
                 environment.restore_state(state["environment"])
@@ -115,7 +128,7 @@ class HarnessSession:
                     if source.exists():
                         shutil.copytree(source, self.workspace / name, dirs_exist_ok=True, symlinks=True)
             if state.get("private_dir"):
-                for name in ("depth", "semantics", "location_sources.json", "memory_used_ids.json"):
+                for name in ("depth", "location_sources.json", "memory_used_ids.json"):
                     source = Path(state["private_dir"]) / name
                     if source.is_dir():
                         shutil.copytree(source, self.private / name, dirs_exist_ok=True)
@@ -128,18 +141,13 @@ class HarnessSession:
                 shutil.copytree(state["observations"], self.workspace / "observations", dirs_exist_ok=True)
             if "memory" in state or not (self.workspace / "memory/entities.json").exists():
                 write_json(self.workspace / "memory/entities.json", state.get("memory", []))
-            task_notes = state.get("task_memory", "")
-            if not isinstance(task_notes, str):
-                raise ValueError("task_memory must be text")
-            self.task_memory_path = self.workspace / "memory/task.json"
-            if "task_memory" in state or not self.task_memory_path.exists():
-                write_json(self.task_memory_path, {"content": task_notes})
+            restored_map = json.loads((self.workspace / "scene/map.json").read_text())
+            if restored_map != self.transform:
+                raise ValueError("Snapshot map does not match the requested scene map")
             self.observations = Observations(self.workspace, self.transform)
             self.memory = MemoryStore(self.workspace, self.private)
             self.renderer = MapRenderer(self.workspace, self.memory)
-            if self.tool_tier == "super":
-                from .super_tools import SuperTools
-                self.super_tools = SuperTools(self)
+            self.spatial = SpatialTools(self)
             self.current = (self.observations.get(state["current_frame"]) if state.get("current_frame")
                             else self._capture(environment.observe()))
             self._history = deepcopy(state.get("history", []))
@@ -147,7 +155,7 @@ class HarnessSession:
             self._current_request = state.get("current_request", "")
             self._target_frames = list(state.get("target_frames", []))
             self._prompts = list(state.get("submitted_requests", []))
-            self._image_counter = state.get("image_counter", 0)
+            self._observations = state.get("observations_count", 0)
             self._publish_state()
             self.trace = TraceWriter(self.private)
             source_files = []
@@ -165,7 +173,7 @@ class HarnessSession:
                 "map_sha256": hashlib.sha256(Path(scene_map).read_bytes()).hexdigest(),
                 "memory_source": state.get("memory_source", "empty"),
                 "tool_tier": self.tool_tier,
-                "goto_planner": self.super_tools.planner if self.super_tools else None,
+                "goto_planner": self.spatial.planner if self.spatial.enabled else None,
             })
             if start_core:
                 self._start_core()
@@ -187,79 +195,41 @@ class HarnessSession:
         receipt = self.client.request("init", options, timeout=120)
         self.session_id = receipt["session_id"]
 
-    def begin_script(self, text, images=()):
-        """Begin an explicitly scripted prefix without sending any model request."""
-        if self.client or self._busy or self._closed:
-            raise RuntimeError("Script collection requires an idle session without a Core")
-        if not isinstance(text, str) or not text.strip():
-            raise ValueError("Expected a navigation request")
-        self._current_request = text
-        self._target_frames = [self.register_target(image) for image in images]
-        content = [{"type": "text", "text": text},
-                   {"type": "text", "text": f"[CURRENT {self.current['frame']}]"},
-                   {"type": "image", "path": self.current["path"]}]
-        for frame in self._target_frames:
-            content.extend([{"type": "text", "text": f"[TARGET {frame}]"},
-                            {"type": "image", "path": self.observations.get(frame)["path"]}])
-        self._history.append({"role": "user", "timestamp": int(time.time() * 1000), "content": content})
-
-    def script_tool(self, name, args):
-        """Execute a real tool and retain its provenance as non-model prefix."""
-        if self.client or self._busy or self._closed:
-            raise RuntimeError("Script collection requires an idle session without a Core")
-        if not self._history:
-            raise RuntimeError("Call begin_script before collecting tool receipts")
-        call_id = "script_" + uuid.uuid4().hex
-        reply = self._tool(call_id, name, args)
-        stamp = int(time.time() * 1000)
-        self._history.append({"role": "assistant", "api": "openai-responses", "provider": "script",
-                              "model": "script", "timestamp": stamp, "stopReason": "toolUse",
-                              "content": [{"type": "toolCall", "id": call_id, "name": name, "arguments": args}],
-                              "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0,
-                                        "totalTokens": 0, "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}}})
-        result = reply["result"]
-        content = deepcopy(result["content"])
-        for ref, label in zip(result.get("images", []), result.get("image_labels", [])):
-            content.extend([{"type": "text", "text": label}, {"type": "image", "path": ref}])
-        self._history.append({"role": "toolResult", "toolCallId": call_id, "toolName": name,
-                              "content": content, "isError": result.get("isError", False), "timestamp": stamp})
-        self.trace.emit("script_tool", {"name": name, "args": args, "call_id": call_id, "trainable": False})
-        return reply
-
     def snapshot(self, destination):
         """Save an idle state; source images and geometric indices stay immutable."""
-        if self._busy or self._closed or self._broken:
-            raise RuntimeError("Cannot snapshot a busy, closed or uncertain session")
-        destination = Path(destination)
-        if destination.exists():
-            raise FileExistsError(destination)
-        exported = self.client.request("export_state") if self.client else {"messages": deepcopy(self._history)}
-        history = exported["messages"]
-        destination.mkdir(parents=True)
-        shutil.copytree(self.workspace, destination / "workspace", symlinks=True)
-        for name in ("depth", "semantics", "location_sources.json", "memory_used_ids.json"):
-            source = self.private / name
-            if source.is_dir():
-                shutil.copytree(source, destination / "private" / name)
-            elif source.is_file():
+        with self._lock:
+            if self._busy or self._closed or self._broken:
+                raise RuntimeError("Cannot snapshot a busy, closed or uncertain session")
+            destination = Path(destination)
+            if destination.exists():
+                raise FileExistsError(destination)
+            exported = self.client.request("export_state") if self.client else {"messages": deepcopy(self._history)}
+            history = exported["messages"]
+            destination.mkdir(parents=True)
+            shutil.copytree(self.workspace, destination / "workspace", symlinks=True)
+            for name in ("depth", "location_sources.json", "memory_used_ids.json"):
+                source = self.private / name
+                if source.is_dir():
+                    shutil.copytree(source, destination / "private" / name)
+                elif source.is_file():
+                    (destination / "private").mkdir(exist_ok=True)
+                    shutil.copyfile(source, destination / "private" / name)
+            session_file = exported.get("session_file")
+            if session_file:
                 (destination / "private").mkdir(exist_ok=True)
-                shutil.copyfile(source, destination / "private" / name)
-        session_file = exported.get("session_file")
-        if session_file:
-            (destination / "private").mkdir(exist_ok=True)
-            shutil.copyfile(session_file, destination / "private/pi-session.jsonl")
-        state = {"pose": self.environment.pose(), "current_frame": self.current["frame"],
-                 "workspace": "workspace", "private_dir": "private", "history": history,
-                 "current_request": getattr(self, "_current_request", ""),
-                 "target_frames": self._target_frames, "submitted_requests": self._prompts,
-                 "image_counter": self._image_counter,
-                 "tool_receipts": {identifier: [arguments, {key: value for key, value in receipt.items() if key != "checkpoint"}]
-                                   for identifier, (arguments, receipt) in self._calls.items()},
-                 "environment": self.environment.state() if hasattr(self.environment, "state") else None}
-        if session_file:
-            state["session_file"] = "private/pi-session.jsonl"
-        write_json(destination / "state.json", state)
-        return state
+                shutil.copyfile(session_file, destination / "private/pi-session.jsonl")
+            state = {"pose": self.environment.pose(), "current_frame": self.current["frame"],
+                     "workspace": "workspace", "private_dir": "private", "history": history,
+                     "current_request": getattr(self, "_current_request", ""),
+                     "target_frames": self._target_frames, "submitted_requests": self._prompts,
+                     "observations_count": self._observations,
+                     "tool_receipts": {identifier: [arguments, {key: value for key, value in receipt.items() if key != "checkpoint"}]
+                                       for identifier, (arguments, receipt) in self._calls.items()},
+                     "environment": self.environment.state() if hasattr(self.environment, "state") else None}
+            if session_file:
+                state["session_file"] = "private/pi-session.jsonl"
+            write_json(destination / "state.json", state)
+            return state
 
     @property
     def requests(self):
@@ -272,18 +242,30 @@ class HarnessSession:
                 "frame": self.current["frame"], "step": self.environment.steps})
 
     def checkpoint(self):
+        # Content is frozen by the Core only at compaction; ordinary turns append receipts.
         entities = [{key: entity.get(key) for key in ("id", "type", "name", "room")}
                     for entity in self.memory.entities]
-        targets = [self.observations.get(frame) for frame in self._target_frames]
-        facts = {"current_request": getattr(self, "_current_request", ""),
+        scratch = self.workspace / "scratch"
+        files = sorted(path.relative_to(self.workspace).as_posix() for path in scratch.rglob("*")
+                       if path.is_file() and not path.is_symlink() and path.resolve().is_relative_to(scratch.resolve()))
+        facts = {"as_of_step": self.environment.steps,
+                 "current_request": getattr(self, "_current_request", ""),
+                 "current_question": self._current_question, "question_frames": self._question_frames,
                  "submitted_requests": self._prompts, "pose": self.current["pose"],
                  "frame": self.current["frame"], "target_frames": self._target_frames,
-                 "entities": entities,
-                 "task_memory": json.loads(self.task_memory_path.read_text())["content"]}
-        return {"content": "Public facts (no evaluation outcome):\n" + json.dumps(facts, ensure_ascii=False),
-                "images": [self.current["path"], *[row["path"] for row in targets]],
-                "image_labels": [f"[CURRENT {self.current['frame']}]", *[f"[TARGET {row['frame']}]" for row in targets]],
-                "revision": self._revision}
+                 "recorded_entities": entities, "scratch_files": files[:100],
+                 "notes_directory": "scratch/; list it for files written since this snapshot"}
+        if len(files) > 100:
+            facts["omitted_scratch_files"] = len(files) - 100
+        images, labels = [self.current["path"]], [f"[CURRENT {self.current['frame']}]"]
+        for kind, frames in (("TARGET", self._target_frames), ("QUESTION", self._question_frames)):
+            for frame in frames:
+                row = self.observations.get(frame)
+                if row["path"] not in images:
+                    images.append(row["path"])
+                    labels.append(f"[{kind} {frame}]")
+        return {"content": "State at capture time; later receipts take precedence. Entities and scratch files are model records, not verified facts:\n" + json.dumps(facts, ensure_ascii=False),
+                "images": images, "image_labels": labels, "revision": self._revision}
 
     def register_target(self, image):
         return self.observations.add(image, kind="target")["frame"]
@@ -300,16 +282,8 @@ class HarnessSession:
 
     def _capture(self, observation, body_pose=None, **metadata):
         row = self.observations.capture(observation, self.environment.steps, **metadata)
-        if self.super_tools:
-            self.super_tools.record_frame(observation, row, body_pose)
-        elif observation.depth is not None and getattr(self.environment, "config", {}).get("private_depth"):
-            from .super_tools import SuperTools
-            SuperTools(self).record_frame(observation, row, body_pose)
-        semantic = getattr(observation, "semantic", None)
-        if semantic is not None:
-            directory = self.private / "semantics"
-            directory.mkdir(exist_ok=True)
-            shutil.copyfile(semantic, directory / (row["frame"] + ".npy"))
+        if observation.depth is not None and self.spatial.enabled:
+            self.spatial.record_frame(observation, row, body_pose)
         return row
 
     def _perform_motion(self, action, degrees=None):
@@ -347,194 +321,15 @@ class HarnessSession:
             reply["control"] = {"stop_remaining_tools": True, "end_run": True}
         return reply
 
-    def _observe(self, mode="current", project=False):
-        if type(project) is not bool:
-            raise ValueError("project must be boolean")
-        if mode not in {"current", "panorama"}:
-            raise ValueError("mode must be current or panorama")
-        if mode == "current":
-            self.current = self._capture(self.environment.observe())
-            self._publish_state()
-            value = {key: self.current[key] for key in ("frame", "step", "pose")}
-            refs, labels = [self.current["path"]], [f"[CURRENT {self.current['frame']}]"]
-            views = [self.current]
-        else:
-            captured_pose = self.environment.pose()
-            body_pose = map_pose(captured_pose, self.transform)
-            group = "p_" + uuid.uuid4().hex[:8]
-            views = [self._capture(obs, body_pose=captured_pose, group=group, yaw=i * 60)
-                     for i, obs in enumerate(self.environment.panorama())]
-            self.current = views[0]
-            self._publish_state()
-            image = self.observations.collage([v["path"] for v in views], f"observations/{group}.jpg",
-                        [f"{v['frame']} | right {v['yaw']} deg" for v in views])
-            value = {"group": group, "views": [{"frame": v["frame"], "yaw": v["yaw"]} for v in views],
-                     "step": self.environment.steps, "pose": body_pose}
-            refs, labels = [image], [f"[CURRENT {group}]"]
-        if project:
-            mapped = self._render_map(view={"ego": 6}, overlay=[v["frame"] for v in views])
-            value["projection"] = mapped
-            refs.append(mapped["map"])
-            labels.append(f"[MAP {mapped['view_id']}]")
-        return self._reply(value, refs, labels)
-
-    def _step(self, actions):
-        if (not isinstance(actions, list) or not 1 <= len(actions) <= 6
-                or any(not isinstance(a, str) or a not in ACTIONS for a in actions)):
-            raise ValueError("actions must contain 1–6 valid atomic actions")
-        done, events, stop = [], [], "completed"
-        for i, action in enumerate(actions, 1):
-            motion = self._perform_motion(action)
-            if motion is None:
-                stop = "interrupted"
-                break
-            if done and done[-1][0] == action:
-                done[-1][1] += 1
-            else:
-                done.append([action, 1])
-            if motion.collision or motion.blocked:
-                event = {"i": i, "collision": bool(motion.collision)}
-                if motion.auto_yaw_delta_degrees:
-                    event["auto_yaw"] = round(-motion.auto_yaw_delta_degrees, 2)
-                events.append(event)
-            if motion.blocked:
-                stop = "blocked"
-                break
-        self._publish_state()
-        value = {"done": done, "stop": stop, "frame": self.current["frame"],
-                 "step": self.environment.steps, "pose": self.current["pose"]}
-        if events:
-            value["events"] = events
-        if not self._decision_window and self._action_end is not None and self.environment.steps >= self._action_end:
-            self._stop_reason = "action_budget"
-        return self._reply(value, [self.current["path"]], [f"[CURRENT {self.current['frame']}]"], end=bool(self._stop_reason))
-
-    def _images(self, frames, layout="separate"):
-        if not isinstance(frames, list) or not 1 <= len(frames) <= 6 or layout not in {"separate", "grid"}:
-            raise ValueError("Expected 1–6 frames and separate/grid layout")
-        rows, refs, labels = [], [], []
-        # Validate every source/crop before producing any derived image.
-        for value in frames:
-            if not isinstance(value, dict) or set(value) - {"frame", "crop"}:
-                raise ValueError("Expected frame and optional crop")
-            row = self.observations.get(value.get("frame"))
-            crop = value.get("crop")
-            if crop is not None and (not isinstance(crop, list) or len(crop) != 4 or
-                    any(type(v) not in (int, float) or not math.isfinite(v) or not 0 <= v <= 1 for v in crop)
-                    or crop[0] >= crop[2] or crop[1] >= crop[3]):
-                raise ValueError("crop must be normalized [left,top,right,bottom]")
-            rows.append((row, crop))
-        public = []
-        for row, crop in rows:
-            ref = row["path"]
-            metadata = {k: row[k] for k in ("frame", "step", "pose", "group", "yaw") if k in row}
-            if crop is not None:
-                self._image_counter += 1
-                ref = f"observations/derived/c_{self._image_counter:04d}.jpg"
-                destination = self.workspace / ref
-                destination.parent.mkdir(exist_ok=True)
-                with Image.open(self.workspace / row["path"]) as source:
-                    w, h = source.size
-                    bounds = [int(crop[0] * w), int(crop[1] * h), max(int(crop[2] * w), int(crop[0] * w) + 1),
-                              max(int(crop[3] * h), int(crop[1] * h) + 1)]
-                    source.crop(bounds).save(destination, quality=85)
-                metadata["crop"] = crop
-            refs.append(ref)
-            labels.append(f"[{'TARGET' if row['kind'] == 'target' else 'HISTORY'} {row['frame']}]")
-            public.append(metadata)
-        if layout == "grid":
-            self._image_counter += 1
-            refs = [self.observations.collage(refs, f"observations/derived/g_{self._image_counter:04d}.jpg", labels)]
-            labels = ["[HISTORY grid: " + ", ".join(row[0]["frame"] for row in rows) + "]"]
-        return self._reply({"frames": public}, refs, labels)
-
-    def _render_map(self, overlay=None, **args):
-        if not self.super_tools and isinstance(args.get("view"), dict) and "ego" in args["view"]:
-            raise ValueError("ego maps require tool_tier=super")
-        if overlay is not None and not isinstance(overlay, list):
-            raise ValueError("overlay must be an array of frame IDs")
-        points = self.super_tools.geometry.overlay(overlay) if overlay else None
-        origin, size = self.transform["origin"], self.transform["size_m"]
-        trajectory = [[(p[0] - origin[0]) / size, (p[2] - origin[1]) / size] for p in self.environment.trajectory]
-        value = self.renderer.render(self.current["pose"], trajectory, overlay_points=points,
-                                     trajectory_breaks=getattr(self.environment, "trajectory_breaks", ()), **args)
-        return value if self.super_tools else {key: value[key] for key in ("map", "bounds", "warnings")}
-
-    def _locate(self, source, points):
-        resolved = self.super_tools.geometry.locate(source, points)
-        value = {"source": source, "points": []}
-        located = []
-        for index, point in enumerate(resolved["points"], 1):
-            label = f"P{index}"
-            if point.get("valid", True) and "uv" in point:
-                value["points"].append({"label": label, "uv": point["uv"]})
-                located.append({"label": label, "uv": point["uv"]})
-            else:
-                value["points"].append({"label": label, "error": point["reason"]})
-        if not located:
-            return self._reply(value)
-        mapped = self._render_map(view="explored", located_points=located)
-        value["view_id"] = mapped["view_id"]
-        return self._reply(value, [mapped["map"]], [f"[MAP {mapped['view_id']} | locate points]"])
-
-    def _task_memory(self, action, content=None):
-        if action not in {"read", "edit"}:
-            raise ValueError("action must be read or edit")
-        if action == "read":
-            if content is not None:
-                raise ValueError("read does not accept content")
-            return self._reply(json.loads(self.task_memory_path.read_text()))
-        if not isinstance(content, str):
-            raise ValueError("edit requires text content")
-        before = self.trace.store(json.loads(self.task_memory_path.read_text()))
-        write_json(self.task_memory_path, {"content": content})
-        self._revision += 1
-        self.trace.emit("task_memory_changed", {"before": before, "after": self.trace.store({"content": content})})
-        return self._reply({"updated": True})
-
     def _execute(self, name, args):
-        definition = next((tool for tool in self.tool_specs if tool["name"] == name), None)
-        if definition is None or not isinstance(args, dict) or set(args) - definition["parameters"]["properties"].keys():
-            raise ValueError("Unknown tool or unsupported arguments for this tool tier")
-        if self._qa and (name not in {"view_images", "memory_read", "map_view", "locate", "submit", "task_memory"}
-                         or name == "task_memory" and args.get("action") != "read"):
-            raise ValueError("This question permits only existing-evidence queries and submission")
-        if self._movement_exhausted and name in {"nav_step", "nav_face", "nav_goto", "nav_observe"}:
-            raise ValueError("Movement window ended; finish using existing evidence")
-        if name == "locate":
-            return self._locate(**args)
-        if name in {"nav_face", "nav_goto"}:
-            return self.super_tools.move(**args, face=name == "nav_face")
-        if name == "nav_observe":
-            return self._observe(**args)
-        if name == "nav_step":
-            return self._step(**args)
-        if name == "view_images":
-            return self._images(**args)
-        if name == "task_memory":
-            return self._task_memory(**args)
-        if name == "memory_read":
-            result = self.super_tools.near(**args) if "near" in args else self.memory.read(**args)
-            return self._reply(result, error="error" in result)
-        if name == "memory_edit":
-            before = self.trace.store(self.memory.entities)
-            operations, sources = self.super_tools.prepare_edits(args.get("operations")) if self.super_tools else (args.get("operations"), {})
-            result = self.memory.edit(operations)
-            if "error" not in result:
-                if self.super_tools:
-                    self.super_tools.remember_sources(operations, sources)
-                self._revision += 1
-                self.trace.emit("memory_changed", {"before": before, "after": self.trace.store(self.memory.entities)})
-            return self._reply(result, error="error" in result)
-        if name == "map_view":
-            value = self._render_map(**args)
-            return self._reply(value, [value["map"]], ["[MAP " + Path(value["map"]).stem + "]"])
-        if name == "submit":
-            if set(args) - {"answer"} or ("answer" in args and not isinstance(args["answer"], str)):
-                raise ValueError("submit accepts only an optional answer string")
-            self._submitted, self._answer = True, args.get("answer", "")
-            return self._reply({"submitted": True}, end=True)
-        raise ValueError(f"Unknown tool: {name}")
+        validator = self._validators.get(name)
+        if validator is None:
+            raise ValueError(f"Unknown tool: {name}")
+        error = next(validator.iter_errors(args), None)
+        if error:
+            field = ".".join(map(str, error.absolute_path)) or "arguments"
+            raise ValueError(f"{field}: {error.message}")
+        return self.tools.execute(name, args)
 
     def _tool(self, call_id, name, args):
         serialized = json.dumps([name, args], sort_keys=True)
@@ -613,6 +408,8 @@ class HarnessSession:
         self._submitted, self._answer, self._stop_reason = False, "", None
         self._cancel.clear()
         self._qa = mode == "ask"
+        self._current_question = text if self._qa else None
+        self._question_frames = target_frames if self._qa else []
         self._decision_window = mode == "continue" and limits.max_turns is not None
         self._movement_exhausted = False
         self._run_turns = 0
@@ -620,6 +417,7 @@ class HarnessSession:
         self._turn_limit = limits.max_turns
         if mode == "prompt":
             self._current_request = text
+        self._observation_end = self._observations + limits.max_observations if limits.max_observations is not None else None
         self._action_end = action_start + limits.max_actions
         self._path_end = self.environment.path_length + limits.max_path_length if limits.max_path_length is not None else None
         model_text = (text or "") + "\nCurrent map pose: " + json.dumps(self.current["pose"]) + "\n" + "\n".join(captions)
@@ -634,9 +432,6 @@ class HarnessSession:
             self.trace.emit("prompt_start", {"prompt_id": prompt_id, "text": text, "mode": mode,
                             "images": refs, "limits": asdict(limits)})
             active_tools = ["read", "write", "edit", "bash", *[t["name"] for t in self.tool_specs]]
-            if self._qa:
-                active_tools = [name for name in active_tools if name in
-                                {"read", "write", "edit", "bash", "view_images", "memory_read", "map_view", "locate", "submit"}]
             self.client.request("configure", {"maxRequests": before + limits.max_requests, "allowedTools": active_tools})
             self.client.request("set_checkpoint", {"checkpoint": self.checkpoint()})
             for attempt in range(2):
@@ -667,6 +462,9 @@ class HarnessSession:
             self._broken = True
         finally:
             self._action_end = None
+            self._observation_end = None
+            self._current_question = None
+            self._question_frames = []
             self._path_end = None
             self._qa = self._decision_window = False
             self._movement_exhausted = False
@@ -686,9 +484,10 @@ class HarnessSession:
         self._cancel.set()
 
     def close(self):
-        if self._closed:
-            return
-        self._closed = True
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
         try:
             if self.client:
                 self.client.close()

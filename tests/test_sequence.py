@@ -101,7 +101,7 @@ def execute(tmp_path, monkeypatch, specification, callback, simulator=FakeSimula
     monkeypatch.setattr(sequence, "open_session", session_factory)
     source, map_path = tmp_path / "scenario.json", tmp_path / "map.json"
     source.write_text(json.dumps(specification))
-    map_path.write_text('{"origin":[-5,-5],"size_m":20,"walls":[]}')
+    map_path.write_text('{"origin":[-5,-5],"size_m":20,"floor_height":0,"walls":[]}')
     original = source.read_bytes()
     result = sequence.run_sequence(tmp_path, {"model": "fixture", "reasoning_effort": "high"},
                                    source, map_path, tmp_path / "run", {"gpu": 1})

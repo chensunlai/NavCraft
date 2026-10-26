@@ -56,12 +56,12 @@ def fixture_run(tmp_path, *, memory_events=True):
         trace.emit("message_end", {"message": {"role": "assistant", "content": [
             {"type": "thinking", "thinking": "PRIVATE_THINKING", "thinkingSignature": "OPAQUE_SIGNATURE"},
             {"type": "text", "text": f"Visible decision {index}", "textSignature": "PRIVATE_SIGNATURE"}]}})
-        trace.emit("tool_execution_start", {"toolCallId": f"call{index}", "toolName": "nav_observe", "args": {"mode": "current"}})
+        trace.emit("tool_execution_start", {"toolCallId": f"call{index}", "toolName": "observe", "args": {"mode": "current"}})
         public = {"content": [{"type": "text", "text": json.dumps({"frame": frames[index - 1]["frame"], "step": index - 1})}],
                   "images": [frames[index - 1]["path"]], "image_labels": ["[CURRENT]"], "isError": False}
-        trace.emit("public_tool_reply", {"call_id": f"call{index}", "name": "nav_observe", "args": {"mode": "current"},
+        trace.emit("public_tool_reply", {"call_id": f"call{index}", "name": "observe", "args": {"mode": "current"},
                                         "result": public, "checkpoint": {"images": [frames[index - 1]["path"]]}})
-        trace.emit("tool_execution_end", {"toolCallId": f"call{index}", "toolName": "nav_observe", "result": public})
+        trace.emit("tool_execution_end", {"toolCallId": f"call{index}", "toolName": "observe", "result": public})
         trace.emit("tool_execution_start", {"toolCallId": f"native{index}", "toolName": "bash", "args": {"command": "printf test"}})
         trace.emit("tool_execution_end", {"toolCallId": f"native{index}", "toolName": "bash", "result": {
             "content": [{"type": "text", "text": "X" * (TEXT_LIMIT + 20)}]}, "isError": False})
@@ -92,7 +92,7 @@ def test_export_preserves_actual_public_events_and_exact_memory_without_private_
     assert set(second["evidence"]) == {"f_0001", "f_0002"}
     assert all((output / item["url"]).is_file() for item in second["evidence"].values())
     tools = [event for event in first["events"] if event["type"] == "tool"]
-    assert [tool["name"] for tool in tools] == ["nav_observe", "bash"]
+    assert [tool["name"] for tool in tools] == ["observe", "bash"]
     assert tools[1]["args"] == {"command": "printf test"} and tools[1]["truncated"]
     assert "truncated" in tools[1]["result"]
     text = "".join(path.read_text() for path in (output / "data").rglob("*.json"))

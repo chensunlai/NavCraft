@@ -12,6 +12,8 @@ from PIL import Image
 from habitat_sim.utils.common import quat_from_coeffs, quat_to_coeffs
 import quaternion
 
+from src.common.scenes import resolve_scene
+
 from src.environment.base import (DEPTH_MAX, DEPTH_MIN, DEPTH_SCALE, MotionResult,
                                   Observation, TRANSLATION_ACTIONS, save_depth,
                                   turn_action)
@@ -84,11 +86,7 @@ def camera_parameters(config: SensorConfig) -> dict:
 class HabitatSimulator:
     def __init__(self, episode, config: dict):
         self.config = SensorConfig.from_dict(config)
-        self.private_semantic = bool(config.get("private_semantic", False))
-        scene_id = episode.scene_id.removeprefix("data/scene_datasets/")
-        scene = Path(config["scenes"]) / scene_id
-        if not scene.is_file():
-            raise FileNotFoundError(f"Scene does not exist: {scene}")
+        scene = resolve_scene(config["scenes"], episode.scene_id)
         native = habitat_sim.SimulatorConfiguration()
         native.scene_id = str(scene.resolve())
         if config.get("scene_dataset_config"):
@@ -103,11 +101,8 @@ class HabitatSimulator:
         for name, kind in [
             ("rgb", habitat_sim.SensorType.COLOR),
             ("depth", habitat_sim.SensorType.DEPTH),
-            ("semantic", habitat_sim.SensorType.SEMANTIC),
         ]:
             if name == "depth" and not self.config.depth:
-                continue
-            if name == "semantic" and not config.get("private_semantic", False):
                 continue
             spec = habitat_sim.CameraSensorSpec()
             spec.uuid, spec.sensor_type = name, kind
@@ -344,19 +339,12 @@ class HabitatSimulator:
         if self.config.depth:
             depth = directory / f"depth_f_{frame:04d}.png"
             save_depth(depth, observations["depth"])
-        semantic = None
-        if self.private_semantic:
-            private = workspace / "private/semantic"
-            private.mkdir(parents=True, exist_ok=True)
-            semantic = private / f"f_{frame:04d}.npy"
-            np.save(semantic, np.asarray(observations["semantic"], dtype=np.int32), allow_pickle=False)
         return Observation(
             f"f_{frame:04d}",
             rgb,
             depth,
             self.pose(),
             camera_parameters(self.config),
-            semantic,
         )
 
     def panorama(self, workspace: Path, frame_ids: list[int]) -> list[Observation]:

@@ -22,7 +22,7 @@ class Environment:
         if tool_tier not in ("basic", "super"):
             raise ValueError("tool_tier must be basic or super")
         self.episode = episode
-        self.config = {**config, **SENSORS, "depth": tool_tier == "super" or config.get("private_depth", False)}
+        self.config = {**config, **SENSORS, "depth": tool_tier == "super"}
         self.directory = Path(directory).resolve()
         self.directory.mkdir(parents=True, exist_ok=True)
         if simulator_factory is None:

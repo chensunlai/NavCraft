@@ -10,7 +10,8 @@ from pathlib import Path
 from src.common.config import merge_config
 from src.common.progress import Progress
 
-from .samples import load_episodes, plan, read_config
+from .samples import load_episodes, plan
+from src.common.config import read_config
 
 REPO = Path(__file__).resolve().parents[2]
 

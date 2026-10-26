@@ -18,6 +18,7 @@
 | `build_maps_nonhssd100_full.sh` | 续接新增100个非HSSD场景的原会话，从现有墙图补齐完整地图；Sol high、16并发、GPU0/1 |
 | `publish_maps.sh` | 手动发布指定构图批次中已结束且检查通过的场景，更新冻结 `map.json`；不续跑、不发布运行中 raw |
 | `compare_map_builds.sh` | Sol/Astra high 同场景完整构图，各占 GPU 0/1，独立 Home、工作空间和场景产物 |
+| `publish_maps.sh` | 从顶部指定的已结束构图批次离线发布标准 map.json；运行中或未通过检查的场景跳过 |
 | `report.sh` | 从已有 pilot 记录重新计算并生成报告 |
 | `export_viewer.sh` | 从已有连续任务记录导出静态图文网页 |
 | `serve_viewer.sh` | 提供静态网页，默认 `http://10.82.1.221:8770`；也可修改 DIRECTORY 指向归档的 3D 网页 |

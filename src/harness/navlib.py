@@ -2,6 +2,7 @@
 
 import json
 import math
+from coordinates import world_to_uv, uv_to_world, bearing_distance as _bearing_distance
 from pathlib import Path
 
 
@@ -16,21 +17,17 @@ def _map():
 
 def uv_to_m(uv):
     """Convert map UV to world X/Z metres using the public calibration."""
-    data = _map()
-    return [data["origin"][i] + float(uv[i]) * data["size_m"] for i in range(2)]
+    point = uv_to_world(uv, _map())
+    return [point[0], point[2]]
 
 
-def m_to_uv(xy):
-    data = _map()
-    return [(float(xy[i]) - data["origin"][i]) / data["size_m"] for i in range(2)]
+def m_to_uv(xz):
+    return world_to_uv([xz[0], 0, xz[1]], _map())
 
 
 def bearing_distance(pose, uv):
     """Return bearing_degrees (right positive) and distance_m."""
-    size = _map()["size_m"]
-    dx, dz = [(uv[i] - pose["pos"][i]) * size for i in range(2)]
-    angle = (math.degrees(math.atan2(dx, -dz)) - pose["heading"] + 180) % 360 - 180
-    return {"bearing_degrees": angle, "distance_m": math.hypot(dx, dz)}
+    return _bearing_distance(pose, uv, _map())
 
 
 def project(pose, bearing_deg, distance_m):

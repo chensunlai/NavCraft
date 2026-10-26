@@ -15,10 +15,15 @@ def _finite(values, length, name):
     return values
 
 
+def xz_to_uv(x, z, transform):
+    """Metric map coordinates to UV; accepts scalars or NumPy coordinate columns."""
+    return [(coordinate - origin) / transform["size_m"]
+            for coordinate, origin in zip((x, z), transform["origin"])]
+
+
 def world_to_uv(point, transform):
     """Habitat [X,Y,Z] metres to unrounded map [u,v]."""
-    return [(point[axis] - transform["origin"][i]) / transform["size_m"]
-            for i, axis in enumerate((0, 2))]
+    return xz_to_uv(point[0], point[2], transform)
 
 
 def uv_to_world(uv, transform, height=None):

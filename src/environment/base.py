@@ -49,4 +49,3 @@ class Observation:
     depth: Path | None
     pose: dict
     camera: dict
-    semantic: Path | None = None

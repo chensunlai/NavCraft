@@ -25,7 +25,7 @@ test('model transport compresses user and tool images without resizing or changi
   const encode = createImageTransport((type, data) => events.push({ type, data }));
   const context: Context = { messages: [
     { role: 'user', content: [{ type: 'text', text: 'current view' }, image], timestamp: 1 },
-    { role: 'toolResult', toolCallId: 'call-1', toolName: 'nav_observe',
+    { role: 'toolResult', toolCallId: 'call-1', toolName: 'observe',
       content: [{ type: 'text', text: 'front' }, image], isError: false, timestamp: 2 },
   ] };
   const original = JSON.stringify(context);

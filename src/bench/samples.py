@@ -4,7 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from src.common.config import read_config
+from src.common.scenes import resolve_scene
 
 from src.dataset.episodes import create_source
 from src.dataset.maps import map_directory as scene_map_directory, load_wall_map
@@ -51,9 +51,7 @@ def plan(repo, config):
     jobs = []
     maps = config["maps"]
     for i, episode in enumerate(episodes):
-        scene = repo / config["environment"]["scenes"] / episode.scene_id.removeprefix("data/scene_datasets/")
-        if not scene.is_file():
-            raise FileNotFoundError(scene)
+        scene = resolve_scene(repo / config["environment"]["scenes"], episode.scene_id)
         directory = map_directory(repo, episode, maps["root"])
         info, error = None, None
         try:

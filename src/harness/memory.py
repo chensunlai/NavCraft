@@ -253,6 +253,8 @@ class MemoryStore:
             raise ValueError("evidence must be an array of at most 10 frame IDs")
         if any(i not in frames for i in evidence):
             raise ValueError("evidence contains unknown frame IDs")
+        if any(frames[i].get("kind") != "observation" for i in evidence):
+            raise ValueError("evidence requires observed scene frames, not target or question images")
         for key in ("point", "anchor"):
             if entity.get(key) is not None:
                 self._point(entity[key])
@@ -275,5 +277,5 @@ class MemoryStore:
 
     @staticmethod
     def _point(value):
-        if not isinstance(value, list) or len(value) != 2 or any(type(v) not in (float, int) or not math.isfinite(v) or not -.05 <= v <= 1.05 for v in value):
-            raise ValueError("Coordinates must be two finite numbers in [-0.05, 1.05]")
+        if not isinstance(value, list) or len(value) != 2 or any(type(v) not in (float, int) or not math.isfinite(v) or not 0 <= v <= 1 for v in value):
+            raise ValueError("Coordinates must be two finite numbers in [0, 1]")

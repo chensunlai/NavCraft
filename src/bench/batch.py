@@ -13,7 +13,7 @@ from src.common.config import merge_config
 
 from src.common.io import write_json
 from src.common.progress import Progress
-from .samples import read_config
+from src.common.config import read_config
 
 
 def summarize(results, selected):

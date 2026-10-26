@@ -46,7 +46,7 @@ def setup(tmp_path):
     environments, sessions = [], []
 
     def make(name, state=None, tool_tier="super"):
-        env = Environment(episode, {"gpu": 0, "tool_tier": tool_tier, "private_depth": True}, tmp_path / name / "env", FakeSimulator)
+        env = Environment(episode, {"gpu": 0, "tool_tier": tool_tier}, tmp_path / name / "env", FakeSimulator)
         environments.append(env)
         session = open_session(Path(__file__).resolve().parents[1], {**config, "tool_tier": tool_tier}, tmp_path / name / "run", env,
                                scene, state, start_core=False, client_factory=Client)
@@ -140,6 +140,42 @@ def test_snapshot_rejects_busy_sessions(setup, tmp_path):
         session.snapshot(tmp_path / "bad")
 
 
+def test_snapshot_and_next_prompt_cannot_interleave(setup, tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import shutil
+    import threading
+
+    session = setup("atomic-cut")
+    copying, release, submitted = threading.Event(), threading.Event(), threading.Event()
+    original_copy = shutil.copytree
+
+    def pause_copy(source, destination, *args, **kwargs):
+        if Path(source) == session.workspace:
+            copying.set()
+            assert release.wait(5)
+        return original_copy(source, destination, *args, **kwargs)
+
+    def next_prompt():
+        try:
+            return session.prompt("Move forward once and submit.")
+        finally:
+            submitted.set()
+
+    monkeypatch.setattr(shutil, "copytree", pause_copy)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        snapshot = pool.submit(session.snapshot, tmp_path / "atomic-snapshot")
+        assert copying.wait(5)
+        prompt = pool.submit(next_prompt)
+        try:
+            assert not submitted.wait(.1), "Prompt changed the environment while its snapshot was being copied"
+        finally:
+            release.set()
+        state = snapshot.result(timeout=5)
+        assert prompt.result(timeout=5).actions == 1
+    assert state["environment"]["steps"] == 0
+    assert session.environment.steps == 1
+
+
 def test_snapshot_never_dereferences_scratch_links_into_host_files(setup, tmp_path):
     session = setup("links")
     secret = tmp_path / "host-private.txt"
@@ -164,11 +200,16 @@ def test_restored_receipt_does_not_repeat_an_already_executed_action(setup, tmp_
     assert restored.environment.steps == previous
 
 
-def test_basic_label_capture_keeps_depth_private_without_enabling_super_tools(setup):
+def test_private_depth_fixture_does_not_enable_basic_rgb_projection(setup):
     from src.harness.geometry import Geometry
     session = setup("basic-labels", tool_tier="basic")
     assert not session.spatial.enabled
     assert "locate" not in {tool["name"] for tool in session.tool_specs}
+    # Deliberately inject host-owned depth: tool permissions must not depend on its absence.
+    session.environment.sim.config["depth"] = True
+    session.refresh_observation()
+    assert not (session.private / "depth/index.jsonl").exists()
+    session.spatial.record_frame(session.environment.current, session.current)
     depth, camera = Geometry(session.workspace, session.private, session.transform).load_frame(session.current["frame"])
     assert depth.shape == (480, 640) and depth[240, 320] == 2
     assert "depth" not in json.dumps(session.observations.get(session.current["frame"]))
