@@ -28,7 +28,7 @@ Python 调度 Codex app-server（默认串行，可配置并发），每个场�
 | `--resume` | 读取同一 output 的计划和 thread，继续未完成场景 |
 | `--repo / --codex` | 仓库根目录、Codex 可执行文件 |
 
-三个命令：`plan` 只生成计划和逐场景提示；`probe` 发一次简短模型请求；`run` 执行构建。`plan` 不启动 Codex、不渲染、不改场景，只在批次目录写计划与提示。构图执行时，模型 cwd 为对应场景根目录。
+三个命令：`plan` 只生成计划和逐场景提示；`probe` 发一次简短模型请求；`run` 执行构建。`plan` 不启动 Codex、不渲染、不改场景，只在批次目录写计划与提示。构图执行时，模型 cwd 为对应场景的 `raw/` 原始工作区。
 
 ## 当前 221 服务示例
 
@@ -91,7 +91,7 @@ python -m pytest -q tests/test_build_maps.py
 
 协议参考：[Codex App Server](https://developers.openai.com/codex/app-server)。实现按本机 `codex app-server generate-json-schema` 核对，不内置复制一份协议框架。
 
-每个场景的 JSON、图层和证据直接保存在 `output_dir`；调度器的 `events.jsonl`、`result.json`、`stderr.log`、`prompt.md` 位于批次目录 `<output>/<顺序>-<数据集>-<场景>/`。`scene_directory()` 返回后者，模型工作目录则始终为场景根目录。场景文件不包含运行记录或 raw 中间层。
+每个场景的 JSON、图层和证据直接保存在 `output_dir`；调度器的 `events.jsonl`、`result.json`、`stderr.log`、`prompt.md` 位于批次目录 `<output>/<顺序>-<数据集>-<场景>/`。`scene_directory()` 返回后者，模型工作目录为场景内 `raw/`，保留脚本、中间产物和备份。最终结果直接放场景根目录，缺失结果保持缺失，不补空文件。
 
 ### 服务重试
 

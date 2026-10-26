@@ -1,6 +1,6 @@
 # 场景与任务数据
 
-构建结果只有一份，直接保存到 `data/scene_maps/<dataset>/<split?>/<scene>/`。场景目录存 `scene.json`、`walls.json`、`wall_real.json`、房间/物体标注、证据及检查文件；没有 `raw/` 层级、发布副本或数据目录中的中间 `map.json`。
+最终构建结果只有一份，直接保存到 `data/scene_maps/<dataset>/<split?>/<scene>/`。场景目录存 `scene.json`、`walls.json`、`wall_real.json`、房间/物体标注、证据及检查文件；`raw/` 单独保存原始工作区（脚本、采样中间产物、备份）。缺失结果保持缺失，不补空文件；不另建发布副本或数据目录中的中间 `map.json`。
 
 ## 从原始文件到运行
 

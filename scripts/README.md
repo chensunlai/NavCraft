@@ -14,7 +14,7 @@
 | `check_harness.sh` | `local` 模式 检查真实动作与全景；`probe` 检查模型与工具；`compaction` 检查压缩续接 |
 | `check_geometry.sh` | 重放 pilot 几何与动作可达性检查，不请求模型 |
 | `check_super_tools.sh` | 真实环境中的 Super 工具检查，不请求模型 |
-| `build_maps.sh` | 默认 Sol high、16 并发，按队列构建 wall/wall_real 与楼梯，直接使用场景目录作为工作空间 |
+| `build_maps.sh` | 默认 Sol high、16 并发，按队列构建 wall/wall_real 与楼梯，使用场景内 `raw/` 作为工作空间，结果平铺在场景根目录 |
 | `build_maps_nonhssd100_full.sh` | 续接新增100个非HSSD场景的原会话，从现有墙图补齐完整地图；Sol high、16并发、GPU0/1 |
 | `compare_map_builds.sh` | Sol/Astra high 同场景完整构图，各占 GPU 0/1，独立 Home、工作空间和场景产物 |
 | `report.sh` | 从已有 pilot 记录重新计算并生成报告 |
@@ -60,7 +60,7 @@
 
 ## 场景原档接入
 
-正式 Bench 直接读取 `data/scene_maps/<dataset>/<split?>/<scene>/` 的 `scene.json`、`walls.json` 等原始文件；无需发布、复制或保留 `raw/` 层级。`MAP_CONFIG` 指定目录，`maps.layer` 选择 `walls` 或 `wall_real`。`doctor.sh` 检查加载条件；缺图、缺楼层或高度匹配不明确均报错。
+正式 Bench 直接读取 `data/scene_maps/<dataset>/<split?>/<scene>/` 的 `scene.json`、`walls.json` 等原始文件；无需发布或复制；`raw/` 仅为原始工作区，Bench 不从中寻找缺失结果。`MAP_CONFIG` 指定目录，`maps.layer` 选择 `walls` 或 `wall_real`。`doctor.sh` 检查加载条件；缺图、缺楼层或高度匹配不明确均报错。
 
 读取时由 Dataset 统一选择楼层并换算公开坐标，公开几何保存在当次运行 `private/map.json`，源文件哈希记录于 `private/map_source.json`；随后仅允许的几何进入模型工作空间。原始标注不被改写，既有运行的输入不随场景更新改变。构图过程日志和 Codex Home 放在 `cache/build-maps/`。
 

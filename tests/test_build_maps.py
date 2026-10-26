@@ -311,10 +311,10 @@ def test_scene_workspace_and_native_thread_cwd(tmp_path, monkeypatch):
     output = tmp_path / 'batch'
     runner.save_plan(plan, output)
     directory = runner.scene_directory(output, scene)
-    workspace = tmp_path / scene['output_dir']
+    workspace = tmp_path / scene['output_dir'] / 'raw'
     assert directory == output / '0001-hm3d-a'
     assert f'本次工作目录：{workspace}' in (directory / 'prompt.md').read_text()
-    assert '不创建 raw/' in (directory / 'prompt.md').read_text()
+    assert 'raw/ 是原始工作区' in (directory / 'prompt.md').read_text()
     assert not workspace.exists()  # A plan writes scheduler files only.
     class CheckCwd(FakeServer):
         def __init__(self, command, environment, cwd, logs, secrets):
@@ -323,7 +323,7 @@ def test_scene_workspace_and_native_thread_cwd(tmp_path, monkeypatch):
             assert params['cwd'] == str(workspace)
             return await super().request(method, params)
     workspace.mkdir(parents=True)
-    (workspace / 'review.json').write_text('{}')
+    (workspace.parent / 'review.json').write_text('{}')
     async def checked(*args):
         return {'structural_pass': True}
     monkeypatch.setattr(runner, 'validate_archive', checked)
@@ -345,6 +345,8 @@ def test_manifest_uses_flat_scene_files_and_excludes_mutable_validation(tmp_path
     (tmp_path / 'walls.json').write_text('{}')
     for name in ['validation.json','standard_archive_validation.json']:
         (tmp_path / name).write_text('{}')
+    (tmp_path / 'raw').mkdir()
+    (tmp_path / 'raw' / 'draft.json').write_text('{}')
     module.refresh(tmp_path, write=True)
     checks = json.loads((tmp_path / 'manifest.json').read_text())['checksums']
     assert set(checks) == {'walls.json'}

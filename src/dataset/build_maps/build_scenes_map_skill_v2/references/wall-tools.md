@@ -55,7 +55,7 @@ python <skill-dir>/scripts/refresh_manifest.py <scene-dir> --write
 
 第一条只预览变化；第二条原子替换 manifest 的校验和。其余字段（版本、状态、计数、检查结论）全部保留，调用者先按实际修改更新它们。此工具不复制证据、不归档缓存、不备份几何、不标记完成，也不修复过期检查记录。
 
-需要 `manifest.json` 已存在，校验和基准为场景根目录。计算所有归档文件的散列，仅排除当前 `manifest.json`、`validation.json`、`standard_archive_validation.json`；旧版本中的同名文件照常校验。拒绝指向归档外文件的符号链接。刷新后重跑阶段校验，再保存校验结果。
+需要 `manifest.json` 已存在，校验和基准为场景根目录。计算所有归档文件的散列，排除可继续修改的 `raw/` 工作区及当前 `manifest.json`、`validation.json`、`standard_archive_validation.json`。拒绝指向归档外文件的符号链接。刷新后重跑阶段校验，再保存校验结果。
 
 ## 顺序与职责
 

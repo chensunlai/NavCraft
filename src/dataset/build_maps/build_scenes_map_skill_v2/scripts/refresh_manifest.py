@@ -18,7 +18,9 @@ def refresh(root, write=False):
         raise ValueError('expected checksum_path_base to resolve to scene root')
     excluded = {'manifest.json','validation.json','standard_archive_validation.json'}
     hashes = {}
-    for file in sorted(root.rglob('*')):
+    files = (file for entry in root.iterdir() if entry.name != 'raw'
+             for file in (entry.rglob('*') if entry.is_dir() else [entry]))
+    for file in sorted(files):
         name = file.relative_to(root).as_posix()
         if name in excluded or not file.is_file():
             continue

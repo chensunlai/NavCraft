@@ -4,7 +4,7 @@
 
 例如素材目录 `data/nas/scene_datasets/hm3d/val/00829-QaLdnwvtxbs/` 对应 `data/scene_maps/hm3d/val/00829-QaLdnwvtxbs/`。不能只取末尾短 ID，也不能因物理路径经过 NAS 符号链接而改变逻辑相对路径。
 
-原始 JSON、图层、描述和检查记录直接保存在场景目录，图片放在 `evidence/`。不创建中间工作层或独立发布副本。
+最终 JSON、图层、描述和检查记录平铺在场景目录，图片放在 `evidence/`；`raw/` 保留原始工作区的脚本、中间产物和备份。缺失结果保持缺失，不补空文件或复制独立发布副本。
 
 场景目录使用以下文件：
 
@@ -23,7 +23,7 @@
 | `manifest.json` | 数据集相对子路径、版本、来源、计数、校验和及其路径基准 |
 | `validation.json` | 最终版本机器检查与人工视觉检查的独立结论 |
 | 图层／楼层子目录 | walls、regions、objects 的 PNG/SVG，floor_plan.svg，逐楼层输出 |
-| `provenance/` | 必要旧版本、局部核验材料；不要复制整个模拟器数据集 |
+| `raw/` | 原始工作区：脚本、采样中间产物、备份和来源材料；不是 Bench 的结果入口 |
 
 墙体阶段设置 `scene.stage: walls_only`，不生成尚未请求的 `regions.json`、`rooms.json`、`objects.json`。`evidence_rooms.jpg` 在此阶段作为结构与楼梯证据联系表，不暗示房间阶段已经完成。两套墙体各自提供 JSON 与可浏览图层，具体字段和验收见 [墙体补全](wall-completion.md)。
 
@@ -54,7 +54,7 @@
 - 帧 ID 示例：`xhigh_000791`、`render_L1_R08_north`。不同 run 的 791 必须是不同 ID。
 - `evidence.json` 中 `rgb` 使用 `evidence/frames/<id>.jpg`，相对于该 JSON。
 - 其他 JSON 文件间引用相对于其所在目录；正文引用 JSON 为 `objects.json`，正文引用图为 `evidence/frames/...`。
-- `manifest.json` 推荐 `checksum_path_base: "."`，校验和键相对于场景目录；生成 checksum 时排除 manifest 自身和会再修改的 validation 文件。
+- `manifest.json` 推荐 `checksum_path_base: "."`，校验和键相对于场景目录；生成 checksum 时排除 raw/ 工作区、manifest 自身和会再修改的 validation 文件。
 - 原始来源路径可留作溯源，但实际打开证据的字段必须指向归档内文件。不凭空补相机参数；缺失时写未知。
 
 ## 检查记录

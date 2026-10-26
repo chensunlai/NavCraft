@@ -91,11 +91,11 @@ def prompt_for(plan, scene, logs):
                '完成 wall、wall_real 与楼梯的构建、纠错、最终复查和墙体阶段归档后立即停止。'
                '不进入房间/功能区分区、物体 box、逐物体描述或证据构建；不运行完整地图阶段校验'),
         repo=repo, skill=plan['skill'], scene=json.dumps(scene, ensure_ascii=False, indent=2),
-        workdir=(repo / scene['output_dir']).resolve(), logs=logs,
+        workdir=(repo / scene['output_dir'] / 'raw').resolve(), logs=logs,
         destination=(repo / scene['output_dir']).resolve(), python=plan['python'],
         gpu=scene_gpu(plan, plan['scenes'].index(scene)),
-        workspace_note='直接在场景目录维护原始文件，不创建 raw/、build/ 或另一套发布副本。'
-                       '临时脚本、备份和运行日志放本次批次工作目录，不要复制整个场景。')
+        workspace_note='raw/ 是原始工作区，保存采样脚本、中间产物与备份；最终结果平铺在父场景目录。'
+                       '只交付实际已生成的结果，缺失文件保持缺失，不补空文件或复制另一套数据集。')
 
 
 def scene_gpu(plan, index):
@@ -217,7 +217,7 @@ async def build_scene(plan, scene, directory, settings, max_turns, timeout, serv
     state.pop('next_retry_at', None)
     write_json(state_file, state)
     try:
-        workspace = settings.repo / scene['output_dir']
+        workspace = settings.repo / scene['output_dir'] / 'raw'
         workspace.mkdir(parents=True, exist_ok=True)
         async with server_factory(settings.command(), settings.environment(), workspace,
                                   directory, (settings.api_key,)) as server:
