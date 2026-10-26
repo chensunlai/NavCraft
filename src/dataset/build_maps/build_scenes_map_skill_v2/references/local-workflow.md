@@ -7,7 +7,7 @@
 - 当前项目位置以会话 cwd 为准。已验证位置为 `/data/oldhome/chen/Project/NavCraft`；旧记录可能使用 `/home2/chen/Project/NavCraft`，先检查实际路径。
 - 已验证 Habitat 环境：`/data/oldhome/chen/.local/anaconda3/envs/vln/bin/python`。旧 `/home2/chen/...` 路径可能失效；先检查现有环境。采集时选择空闲 GPU，不硬编码某张卡永远可用。
 - 输入：`data/nas/scene_datasets/`。历史素材可能经过 data 和 NAS 符号链接。
-- 示例完整归档：`data/scene_maps/hm3d/val/00829-QaLdnwvtxbs/`。重点看修正后的 `raw/layout_review.json`、`raw/validation.json`，不要复用修正前的灰区／门位置。
+- 示例完整归档：`data/scene_maps/hm3d/val/00829-QaLdnwvtxbs/`。重点看修正后的 `layout_review.json`、`validation.json`，不要复用修正前的灰区／门位置。
 - 文本与房间代表图参考：`runs/runs_0_astra_xhigh_rgbd_mapping/workspace/mapping/`；该 run 仅属于 4ok3usBNeis。不能把其中的房间、帧号、几何或统计套用到其他场景。
 
 ## 当前代码边界与历史工具
@@ -19,15 +19,15 @@
 | 历史文件 | 可参考的内容 | 限制 |
 |---|---|---|
 | `src/dataset/schematic_map.py` | 从独立 JSON 绘制墙、分区、box 与整图 | 可将必要绘图逻辑复制到本场景工作目录使用；检查多层布局及字段，不自动恢复到项目 src |
-| `assets/floor_plans/<scene>/` | 初稿图层数据 | 最新数据优先取最终归档 `raw/`，不能用初稿覆盖已接受修正 |
+| `assets/floor_plans/<scene>/` | 初稿图层数据 | 最新数据优先取最终归档 场景目录，不能用初稿覆盖已接受修正 |
 | `src/dataset/scene_map_evidence.py` | 离线视角采样、按实例挑选 RGB | 依赖固定配置和旧 inventory/cache，不是任意场景通用采集器 |
-| `src/dataset/archive_scene_maps.py` | 文本、关联和五项目录组织 | 绑定旧三场景及 xhigh 对应表，不直接运行 main；仅参考所需组织逻辑 |
+| `src/dataset/archive_scene_maps.py` | 文本、关联和旧目录组织 | 绑定旧三场景及 xhigh 对应表，不直接运行 main；仅参考所需组织逻辑 |
 | `src/dataset/scene_map.py`、`wall_filters.py`、`floor_plan.py` | 投影、过滤和分层实验 | 含跨模块／相邻 AstraNav 依赖，不能当独立通用工具；原始投影只作证据 |
 | `config/scene_map/three_floor_plans.json` | 历史输入和取证位置 | 不是支持场景白名单，也不是新场景模板真值 |
 
 新场景建立独立工作目录；二维双墙图绘制、门洞裁切、墙体阶段校验和散列刷新已由本 Skill 的 [墙体工具](wall-tools.md) 提供，优先复用。Habitat 取景、原始网格测量与路径查询先复用本地已验证接口，仅为缺少的能力编写适配；按本 Skill 的归档格式交付。历史备份缺失不应成为必须恢复旧流水线的理由。现有 `src/environment` 仅在接口合适时复用，不能为构图重新侵入导航主代码。
 
-重建已有归档优先读取最新 `raw/`；查清持久数据与缓存的权威来源，避免旧输入覆盖已接受修正。
+重建已有归档优先读取最新 场景目录；查清持久数据与缓存的权威来源，避免旧输入覆盖已接受修正。
 
 ## 离线视图
 

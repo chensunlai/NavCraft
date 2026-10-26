@@ -1,11 +1,9 @@
-"""Publish construction archives once; load frozen map geometry at runtime.
+"""Read original scene files and select the public geometry for one run.
 
-Construction uses a metric plan (Habitat X, -Z). Published map.json uses Habitat
-(X,Z) metres, one calibrated square per floor shared by walls/wall_real. The
-runtime only selects a floor/layer and copies its public geometry.
+Scene files use metric (Habitat X,-Z). The adapter creates Habitat (X,Z)
+geometry in memory; only run directories receive a public map.json snapshot.
 """
 
-import argparse
 import hashlib
 import json
 import math
@@ -21,17 +19,19 @@ LAYERS = ("walls", "wall_real")
 
 
 def map_directory(root, scene_id):
+    """Find original scene files without a second directory tree or asset index."""
     scene = Path(canonical_scene_id(scene_id))
     root = Path(root)
     if scene.parts[0] in {"hm3d", "mp3d"}:
         return root / scene.parent
-    # Scene instances (e.g. HSSD) do not encode the train/val map directory.
-    # Their asset-to-map association is published explicitly from the scene queue.
-    index = json.loads((root / "index.json").read_text())
-    relative = Path(index[scene.as_posix()])
-    if relative.is_absolute() or ".." in relative.parts:
-        raise ValueError("Invalid published map index path")
-    return root / relative
+    if scene.parts[0] == "hssd-hab" and scene.name.endswith(".scene_instance.json"):
+        identifier = scene.name.removesuffix(".scene_instance.json")
+        matches = sorted(path for path in (root / "hssd-hab").glob(f"*/{identifier}")
+                         if (path / "scene.json").is_file())
+        if len(matches) != 1:
+            raise ValueError(f"Expected exactly one scene directory for {scene_id}, found {len(matches)}")
+        return matches[0]
+    raise ValueError(f"Unsupported scene asset layout: {scene_id}")
 
 
 def _number(value):
@@ -40,7 +40,7 @@ def _number(value):
     return float(value)
 
 
-def _archive_coordinates(scene):
+def _scene_coordinates(scene):
     declaration = next((scene[key] for key in ("coordinate_system", "coordinates",
                        "coordinate_convention", "map_coordinates") if key in scene), None)
     if isinstance(declaration, dict):
@@ -50,28 +50,13 @@ def _archive_coordinates(scene):
     # Require the declared map pair; a source-mesh transform mentioning -Z is
     # insufficient. Unknown conventions require an explicit offline correction.
     if not re.search(r'(?<![a-z])x\s*,\s*-\s*z(?![a-z])', compact):
-        raise ValueError("Archive must explicitly declare map coordinates (Habitat X,-Z)")
+        raise ValueError("Scene must explicitly declare map coordinates (Habitat X,-Z)")
     if scene.get("units", scene.get("unit")) not in {"m", "metre", "metres", "meter", "meters"}:
-        raise ValueError("Archive map coordinates must use metres")
+        raise ValueError("Scene map coordinates must use metres")
 
 
-def _ready_result(path, scene_id):
-    result = json.loads(Path(path).read_text())
-    if (result.get("scene_id") != scene_id or result.get("status") != "ready_for_review"
-            or result.get("validation", {}).get("structural_pass") is not True
-            or result.get("active_turn_id")):
-        raise ValueError("Build result is not finished and structurally checked")
-
-
-def publish_map(source, destination, *, build_result=None):
-    """Convert a completed archive to one geometry-only map.json, atomically.
-
-    Source can be an archive root with raw/, or the directory containing
-    scene.json directly. Existing source files are never changed.
-    """
-    source, destination = Path(source), Path(destination)
-    if (source / "raw/scene.json").is_file():
-        source = source / "raw"
+def _read_geometry(source):
+    """Read scene/levels and wall layers together; no persistent converted copy."""
     hashes = {}
 
     def read(name):
@@ -81,14 +66,12 @@ def publish_map(source, destination, *, build_result=None):
         return json.loads(raw)
 
     scene = read("scene.json")
-    if build_result is not None:
-        _ready_result(build_result, scene["scene_id"])
     if scene.get("status") in {"partial", "blocked", "building", "pending"}:
-        raise ValueError("Cannot publish an unfinished scene archive")
-    _archive_coordinates(scene)
+        raise ValueError("Cannot load an unfinished scene")
+    _scene_coordinates(scene)
     levels = scene.get("levels") or read("levels.json")
     if not isinstance(levels, list) or not levels:
-        raise ValueError("Archive requires floor definitions")
+        raise ValueError("Scene requires floor definitions")
     ids = [row["id"] for row in levels]
     if len(set(ids)) != len(ids):
         raise ValueError("Duplicate floor ID")
@@ -137,10 +120,10 @@ def publish_map(source, destination, *, build_result=None):
             if len(bounds) == 4:
                 bounds = [bounds[:2], bounds[2:]]
             if len(bounds) != 2 or any(len(axis) != 2 for axis in bounds):
-                raise ValueError("Invalid archive floor bounds")
+                raise ValueError("Invalid scene floor bounds")
             x, y = [[_number(v) for v in axis] for axis in bounds]
             if x[0] >= x[1] or y[0] >= y[1]:
-                raise ValueError("Invalid archive floor bounds ordering")
+                raise ValueError("Invalid scene floor bounds ordering")
             points.extend([[x[0], -y[1]], [x[1], -y[0]]])
         low = [min(p[i] for p in points) - 2 for i in (0, 1)]
         high = [max(p[i] for p in points) + 2 for i in (0, 1)]
@@ -151,57 +134,47 @@ def publish_map(source, destination, *, build_result=None):
         floors.append({"id": level["id"], "floor_height": height,
                        "origin": origin, "size_m": size, "layers": geometry})
     if not floors:
-        raise ValueError("No floors with publishable wall geometry")
+        raise ValueError("No floors with wall geometry")
     value = {"scene_id": scene["scene_id"], "coordinate_system": COORDINATES, "levels": floors,
              "source": {"directory": str(source.resolve()), "coordinates": "habitat_x_minus_z_metres",
                         "excluded_levels": excluded,
                         "sha256": hashes}}
     if any(hashlib.sha256((source / name).read_bytes()).hexdigest() != digest
            for name, digest in hashes.items()):
-        raise ValueError("Archive changed while publishing; retry after its build finishes")
-    if build_result is not None:
-        _ready_result(build_result, scene["scene_id"])
-    write_json(destination / "map.json", value)
-    return destination / "map.json"
+        raise ValueError("Scene changed while loading; retry after its build finishes")
+    return value
 
 
 def load_wall_map(directory, start_position, layer="walls"):
-    """Select already-published geometry; never read construction archives."""
+    """Load one floor/layer from original files, without modifying them."""
     if layer not in LAYERS:
         raise ValueError("Map layer must be walls or wall_real")
     directory = Path(directory)
-    path = directory / "map.json"
-    if not path.is_file():
-        raise FileNotFoundError(f"Publish this map before running: {path} (python -m src.dataset.maps publish)")
-    raw = path.read_bytes()
-    document = json.loads(raw)
-    if document.get("coordinate_system") != COORDINATES:
-        raise ValueError("Published map must declare habitat_xz_metres coordinates")
+    document = _read_geometry(directory)
     if (not isinstance(start_position, (list, tuple)) or len(start_position) != 3):
         raise ValueError("Start position must be Habitat [X,Y,Z] metres")
     start_position = [_number(v) for v in start_position]
     levels = document["levels"]
-    if len({row["id"] for row in levels}) != len(levels):
-        raise ValueError("Duplicate floor ID")
     matches = [row for row in levels if abs(_number(row["floor_height"]) - start_position[1]) <= .5]
     if len(matches) != 1:
         raise ValueError(f"Start height {start_position[1]} must match exactly one floor within 0.5m: {directory}")
     level = matches[0]
     if layer not in level["layers"]:
-        raise ValueError(f"Published layer {layer} is unavailable on floor {level['id']}")
+        raise ValueError(f"Layer {layer} is unavailable on floor {level['id']}")
     public = validate_map({key: level[key] for key in ("origin", "size_m", "floor_height")} |
                           {"walls": level["layers"][layer]})
     if any(not 0 <= v <= 1 for v in world_to_uv(start_position, public)):
-        raise ValueError(f"Start position is outside the published map: {directory}")
+        raise ValueError(f"Start position is outside the scene canvas: {directory}")
     provenance = {"directory": str(directory.resolve()), "scene_id": document["scene_id"],
                   "layer": layer, "level": level["id"], "floor_height": level["floor_height"],
-                  "coordinate_system": COORDINATES, "map_sha256": hashlib.sha256(raw).hexdigest(),
+                  "coordinate_system": COORDINATES,
+                  "map_sha256": hashlib.sha256(json.dumps(public, sort_keys=True).encode()).hexdigest(),
                   "source": document["source"]}
     return public, provenance
 
 
 def prepare_map(source, start_position, private_directory, layer="walls"):
-    """Copy the selected public floor into a run; accept explicit local fixtures."""
+    """Save a public geometry snapshot and private source hashes under one run."""
     source = Path(source)
     if source.is_file():
         validate_map(json.loads(source.read_text()))
@@ -212,90 +185,3 @@ def prepare_map(source, start_position, private_directory, layer="walls"):
     write_json(destination, public)
     write_json(private_directory / "map_source.json", provenance)
     return destination
-
-
-def _build_sources(build_run, source_root):
-    """Select completed scenes from one frozen batch, never scan its raw tree."""
-    build_run = Path(build_run)
-    plan = json.loads((build_run / "plan.json").read_text())
-    summary = json.loads((build_run / "summary.json").read_text())
-    rows = {row["scene_id"]: row for row in summary["scenes"]}
-    repo = Path(plan["settings"]["repo"])
-    sources, skipped = [], []
-    for scene in plan["scenes"]:
-        source = (repo / scene["output_dir"]).resolve()
-        relative = source.relative_to(source_root.resolve()).as_posix()
-        row = rows.get(scene["scene_id"], {"status": "pending"})
-        try:
-            if row["status"] != "ready_for_review":
-                raise ValueError(f"Build status: {row['status']}")
-            result = repo / row["result"]
-            _ready_result(result, scene["scene_id"])
-        except (OSError, ValueError, KeyError) as error:
-            skipped.append({"scene": relative, "status": "skipped", "reason": str(error)})
-            continue
-        sources.append((source, result))
-    return sources, skipped
-
-
-def publish_tree(source_root, output_root, queues=(), build_run=None):
-    """Publish a finished batch, or a previously copied frozen archive tree."""
-    from tqdm import tqdm
-    source_root, output_root = Path(source_root), Path(output_root)
-    if build_run is not None:
-        source_root = source_root.resolve()
-        sources, results = _build_sources(build_run, source_root)
-    else:
-        paths = set()
-        for pattern in ("*/*/scene.json", "*/*/*/scene.json", "*/*/raw/scene.json", "*/*/*/raw/scene.json"):
-            paths.update(source_root.glob(pattern))
-        sources = [(p, None) for p in sorted({p.parent.parent if p.parent.name == "raw" else p.parent for p in paths})]
-        results = []
-    for source, result in tqdm(sources, desc="Publish maps", unit="scene"):
-        relative = source.relative_to(source_root)
-        try:
-            path = publish_map(source, output_root / relative, build_result=result)
-            results.append({"scene": relative.as_posix(), "status": "published", "path": str(path)})
-        except (OSError, ValueError, KeyError, TypeError) as error:
-            results.append({"scene": relative.as_posix(), "status": "error", "error": str(error)})
-    index_path = output_root / "index.json"
-    index = json.loads(index_path.read_text()) if index_path.exists() else {}
-    for asset, relative in index.items():
-        canonical_scene_id(asset)
-        if Path(relative).is_absolute() or ".." in Path(relative).parts:
-            raise ValueError("Invalid published map index path")
-    for queue_path in queues:
-        queue = json.loads(Path(queue_path).read_text())
-        scene_root, archive_root = Path(queue["scene_root"]), Path(queue["output_root"])
-        for scene in queue["scenes"]:
-            relative = Path(scene["output_dir"]).relative_to(archive_root).as_posix()
-            if not (output_root / relative / "map.json").is_file():
-                continue
-            asset = canonical_scene_id(Path(scene["scene_path"]).relative_to(scene_root).as_posix())
-            if asset in index and index[asset] != relative:
-                raise ValueError(f"Conflicting map directories for {asset}")
-            index[asset] = relative
-    write_json(index_path, index)
-    return results
-
-
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["publish"])
-    parser.add_argument("--source-root", type=Path, required=True)
-    parser.add_argument("--output-root", type=Path, required=True)
-    parser.add_argument("--queue", type=Path, action="append", default=[])
-    parser.add_argument("--build-run", type=Path,
-                        help="Frozen build batch directory; publish only finished, checked scenes")
-    parser.add_argument("--report", type=Path, required=True)
-    args = parser.parse_args(argv)
-    results = publish_tree(args.source_root, args.output_root, args.queue, args.build_run)
-    write_json(args.report, results)
-    print(json.dumps({"published": sum(r["status"] == "published" for r in results),
-                      "errors": sum(r["status"] == "error" for r in results),
-                      "skipped": sum(r["status"] == "skipped" for r in results), "report": str(args.report)}))
-    return int(any(r["status"] == "error" for r in results))
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

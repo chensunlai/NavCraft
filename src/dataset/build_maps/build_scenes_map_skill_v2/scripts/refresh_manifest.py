@@ -10,14 +10,13 @@ from pathlib import Path
 
 def refresh(root, write=False):
     root = root.resolve()
-    path = root/'raw/manifest.json'
+    path = root/'manifest.json'
     old = path.read_bytes()
     manifest = json.loads(old)
-    base = (path.parent/manifest.get('checksum_path_base','..')).resolve()
+    base = (path.parent/manifest.get('checksum_path_base','.')).resolve()
     if base != root:
         raise ValueError('expected checksum_path_base to resolve to scene root')
-    excluded = {'raw/manifest.json','raw/validation.json','raw/standard_archive_validation.json',
-                'raw/events.jsonl','raw/result.json','raw/result.json.tmp','raw/stderr.log','raw/prompt.md'}
+    excluded = {'manifest.json','validation.json','standard_archive_validation.json'}
     hashes = {}
     for file in sorted(root.rglob('*')):
         name = file.relative_to(root).as_posix()
@@ -31,7 +30,7 @@ def refresh(root, write=False):
     changes['removed'] = sorted(set(previous)-set(hashes))
     changes['changed'] = sorted(k for k in hashes.keys() & previous.keys() if hashes[k] != previous[k])
     if write:
-        manifest['checksum_path_base'] = '..'
+        manifest['checksum_path_base'] = '.'
         manifest['checksums'] = hashes
         # Only replace when bytes change. Scene version backups belong to the
         # caller; this helper changes no geometry or acceptance decisions.

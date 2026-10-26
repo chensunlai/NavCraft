@@ -14,11 +14,9 @@
 | `check_harness.sh` | `local` 模式 检查真实动作与全景；`probe` 检查模型与工具；`compaction` 检查压缩续接 |
 | `check_geometry.sh` | 重放 pilot 几何与动作可达性检查，不请求模型 |
 | `check_super_tools.sh` | 真实环境中的 Super 工具检查，不请求模型 |
-| `build_maps.sh` | 默认 Sol high、16 并发，按队列构建 wall/wall_real 与楼梯，使用场景 `raw/` 工作空间 |
+| `build_maps.sh` | 默认 Sol high、16 并发，按队列构建 wall/wall_real 与楼梯，直接使用场景目录作为工作空间 |
 | `build_maps_nonhssd100_full.sh` | 续接新增100个非HSSD场景的原会话，从现有墙图补齐完整地图；Sol high、16并发、GPU0/1 |
-| `publish_maps.sh` | 手动发布指定构图批次中已结束且检查通过的场景，更新冻结 `map.json`；不续跑、不发布运行中 raw |
 | `compare_map_builds.sh` | Sol/Astra high 同场景完整构图，各占 GPU 0/1，独立 Home、工作空间和场景产物 |
-| `publish_maps.sh` | 从顶部指定的已结束构图批次离线发布标准 map.json；运行中或未通过检查的场景跳过 |
 | `report.sh` | 从已有 pilot 记录重新计算并生成报告 |
 | `export_viewer.sh` | 从已有连续任务记录导出静态图文网页 |
 | `serve_viewer.sh` | 提供静态网页，默认 `http://10.82.1.221:8770`；也可修改 DIRECTORY 指向归档的 3D 网页 |
@@ -60,10 +58,10 @@
 
 在 tmux 中直接运行任务脚本即可看到任务自身输出的进度条，不需要额外查看程序。已经启动的旧进程不会热加载新代码，本次不为此中断任务；后续启动或恢复时生效。
 
-## 已发布地图接入
+## 场景原档接入
 
-正式 Bench 默认读取 `data/scene_map_datasets`，用任务中的场景相对路径匹配原始资产和地图目录。`MAP_CONFIG` 指定地图配置，`maps.layer` 选择 `walls` 或 `wall_real`。`doctor.sh` 只检查加载条件；缺图、缺楼层或高度匹配不明确都会列出问题，运行入口不会默默跳过样本或回退旧地图。
+正式 Bench 直接读取 `data/scene_maps/<dataset>/<split?>/<scene>/` 的 `scene.json`、`walls.json` 等原始文件；无需发布、复制或保留 `raw/` 层级。`MAP_CONFIG` 指定目录，`maps.layer` 选择 `walls` 或 `wall_real`。`doctor.sh` 检查加载条件；缺图、缺楼层或高度匹配不明确均报错。
 
-坐标转换由 `publish_maps.sh` 离线完成，写入场景目录的 `map.json`；Bench 只选择冻结楼层／图层，将公开几何复制到运行的 `private/map.json`，溯源写入 `private/map_source.json`。源 raw 后续变更不自动修改已发布快照；需要更新时显式修改发布脚本的 `BUILD_RUN` 并执行。连续任务仍可显式指定已有标准 `map.json` 或已发布地图目录。
+读取时由 Dataset 统一选择楼层并换算公开坐标，公开几何保存在当次运行 `private/map.json`，源文件哈希记录于 `private/map_source.json`；随后仅允许的几何进入模型工作空间。原始标注不被改写，既有运行的输入不随场景更新改变。构图过程日志和 Codex Home 放在 `cache/build-maps/`。
 
-新增非 HSSD 100 景清单冻结后，可运行 `bash scripts/build_maps_nonhssd100.sh`；复用 provider/model/runtime/stage 配置，只换 `config/tasks/scene_maps_nonhssd100.yaml`。当前已启动自动筛选→冻结→建图任务，tmux 为 `build-nonhssd100`，不要同时用脚本重复派发同一批场景。
+新增非 HSSD 100 景清单冻结后，可运行 `bash scripts/build_maps_nonhssd100.sh`；复用 provider/model/runtime/stage 配置，只换 `config/tasks/scene_maps_nonhssd100.yaml`。启动前确认同批次没有其他进程正在写入。

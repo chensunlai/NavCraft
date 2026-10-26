@@ -1,40 +1,33 @@
-# 数据与地图边界
+# 场景与任务数据
 
-`episodes/` 将官方任务转换为 `EpisodeSpec`；`build_maps/` 离线构建场景归档；`maps.py` 离线发布墙图并加载发布结果。Bench 只选择已发布地图、执行任务和评分，运行时不补墙、改标注或转换坐标。
+构建结果只有一份，直接保存到 `data/scene_maps/<dataset>/<split?>/<scene>/`。场景目录存 `scene.json`、`walls.json`、`wall_real.json`、房间/物体标注、证据及检查文件；没有 `raw/` 层级、发布副本或数据目录中的中间 `map.json`。
 
-## 文件与坐标
+## 从原始文件到运行
 
-| 数据 | 路径／内容 | 坐标约定 |
-|---|---|---|
-| 原始场景 | `data/nas/scene_datasets/<scene_id>`（由环境配置指定根目录） | Habitat 世界 `[X,Y,Z]` 米，Y 向上 |
-| 构建归档 | `data/scene_maps/<dataset>/<split?>/<scene>/raw/` | 平面 `[X,-Z]` 米，`scene.json` 声明坐标与单位 |
-| 发布地图 | `data/scene_map_datasets/<dataset>/<split?>/<scene>/map.json` | 平面 `[X,Z]` 米；逐楼层保存共享的 `origin/size_m` 和 `walls/wall_real` 图层 |
-| 运行公开地图 | `workspace/scene/map.json` | 仅 `origin/size_m/floor_height/walls`，无源文件路径、语义标签或核验材料 |
-| 空间记忆 | Harness 工作空间 | 归一化 `[u,v]`，右／下递增；地图显示裁剪不改变坐标 |
+`episodes/` 读取官方任务为 `EpisodeSpec`；`build_maps/` 构建原始场景表征；`maps.py` 直接读取这些场景文件并选择运行所需的楼层和墙图层。Bench 不补墙、修改标注或自动切换图层。
 
-`scene_id` 是相对场景根目录的 POSIX 路径，例如 `hm3d/val/00829-QaLdnwvtxbs/QaLdnwvtxbs.basis.glb`。官方数据里的前缀在 episode 读取时统一一次，环境用 `common.scenes.resolve_scene` 定位资产；不在各运行器重复拼接。HSSD 的资产路径不包含 split，发布时由构建队列生成 `index.json`，明确关联到地图目录。
+| 内容 | 位置与坐标 |
+|---|---|
+| 仿真资产 | `data/nas/scene_datasets/<scene_id>`；Habitat `[X,Y,Z]` 米，Y 向上 |
+| 原始场景表征 | `data/scene_maps/.../scene.json` 及其他文件；平面 `[X,-Z]` 米，字段显式声明坐标与单位 |
+| 本次运行的公开地图 | `<run>/workspace/scene/map.json`；墙线 `[X,Z]` 米，只含 `origin/size_m/floor_height/walls` |
+| 本次运行的私有来源 | `<run>/private/map_source.json`；原始文件哈希、楼层与图层 |
+| 模型空间记忆 | 工作空间的 `memory/entities.json`；全局 `[u,v]`，向右/下增大 |
 
-所有世界／UV／方向换算使用 `common.coordinates`。身体朝向 0° 面向世界 `-Z`，右转为正；`map_pose` 接受 Habitat `[x,y,z,w]` 四元数。
+原始标注不被改写。读取时统一完成必要的坐标计算，再将公开几何快照放进当次运行；模型不会因此看到房间标签、目标位置、私有描述或证据索引。此快照属于实验记录，不是第二套场景数据集。后续修改原始文件只影响新运行，已有运行保留自己的地图和来源哈希。
 
-## 离线发布
+公开世界/UV/方位换算使用 `common.coordinates`。朝向 0° 对应世界 -Z，右转为正；地图裁剪和旋转不改变存储坐标。
 
-新构图使用 `bash scripts/publish_maps.sh` **手动发布**。修改脚本顶部 `BUILD_RUN` 为准确批次；命令读取该批冻结 `plan.json`、`summary.json` 和逐场景 `result.json`，仅发布状态为 `ready_for_review` 且结构检查通过、没有进行中 turn 的场景。运行中、等待重试、部分完成与缺失结果列入报告的 `skipped`，不读取其几何。发布前再次核对状态与源文件哈希，不触发模型、渲染或续跑。
+## 场景定位与校验
 
-下面命令仅用于已经复制好的冻结墙图目录；正在构建的 `scene_maps` 必须加 `--build-run`，不扫描运行中的原始工作空间：
+`scene_id` 是相对仿真资产根目录的 POSIX 路径，如 `hm3d/val/00829-QaLdnwvtxbs/QaLdnwvtxbs.basis.glb`。官方数据的已知前缀在读取时规范化一次。HM3D/MP3D 的表征目录与资产目录对应；HSSD 用资产文件名中的场景 ID 查找唯一 split 目录，找不到或跨 split 重复时明确报错，不另存资产索引副本。
+
+`load_wall_map(directory, start_position, layer)` 直接读取根目录的原始文件，返回公开地图和私有来源。`prepare_map(...)` 将这两部分保存到运行目录；开发测试也可以显式传入已校准的单楼层地图文件。默认 `layer=walls`，可选 `wall_real`。
+
+加载要求：坐标与米制单位明确；墙段有效且楼层引用存在；起点高度在唯一楼层的 ±0.5 m 内并位于画布中；指定图层有实际几何。标为非楼层的区域不充当导航楼层。缺图、楼层歧义、非法坐标、读取期间源文件变化或明确标为未完成的状态均报错，不用另一个目录或旧副本兜底。两种墙图层共享画布校准，切换图层不会改变实体 UV 的含义。
+
+这项读取只验证结构、坐标和接入条件，不替代 RGB 检查，也不表明所有房间、物体标注都已验证正确。后续任务构造应直接使用同一场景目录里的原始标注和证据，不能再创建一份墙体副本作为中转。
 
 ```bash
-python -m src.dataset.maps publish \
-  --source-root data/scene_map_datasets \
-  --output-root data/scene_map_datasets \
-  --queue data/samples/scene_build_queue.json \
-  --queue data/samples/scene_build_queue_nonhssd_100.json \
-  --report cache/map-publish.json
+python -m pytest tests/test_coordinates.py tests/test_dataset_maps.py tests/test_build_maps.py
 ```
-
-可从原归档根目录发布到目标目录，也可对已经复制的墙图目录原位生成小型 `map.json`；均不修改 `scene.json`、`walls.json` 或证据。不同的源字段只在此离线边界解析。坐标、单位未知、未完成归档、缺失墙体或非法几何会明确报错；没有 `wall_real` 时不以 `walls` 冒充。源文件哈希留在发布元数据及运行私有溯源中，不进入公开地图。
-
-发布保留已有资产索引；显式队列补充已经发布目录的关联，不因省略 `--queue` 清空 HSSD 映射。队列中的冲突映射报错。`map.json` 是冻结快照；后台后续修改 raw 不会自动改 Bench 输入。源文件哈希不同只说明快照与当前构建不一致（可能仅元数据变化），需要人工决定何时重新发布；运行器不自动同步或悄悄改实验条件。
-
-运行时 `load_wall_map` 要求起点高度在一个且仅一个楼层的 ±0.5 m 内，并在画布内。楼梯中间起点、重复楼层或未发布地图显式报告，不自动改楼层或替换样本。源资料明确标为非楼层的楼梯端点不发布为独立楼层。地图结构通过不等于墙体已经完成视觉复核。
-
-验证：`python -m pytest tests/test_coordinates.py tests/test_dataset_maps.py tests/test_build_maps.py`。

@@ -6,7 +6,7 @@ TASK_CONFIG="config/tasks/scene_maps_nonhssd100.yaml"
 RUNTIME_CONFIG="config/build_maps/runtime.yaml"
 STAGE_CONFIG="config/build_maps/full.yaml"
 OUTPUT="cache/build-maps/20261026T052701Z-sol-nonhssd100-full"
-BUILD_CODEX_HOME="data/scene_maps/codex/20261026-sol-nonhssd100-walls"
+BUILD_CODEX_HOME="cache/build-maps/codex/20261026-sol-nonhssd100-walls"
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
 set -euo pipefail

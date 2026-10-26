@@ -305,39 +305,49 @@ def test_parallel_low_space_stops_new_dispatch(tmp_path, monkeypatch):
     assert json.loads((output / 'dispatch_stop.json').read_text())['reason'] == 'low_disk_space'
 
 
-def test_scene_workspace_and_native_thread_cwd(tmp_path):
+def test_scene_workspace_and_native_thread_cwd(tmp_path, monkeypatch):
     plan, config = fixture_plan(tmp_path)
     scene = plan['scenes'][0]
-    scene['workspace_dir'] = str(tmp_path / scene['output_dir'] / 'raw')
     output = tmp_path / 'batch'
     runner.save_plan(plan, output)
     directory = runner.scene_directory(output, scene)
-    assert directory == tmp_path / 'maps/hm3d/a/raw'
-    assert '不另建 build/' in (directory / 'prompt.md').read_text()
+    workspace = tmp_path / scene['output_dir']
+    assert directory == output / '0001-hm3d-a'
+    assert f'本次工作目录：{workspace}' in (directory / 'prompt.md').read_text()
+    assert '不创建 raw/' in (directory / 'prompt.md').read_text()
+    assert not workspace.exists()  # A plan writes scheduler files only.
     class CheckCwd(FakeServer):
+        def __init__(self, command, environment, cwd, logs, secrets):
+            assert cwd == workspace and logs == directory
         async def request(self, method, params):
-            assert params['cwd'] == str(directory)
+            assert params['cwd'] == str(workspace)
             return await super().request(method, params)
-    asyncio.run(runner.open_thread(CheckCwd(), config, {}, directory))
+    workspace.mkdir(parents=True)
+    (workspace / 'review.json').write_text('{}')
+    async def checked(*args):
+        return {'structural_pass': True}
+    monkeypatch.setattr(runner, 'validate_archive', checked)
+    result = asyncio.run(runner.build_scene(plan, scene, directory, config, 1, 1, CheckCwd))
+    assert result['status'] == 'ready_for_review'
+    assert (directory / 'result.json').is_file()
+    assert not (workspace / 'result.json').exists()
     summary = runner.summarize(plan, output)
     assert summary['scenes'][0]['result'] == str(directory / 'result.json')
 
 
-def test_manifest_excludes_live_workspace_logs(tmp_path):
+def test_manifest_uses_flat_scene_files_and_excludes_mutable_validation(tmp_path):
     import importlib.util
     script = Path(runner.__file__).parent / 'build_scenes_map_skill_v2/scripts/refresh_manifest.py'
     spec = importlib.util.spec_from_file_location('refresh', script)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    raw = tmp_path / 'raw'
-    raw.mkdir()
-    (raw / 'manifest.json').write_text('{"checksum_path_base":".."}')
-    (raw / 'walls.json').write_text('{}')
-    for name in ['events.jsonl','result.json','stderr.log','prompt.md']:
-        (raw / name).write_text('live')
+    (tmp_path / 'manifest.json').write_text('{"checksum_path_base":"."}')
+    (tmp_path / 'walls.json').write_text('{}')
+    for name in ['validation.json','standard_archive_validation.json']:
+        (tmp_path / name).write_text('{}')
     module.refresh(tmp_path, write=True)
-    checks = json.loads((raw / 'manifest.json').read_text())['checksums']
-    assert set(checks) == {'raw/walls.json'}
+    checks = json.loads((tmp_path / 'manifest.json').read_text())['checksums']
+    assert set(checks) == {'walls.json'}
 
 
 @pytest.mark.parametrize('message,retry', [

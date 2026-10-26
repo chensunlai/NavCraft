@@ -15,7 +15,6 @@ from shapely.ops import unary_union
 
 def validate(scene_dir, tolerance=0.005):
     root = scene_dir.resolve()
-    raw = root / "raw"
     errors, warnings = [], []
 
     def fail(kind, detail):
@@ -28,7 +27,7 @@ def validate(scene_dir, tolerance=0.005):
         return p
 
     def load(name):
-        return json.loads((raw / name).read_text())
+        return json.loads((root / name).read_text())
 
     def xy(value):
         if len(value) != 2 or not all(math.isfinite(float(v)) for v in value):
@@ -40,13 +39,15 @@ def validate(scene_dir, tolerance=0.005):
         "scene_description.md",
         "evidence",
         "evidence_rooms.jpg",
-        "raw",
+        "scene.json",
+        "walls.json",
+        "manifest.json",
     }
     actual = {p.name for p in root.iterdir()}
-    if actual != expected:
+    if not expected.issubset(actual):
         fail(
             "top_level_layout",
-            {"missing": sorted(expected - actual), "extra": sorted(actual - expected)},
+            {"missing": sorted(expected - actual)},
         )
     for name in ["floor_plan.png", "scene_description.md", "evidence_rooms.jpg"]:
         if not (root / name).is_file():
@@ -74,7 +75,7 @@ def validate(scene_dir, tolerance=0.005):
         if load(filename).get("scene_id") != scene["scene_id"]:
             fail("scene_id_mismatch", filename)
     for name in scene.get("files", {}).values():
-        if not local(raw, name).is_file():
+        if not local(root, name).is_file():
             fail("scene_file_reference", name)
     byframe = {f["id"]: f for f in evidence}
     byobject = {o["id"]: o for o in objects}
@@ -83,7 +84,7 @@ def validate(scene_dir, tolerance=0.005):
     if len(byobject) != len(objects):
         fail("duplicate_object_id", len(objects) - len(byobject))
     for frame in evidence:
-        if not local(raw, frame["rgb"]).is_file():
+        if not local(root, frame["rgb"]).is_file():
             fail("missing_frame_image", frame["id"])
         if not frame.get("source"):
             warnings.append({"kind": "frame_source_missing", "id": frame["id"]})
@@ -227,7 +228,7 @@ def validate(scene_dir, tolerance=0.005):
         for wall, wall_line in wall_lines:
             if wall["level"] == door["level"] and interior.intersects(wall_line):
                 fail("open_portal_blocked_by_wall", [door["id"], wall["id"]])
-    for file in [root / "scene_description.md", raw / "README.md", raw / "index.html"]:
+    for file in [root / "scene_description.md", root / "README.md", root / "index.html"]:
         if not file.exists():
             continue
         text = file.read_text()
@@ -244,7 +245,7 @@ def validate(scene_dir, tolerance=0.005):
     if manifest.get("checksum_path_base") is None:
         warnings.append({"kind": "unspecified_checksum_path_base"})
     else:
-        base = local(raw, manifest["checksum_path_base"])
+        base = local(root, manifest["checksum_path_base"])
         for name, digest in manifest.get("checksums", {}).items():
             file = local(base, name)
             if (

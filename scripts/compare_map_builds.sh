@@ -8,14 +8,14 @@ STAGE_CONFIG="config/build_maps/full.yaml"
 SCENE="LT9Jq6dN3Ea"
 RUN_ID="$(date -u +%Y%m%dT%H%M%S%NZ)"
 OUTPUT="cache/build-maps/${RUN_ID}-comparison"
-BUILD_CODEX_HOME_ROOT="data/scene_maps/codex/${RUN_ID}-comparison"
-ARCHIVE_ROOT="data/scene_maps/comparisons/${RUN_ID}"
+BUILD_CODEX_HOME_ROOT="cache/build-maps/codex/${RUN_ID}-comparison"
+ARCHIVE_ROOT="$OUTPUT/scenes"
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
 set -euo pipefail
 cd "$REPO_ROOT"
 
-# Each model gets its own archive, raw workspace, Codex home and logs.
+# Each model gets its own scene workspace, Codex home and logs.
 PIDS=()
 for INDEX in "${!MODEL_CONFIGS[@]}"; do
   MODEL_CONFIG="${MODEL_CONFIGS[$INDEX]}"

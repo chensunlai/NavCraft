@@ -37,7 +37,7 @@ def load_episodes(repo, ids):
     return [loaded[i] for i in ids]
 
 
-def map_directory(repo, episode, root="data/scene_map_datasets"):
+def map_directory(repo, episode, root="data/scene_maps"):
     return scene_map_directory(Path(repo) / root, episode.scene_id)
 
 

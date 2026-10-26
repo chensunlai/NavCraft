@@ -92,15 +92,15 @@ def test_build_map_plan_with_composed_configs_and_isolated_archive(tmp_path):
         {'scene_id': 'a', 'dataset': 'hm3d', 'scene_path': 'asset.glb', 'output_dir': 'maps/hm3d/a', 'order': 1}]}))
     (tmp_path / '.env').write_text('NAVCRAFT_TEST_BASE_URL=http://example.test\nNAVCRAFT_TEST_API_KEY=test-key\n')
     config = tmp_path / 'config.yaml'
-    config.write_text('credentials: .env\nmodel: test-model\nreasoning_effort: high\nqueue: queue.json\nskill: skill\nstage: walls\nscene_workspaces: true\n')
+    config.write_text('credentials: .env\nmodel: test-model\nreasoning_effort: high\nqueue: queue.json\nskill: skill\nstage: walls\n')
     args = ['plan', '--repo', str(tmp_path), '--config', str(config), '--codex-home', 'codex',
             '--output', 'batch', '--archive-root', 'comparison/sol']
     assert main(args) == 0
     plan = json.loads((tmp_path / 'batch/plan.json').read_text())
     scene = plan['scenes'][0]
     assert Path(scene['output_dir']) == tmp_path / 'comparison/sol/hm3d/a'
-    assert Path(scene['workspace_dir']) == tmp_path / 'comparison/sol/hm3d/a/raw'
+    assert 'workspace_dir' not in scene
     assert not (tmp_path / 'maps').exists()  # The source destination is untouched.
-    assert (Path(scene['workspace_dir']) / 'prompt.md').is_file()
-    assert not (Path(scene['output_dir']) / 'final').exists()
+    assert (tmp_path / 'batch/0001-hm3d-a/prompt.md').is_file()
+    assert not Path(scene['output_dir']).exists()  # Planning does not write scene files.
     assert main([*args, '--resume']) == 0

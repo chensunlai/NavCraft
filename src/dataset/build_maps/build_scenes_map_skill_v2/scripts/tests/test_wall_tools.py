@@ -59,10 +59,8 @@ class ArchiveTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)/'scene'
-        self.raw = self.root/'raw'
-        self.raw.mkdir(parents=True)
-        (self.root/'evidence').mkdir()
-        for path in [self.root/'floor_plan.png',self.root/'evidence_rooms.jpg',self.raw/'walls.png',self.raw/'wall_real.png',self.root/'evidence/F.png']:
+        (self.root/'evidence').mkdir(parents=True)
+        for path in [self.root/'floor_plan.png',self.root/'evidence_rooms.jpg',self.root/'walls.png',self.root/'wall_real.png',self.root/'evidence/F.png']:
             Image.new('RGB',(10,10),'white').save(path)
         (self.root/'scene_description.md').write_text('Fixture\n')
         self.scene = dict(scene_id='fixture',stage='walls_only',levels=[dict(id='Mezz',floor_height=2.5,bounds=[[-1,5],[-1,3]])],
@@ -71,9 +69,9 @@ class ArchiveTests(unittest.TestCase):
                                                                     dict(id='W2',level='Mezz',start=[3,0],end=[4,0],status='resolved',origin='observed_schematic',kind='wall',basis='fixture observation',evidence_frames=['F'])],
                          openings=[dict(id='D1',level='Mezz',segment=[[1,0],[3,0]],status='confirmed_open',evidence_frames=['F'])])
         for name,data in {'scene.json':self.scene,'walls.json':self.wall,'wall_real.json':self.wall,'doors.json':dict(doors=self.wall['openings']),
-                          'stairs.json':dict(scene_id='fixture',stairs=[]),'evidence.json':dict(frames=[dict(id='F',source='offline_habitat_render',rgb='../evidence/F.png')]),
-                          'layout_review.json':dict(scene_id='fixture'),'manifest.json':dict(scene_id='fixture',version=7,status='draft',checksum_path_base='..')}.items():
-            save(self.raw/name,data)
+                          'stairs.json':dict(scene_id='fixture',stairs=[]),'evidence.json':dict(frames=[dict(id='F',source='offline_habitat_render',rgb='evidence/F.png')]),
+                          'layout_review.json':dict(scene_id='fixture'),'manifest.json':dict(scene_id='fixture',version=7,status='draft',checksum_path_base='.')}.items():
+            save(self.root/name,data)
         refresh(self.root,True)
 
     def kinds(self):
@@ -86,13 +84,13 @@ class ArchiveTests(unittest.TestCase):
     def test_estimate_cannot_enter_real(self):
         bad = copy.deepcopy(self.wall)
         bad['segments'][0]['origin']='inferred_completion'
-        save(self.raw/'wall_real.json',bad)
+        save(self.root/'wall_real.json',bad)
         refresh(self.root,True)
         self.assertIn('estimate_in_wall_real',self.kinds())
 
     def test_pending_geometry_rejected(self):
         self.wall['segments'][0]['status']='estimated_occluded'
-        save(self.raw/'walls.json',self.wall)
+        save(self.root/'walls.json',self.wall)
         refresh(self.root,True)
         self.assertIn('pending_wall_geometry',self.kinds())
 
@@ -100,24 +98,24 @@ class ArchiveTests(unittest.TestCase):
         wall = copy.deepcopy(self.wall['segments'][0])
         wall.update(id='bad',end=[4,0])
         self.wall['segments'].append(wall)
-        save(self.raw/'walls.json',self.wall)
+        save(self.root/'walls.json',self.wall)
         refresh(self.root,True)
         self.assertTrue({'portal_blocked','duplicate_wall_overlap'} <= self.kinds())
 
     def test_stale_report_survives_manifest_refresh(self):
-        save(self.raw/'path_check.json',dict(inputs_sha256={'walls.json':'0'*64}))
+        save(self.root/'path_check.json',dict(inputs_sha256={'walls.json':'0'*64}))
         refresh(self.root,True)
         self.assertIn('stale_check',self.kinds())
 
     def test_manifest_preview_is_read_only_and_write_preserves_status(self):
-        before=(self.raw/'manifest.json').read_bytes()
+        before=(self.root/'manifest.json').read_bytes()
         (self.root/'scene_description.md').write_text('Changed\n')
         self.assertIn('checksum_mismatch',self.kinds())
         preview=refresh(self.root)
-        self.assertEqual(before,(self.raw/'manifest.json').read_bytes())
+        self.assertEqual(before,(self.root/'manifest.json').read_bytes())
         self.assertIn('scene_description.md',preview['changes']['changed'])
         refresh(self.root,True)
-        manifest=json.loads((self.raw/'manifest.json').read_text())
+        manifest=json.loads((self.root/'manifest.json').read_text())
         self.assertEqual((manifest['version'],manifest['status']),(7,'draft'))
         self.assertTrue(validate(self.root)['structural_pass'])
 
@@ -126,7 +124,7 @@ class ArchiveTests(unittest.TestCase):
         self.assertIn('missing_reference',self.kinds())
 
     def test_reference_escape_is_rejected(self):
-        save(self.raw/'evidence.json',dict(frames=[dict(id='F',source='x',rgb='../../outside.png')]))
+        save(self.root/'evidence.json',dict(frames=[dict(id='F',source='x',rgb='../../outside.png')]))
         with self.assertRaisesRegex(ValueError,'escapes archive'):
             validate(self.root)
 

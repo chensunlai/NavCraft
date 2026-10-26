@@ -31,7 +31,7 @@
 
 ## 交付与验收
 
-在 `raw/` 保存最终 `walls.json`、`wall_real.json`，各自的 PNG/SVG、施工源线和渲染后实际线段，以及 `stairs.json`。`scene.json.files.wall` 可指向 `walls.json`；若额外提供 `wall.json` 兼容别名，内容必须一致，不让两个文件独立漂移。`floor_plan.png` 使用最终 wall。
+在场景目录保存最终 `walls.json`、`wall_real.json`，各自的 PNG/SVG、施工源线和渲染后实际线段，以及 `stairs.json`。`scene.json.files.wall` 可指向 `walls.json`；若额外提供 `wall.json` 兼容别名，内容必须一致，不让两个文件独立漂移。`floor_plan.png` 使用最终 wall。
 
 验收至少包括：
 

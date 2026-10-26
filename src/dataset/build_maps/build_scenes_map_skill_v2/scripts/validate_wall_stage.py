@@ -19,7 +19,6 @@ def sha(path):
 
 def validate(root, tolerance=.005):
     root = root.resolve()
-    raw = root/'raw'
     errors, warnings = [], []
 
     def require(ok, kind, detail=None):
@@ -33,7 +32,7 @@ def validate(root, tolerance=.005):
         return path
 
     def read(ref):
-        return json.loads(local(raw, ref).read_text())
+        return json.loads(local(root, ref).read_text())
 
     def exists(base, ref):
         path = local(base, ref)
@@ -48,7 +47,7 @@ def validate(root, tolerance=.005):
     def line(points):
         return LineString([xy(p) for p in points])
 
-    require({p.name for p in root.iterdir()} == {'floor_plan.png','scene_description.md','evidence','evidence_rooms.jpg','raw'}, 'top_level_layout')
+    require({'floor_plan.png','scene_description.md','evidence','evidence_rooms.jpg','scene.json','walls.json','manifest.json'} <= {p.name for p in root.iterdir()}, 'top_level_layout')
     scene, manifest = read('scene.json'), read('manifest.json')
     files = scene.get('files', {})
     wall_name = files.get('wall', files.get('walls', 'walls.json'))
@@ -59,14 +58,14 @@ def validate(root, tolerance=.005):
     stair_data = read(files.get('stairs','stairs.json'))
     require(scene['stage'] == 'walls_only', 'wrong_stage')
     for name in ('regions.json','rooms.json','objects.json'):
-        if (raw/name).exists():
+        if (root/name).exists():
             warnings.append(dict(kind='later_stage_present', detail=name))
     # Existing later-stage files are not deleted or treated as empty completed work.
     for ref in files.values():
-        exists(raw, ref)
+        exists(root, ref)
     for data in (walls, real, stair_data, manifest):
         require(data.get('scene_id') == scene['scene_id'], 'scene_id_mismatch')
-    if (raw/'wall.json').exists() and (raw/'walls.json').exists():
+    if (root/'wall.json').exists() and (root/'walls.json').exists():
         require(read('wall.json') == read('walls.json'), 'wall_alias_mismatch')
     levels = {l['id']:l for l in scene['levels']}
     require(len(levels) == len(scene['levels']), 'duplicate_level')
@@ -74,12 +73,12 @@ def validate(root, tolerance=.005):
     require(len(byframe) == len(frames), 'duplicate_frame')
     for f in frames:
         require(bool(f.get('source')), 'missing_frame_source', f['id'])
-        exists(raw, f['rgb'])
+        exists(root, f['rgb'])
         for key in ('depth','semantic'):
             if f.get(key):
-                exists(raw, f[key])
-    for name in ('../floor_plan.png','../evidence_rooms.jpg',files.get('wall_layer','walls.png'),files.get('wall_real_layer','wall_real.png')):
-        with Image.open(local(raw, name)) as im:
+                exists(root, f[key])
+    for name in ('floor_plan.png','evidence_rooms.jpg',files.get('wall_layer','walls.png'),files.get('wall_real_layer','wall_real.png')):
+        with Image.open(local(root, name)) as im:
             im.verify()
 
     def evidence(record):
@@ -87,7 +86,7 @@ def validate(root, tolerance=.005):
         for fid in record.get('evidence_frames', []):
             require(fid in byframe, 'unknown_evidence_frame', [record['id'], fid])
         for ref in record.get('evidence_geometry', []):
-            exists(raw, ref)
+            exists(root, ref)
 
     all_lines = {}
     for name, data in (('wall',walls),('wall_real',real)):
@@ -154,20 +153,20 @@ def validate(root, tolerance=.005):
     review_name = files.get('review','layout_review.json')
     review = read(review_name)
     aliases = review.get('build_working_input_aliases', {})
-    reports = [p.name for p in raw.glob('*check.json')] + ['review_final.json']
+    reports = [p.name for p in root.glob('*check.json')] + ['review_final.json']
     for name in reports:
-        if not (raw/name).is_file():
+        if not (root/name).is_file():
             warnings.append(dict(kind='missing_review_report',detail=name))
             continue
         report = read(name)
         hashes = report.get('inputs_sha256', report.get('checked_inputs_sha256',{}))
         for ref, digest in hashes.items():
-            path = exists(raw, aliases.get(ref,ref))
+            path = exists(root, aliases.get(ref,ref))
             require(path.is_file() and sha(path) == digest, 'stale_check', [name,ref])
     for name in ('path_check.json','stair_check.json'):
-        if (name != 'stair_check.json' or stairs) and not (raw/name).exists():
+        if (name != 'stair_check.json' or stairs) and not (root/name).exists():
             warnings.append(dict(kind='navigation_check_not_supplied',detail=name))
-    for document in (root/'scene_description.md',raw/'index.html'):
+    for document in (root/'scene_description.md',root/'index.html'):
         if not document.exists():
             continue
         text = document.read_text()
@@ -178,11 +177,11 @@ def validate(root, tolerance=.005):
                 continue
             exists(document.parent, unquote(url.path))
     require(bool(manifest.get('checksums')), 'empty_checksums')
-    base = local(raw, manifest.get('checksum_path_base','..'))
+    base = local(root, manifest.get('checksum_path_base','.'))
     for ref,digest in manifest.get('checksums',{}).items():
         path = exists(base, ref)
         require(path.is_file() and sha(path) == digest, 'checksum_mismatch', ref)
-    for path in [root/'floor_plan.png', root/'scene_description.md'] + [raw/f for f in (wall_name,real_name,files.get('stairs','stairs.json'))]:
+    for path in [root/'floor_plan.png', root/'scene_description.md'] + [root/f for f in (wall_name,real_name,files.get('stairs','stairs.json'))]:
         require(str(path.resolve().relative_to(base)) in manifest.get('checksums',{}), 'critical_file_not_checksummed', str(path.relative_to(root)))
     warnings.append(dict(kind='manual_review_required',detail='Review RGB, scene boundary decisions, stair direction, free endpoints, local and cross-floor paths separately. Structural pass is not scene acceptance.'))
     return dict(scene_id=scene['scene_id'], structural_pass=not errors, errors=errors, warnings=warnings,

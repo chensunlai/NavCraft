@@ -7,7 +7,7 @@ RUNTIME_CONFIG="config/build_maps/runtime.yaml"
 STAGE_CONFIG="config/build_maps/walls.yaml"
 RUN_ID="$(date -u +%Y%m%dT%H%M%S%NZ)"
 OUTPUT="cache/build-maps/${RUN_ID}-sol-walls"
-BUILD_CODEX_HOME="data/scene_maps/codex/${RUN_ID}-sol-walls"
+BUILD_CODEX_HOME="cache/build-maps/codex/${RUN_ID}-sol-walls"
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
 set -euo pipefail

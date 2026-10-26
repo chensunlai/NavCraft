@@ -8,7 +8,7 @@
 
 ```bash
 python <skill-dir>/scripts/render_wall_layers.py \
-  --scene <scene-dir>/raw/scene.json \
+  --scene <scene-dir>/scene.json \
   --walls <work-dir>/authored_walls.json \
   --real <work-dir>/authored_wall_real.json \
   --stairs <work-dir>/stairs.json \
@@ -33,16 +33,16 @@ python <skill-dir>/scripts/render_wall_layers.py \
 python <skill-dir>/scripts/validate_wall_stage.py <scene-dir>
 ```
 
-输出 JSON 到标准输出；成功退出 0，错误退出 1，不写归档。检查五项顶层、双墙图层、墙段来源、重复线、门洞阻挡、两套门洞一致性、楼梯几何与引用、证据文件、文档链接、别名一致性、关键文件散列及已有检查记录是否过期。
+输出 JSON 到标准输出；成功退出 0，错误退出 1，不写归档。检查场景根目录原始文件、双墙图层、墙段来源、重复线、门洞阻挡、两套门洞一致性、楼梯几何与引用、证据文件、文档链接、别名一致性、关键文件散列及已有检查记录是否过期。
 
 - `scene.stage` 应为 `walls_only`，`scene.files` 可覆盖默认文件名。无需 rooms/regions/objects。已有后续阶段文件只产生提示，不自动删改。
 - `scene.files.wall` 与 `scene.files.walls` 均可指向最终墙文件。额外提供 `wall.json` 与 `walls.json` 时两者必须一致。
 - 要求 `wall_real` 由最终 wall 中保留的观测几何组成；允许不同分段，检查几何覆盖，不依赖段数相同。
 - `stairs.json` 必须存在，无楼梯时明确空数组。检查器不依据“多层”自动虚构跨层连接。
-- 检查记录使用 `inputs_sha256` 或 `checked_inputs_sha256`，键相对 `raw/`。历史工作文件名不同，可在 `layout_review.json.build_working_input_aliases` 中显式映射，例如 `{"walls.json":"authored_walls.json"}`。禁止靠改散列伪装重新运行检查。
+- 检查记录使用 `inputs_sha256` 或 `checked_inputs_sha256`，键相对场景目录。历史工作文件名不同，可在 `layout_review.json.build_working_input_aliases` 中显式映射，例如 `{"walls.json":"authored_walls.json"}`。禁止靠改散列伪装重新运行检查。
 - 机器结构通过与人工视觉通过分别记录；未提供路径报告会提示，脚本不自行运行模拟器，也不把缺失报告当路径成功。发现问题时修源数据、重绘、重跑对应检查，而不是放宽容差。
 
-将输出保存为 `raw/validation.json` 时，先运行命令到工作目录报告，再按成功／失败真实保存；不要写“已目视复查”来替代实际读图。已有人工结论可另外保留在 `review_final.json`。
+将输出保存为 `validation.json` 时，先运行命令到工作目录报告，再按成功／失败真实保存；不要写“已目视复查”来替代实际读图。已有人工结论可另外保留在 `review_final.json`。
 
 完整地图仍使用 `validate_archive.py`；两者检查范围不同，不能用墙体检查器替代完整地图的家具／分区检查。
 
@@ -55,7 +55,7 @@ python <skill-dir>/scripts/refresh_manifest.py <scene-dir> --write
 
 第一条只预览变化；第二条原子替换 manifest 的校验和。其余字段（版本、状态、计数、检查结论）全部保留，调用者先按实际修改更新它们。此工具不复制证据、不归档缓存、不备份几何、不标记完成，也不修复过期检查记录。
 
-需要 `raw/manifest.json` 已存在，校验和基准为场景根目录。计算所有归档文件的散列，仅排除当前 `raw/manifest.json`、`raw/validation.json`、`raw/standard_archive_validation.json`；旧版本中的同名文件照常校验。拒绝指向归档外文件的符号链接。刷新后重跑阶段校验，再保存校验结果。
+需要 `manifest.json` 已存在，校验和基准为场景根目录。计算所有归档文件的散列，仅排除当前 `manifest.json`、`validation.json`、`standard_archive_validation.json`；旧版本中的同名文件照常校验。拒绝指向归档外文件的符号链接。刷新后重跑阶段校验，再保存校验结果。
 
 ## 顺序与职责
 

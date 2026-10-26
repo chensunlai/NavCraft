@@ -78,27 +78,24 @@ def validator_name(stage):
 
 
 def scene_directory(output, scene):
-    if scene.get('workspace_dir'):
-        return Path(scene['workspace_dir'])
-    # Queue order stays stable when a subset is selected or a batch resumes.
+    # Scheduler records live in the batch; scene files stay in output_dir.
     name = re.sub(r'[^a-zA-Z0-9_.-]', '_', scene['scene_id'])
     return output / f"{scene['order']:04d}-{scene['dataset']}-{name}"
 
 
-def prompt_for(plan, scene, workdir):
+def prompt_for(plan, scene, logs):
     repo = Path(plan['settings']['repo'])
     return Path(__file__).with_name('prompt.md').read_text().format(
         stage=('完整场景地图' if plan['stage'] == 'full' else
                '仅墙体与楼梯（wall / wall_real）。按 skill 的正常流程从场景检查、楼层识别、真实渲染取证开始，'
                '完成 wall、wall_real 与楼梯的构建、纠错、最终复查和墙体阶段归档后立即停止。'
                '不进入房间/功能区分区、物体 box、逐物体描述或证据构建；不运行完整地图阶段校验'),
-        repo=repo, skill=plan['skill'], scene=json.dumps(scene, ensure_ascii=False, indent=2), workdir=workdir,
+        repo=repo, skill=plan['skill'], scene=json.dumps(scene, ensure_ascii=False, indent=2),
+        workdir=(repo / scene['output_dir']).resolve(), logs=logs,
         destination=(repo / scene['output_dir']).resolve(), python=plan['python'],
         gpu=scene_gpu(plan, plan['scenes'].index(scene)),
-        workspace_note=('本次直接在归档 raw/ 中工作，按最终位置原地保存文件，不另建 build/ 或嵌套 archive/，不要复制目录到自身。'
-                        'raw/result.json、raw/events.jsonl、raw/stderr.log、raw/prompt.md 是调度器文件，不要改动或计入产物校验和。'
-                        '需要备份只复制将修改的静态文件到 raw/backups/，不要递归备份整个场景。'
-                        if scene.get('workspace_dir') else ''))
+        workspace_note='直接在场景目录维护原始文件，不创建 raw/、build/ 或另一套发布副本。'
+                       '临时脚本、备份和运行日志放本次批次工作目录，不要复制整个场景。')
 
 
 def scene_gpu(plan, index):
@@ -132,8 +129,7 @@ def save_plan(plan, output, resume=False):
         directory = scene_directory(output, scene)
         directory.mkdir(parents=True, exist_ok=True)
         prompt_file = directory / 'prompt.md'
-        if not prompt_file.exists():
-            prompt_file.write_text(prompt_for(plan, scene, directory))
+        prompt_file.write_text(prompt_for(plan, scene, directory))
 
 
 @contextmanager
@@ -221,9 +217,11 @@ async def build_scene(plan, scene, directory, settings, max_turns, timeout, serv
     state.pop('next_retry_at', None)
     write_json(state_file, state)
     try:
-        async with server_factory(settings.command(), settings.environment(), directory,
+        workspace = settings.repo / scene['output_dir']
+        workspace.mkdir(parents=True, exist_ok=True)
+        async with server_factory(settings.command(), settings.environment(), workspace,
                                   directory, (settings.api_key,)) as server:
-            await open_thread(server, settings, state, directory)
+            await open_thread(server, settings, state, workspace)
             write_json(state_file, state)
             skill = Path(plan['skill']) / 'SKILL.md'
             match = re.search(r'^name:\s*(.+)$', skill.read_text(), flags=re.MULTILINE)

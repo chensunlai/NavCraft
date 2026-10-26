@@ -23,13 +23,12 @@ Python 调度 Codex app-server（默认串行，可配置并发），每个场�
 | `--concurrency / --gpus` | 并发槽位数（默认 1）；并发时按槽位循环分配 GPU，默认 `0 1` |
 | `--min-free-gb` | 并发派发前检查工作及归档磁盘，默认剩余不足 20 GiB 时停止新派发，正在执行的场景继续 |
 | `--output` | 必填，批次计划、汇总和总日志目录 |
-| `--scene-workspaces` | 每个场景直接在自身归档的 `raw/` 工作；脚本、prompt、事件和状态保存在该目录，原生线程 cwd 同步设置 |
 | `--max-turns` | 每次调用中，每个场景最多新增几轮，默认 3 |
 | `--turn-timeout` | 每轮等待完成的秒数，默认 3600 |
 | `--resume` | 读取同一 output 的计划和 thread，继续未完成场景 |
 | `--repo / --codex` | 仓库根目录、Codex 可执行文件 |
 
-三个命令：`plan` 只生成计划和逐场景提示；`probe` 发一次简短模型请求；`run` 执行构建。`plan` 不启动 Codex、不渲染；使用 `--scene-workspaces` 时会创建场景 `raw/` 并写入任务提示。
+三个命令：`plan` 只生成计划和逐场景提示；`probe` 发一次简短模型请求；`run` 执行构建。`plan` 不启动 Codex、不渲染、不改场景，只在批次目录写计划与提示。构图执行时，模型 cwd 为对应场景根目录。
 
 ## 当前 221 服务示例
 
@@ -37,19 +36,19 @@ Python 调度 Codex app-server（默认串行，可配置并发），每个场�
 # 检查 Responses、指定模型和 effort，不构建地图。
 python -m src.dataset.build_maps probe \
   --env .env.harness-astra --model gpt-6-astra --effort high \
-  --codex-home data/scene_maps/codex \
+  --codex-home cache/build-maps/codex \
   --output cache/build-maps/probe-221 --turn-timeout 120
 
 # 按现有清单顺序准备全部场景；去掉 --limit 即处理全部。
 python -m src.dataset.build_maps plan \
   --env .env.harness-astra --model gpt-6-astra --effort high \
-  --codex-home data/scene_maps/codex --gpu 0 --limit 1 \
+  --codex-home cache/build-maps/codex --gpu 0 --limit 1 \
   --output cache/build-maps/first-scene
 
 # 执行上一步已生成的计划；参数保持一致，使用 --resume。
 python -m src.dataset.build_maps run \
   --env .env.harness-astra --model gpt-6-astra --effort high \
-  --codex-home data/scene_maps/codex --gpu 0 --limit 1 \
+  --codex-home cache/build-maps/codex --gpu 0 --limit 1 \
   --output cache/build-maps/first-scene --resume
 ```
 
@@ -60,7 +59,7 @@ python -m src.dataset.build_maps run \
 1. 冻结队列、公开配置和 skill 文件哈希，按队列顺序选择场景。
 2. 启动独立 app-server；使用指定 Codex Home，通过自定义 Responses provider 从子进程环境读取密钥。密钥不写入配置、命令行或本程序日志。已有 Home 的配置不覆盖。
 3. 新建或恢复该场景 thread，核对 Codex 返回的模型、provider 和 effort。以原生 `skill` 输入显式传入指定 SKILL.md。
-4. Codex 检查已有归档，必要时在场景工作目录备份，然后执行 skill。只允许编辑该场景与该工作目录，不改其他场景、共享索引或项目源码。
+4. Codex 检查已有归档，必要时在批次目录备份，然后执行 skill。只允许编辑该场景与该工作目录，不改其他场景、共享索引或项目源码。
 5. 模型返回 reviewed / partial / blocked 报告；主程序另用当前 Python 执行 `validate_archive.py` 或 `validate_wall_stage.py`。报告格式、证据路径或结构校验失败时，将检查反馈给同一 thread 继续修正。
 6. 模型报告 reviewed、证据文件存在且结构检查通过，才记为 `ready_for_review` 并处理下一场景。该状态**不是独立视觉验收**。临时服务错误按下述策略等待续接。blocked、其他错误、超时或修订轮数耗尽时保留现场，串行停止，并发模式继续该槽下一场景。
 
@@ -92,7 +91,7 @@ python -m pytest -q tests/test_build_maps.py
 
 协议参考：[Codex App Server](https://developers.openai.com/codex/app-server)。实现按本机 `codex app-server generate-json-schema` 核对，不内置复制一份协议框架。
 
-使用场景内工作空间时，`raw/events.jsonl`、`raw/result.json`、`raw/stderr.log`、`raw/prompt.md` 为调度器保留文件，校验和工具排除这些运行记录。几何和证据照常校验，不再增加 build 子目录。
+每个场景的 JSON、图层和证据直接保存在 `output_dir`；调度器的 `events.jsonl`、`result.json`、`stderr.log`、`prompt.md` 位于批次目录 `<output>/<顺序>-<数据集>-<场景>/`。`scene_directory()` 返回后者，模型工作目录则始终为场景根目录。场景文件不包含运行记录或 raw 中间层。
 
 ### 服务重试
 

@@ -41,7 +41,6 @@ def parser():
     p.add_argument('--min-free-gb', type=float, default=20, help='Parallel dispatch pauses below this free disk space')
     p.add_argument('--output', type=Path, required=True, help='Batch logs/work directory, separate from final scene archives')
     p.add_argument('--archive-root', type=Path, help='Independent scene destinations, e.g. a model comparison directory')
-    p.add_argument('--scene-workspaces', action='store_true', help='Use each scene archive raw/ as its workspace')
     p.add_argument('--resume', action='store_true', help='Continue saved threads with the same plan and settings')
     p.add_argument('--max-turns', type=int, default=3, help='At most this many additional turns per scene per invocation')
     p.add_argument('--turn-timeout', type=float, default=3600)
@@ -107,9 +106,6 @@ def main(argv=None):
         if args.concurrency > 1:
             plan['parallel'] = {'concurrency': args.concurrency, 'gpus': args.gpus,
                                 'min_free_gb': args.min_free_gb}
-        if args.scene_workspaces:
-            for scene in plan['scenes']:
-                scene['workspace_dir'] = str((repo / scene['output_dir'] / 'raw').absolute())
         if any(output.resolve().is_relative_to((repo / s['output_dir']).resolve()) for s in plan['scenes']):
             raise ValueError('Batch output must not be inside a final scene archive')
         save_plan(plan, output, args.resume)

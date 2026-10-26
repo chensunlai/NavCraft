@@ -16,16 +16,19 @@ description: 根据用户指定的 Habitat/HM3D/MP3D 等室内场景，构建直
 5. 构建或复查墙体时阅读 [墙体补全与楼梯交付](references/wall-completion.md)。默认 wall 包含实体墙、围栏、场景边界及缺失补全；另存估计前有实际证据的 wall_real。逐场景任务必须完成当前场景验收后再切换。
 6. 绘图、门洞裁切和归档检查优先复用 [墙体工具](references/wall-tools.md) 中的脚本；不要为每个场景重新拼接这些固定步骤。工具只消费已判定几何，不自动决定补墙或验收。
 
-每个场景顶层严格为：
+每个场景直接保存原始文件，文件间引用相对于场景目录；不再创建 raw/ 或独立发布副本：
 
 ```text
 <dataset>/<split>/<scene>/
-├── floor_plan.png
-├── scene_description.md
-├── evidence/
-├── evidence_rooms.jpg
-└── raw/
+├── scene.json
+├── walls.json / wall_real.json / stairs.json
+├── rooms.json / regions.json / objects.json / doors.json
+├── evidence.json / evidence/
+├── floor_plan.png / evidence_rooms.jpg / scene_description.md
+└── manifest.json / layout_review.json / validation.json
 ```
+
+临时脚本、备份、模型会话与调度日志保存在批次 cache 目录，不混入场景原始文件。
 
 ## 构建流程
 
@@ -63,7 +66,7 @@ description: 根据用户指定的 Habitat/HM3D/MP3D 等室内场景，构建直
 
 ### 5. 归档与交付
 
-先在工作目录完成修正，再更新用户指定场景。把完整证据图片复制到归档，不能依赖临时 cache 或旧 runs 才能打开。同步图、JSON、描述、连接图、帧关联、索引与校验和。顶层保持五项。
+直接在用户指定场景目录维护文件。把完整证据图片复制到归档，不能依赖临时 cache 或旧 runs 才能打开。同步图、JSON、描述、连接图、帧关联、索引与校验和。原始 JSON 和图层保存在场景根，证据使用场景内相对路径。
 
 完整地图使用下列只读脚本检查文件结构、引用、box 与几何关系；使用装有 Shapely 的 Python。该脚本要求 rooms/regions/objects，不适用于仅墙体阶段；仅墙体阶段运行 `scripts/validate_wall_stage.py <scene-directory>`，并按 [墙体验收](references/wall-completion.md) 完成人工与路径检查。两类校验器都只读并输出 JSON；用法见 [墙体工具](references/wall-tools.md)。不能制造空房间／物体文件来通过完整地图校验。
 
