@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>NavCraft · 导航任务图册</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" type="module"></script>
+</head>
+<body>
+  <aside class="sidebar" id="sidebar">
+    <a class="brand" href="#all"><span class="brand-icon">N<span>↗</span></span><span>NavCraft<small>导航任务图册</small></span></a>
+    <label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="搜索题型、能力、工具…" aria-label="搜索任务"><kbd>/</kbd></label>
+    <nav id="navigation" aria-label="任务能力分组"></nav>
+    <div class="sidebar-footer"><span class="status-dot"></span>本地冻结数据 · 只读展示<small>Tasks-v2 / TaskCatalog</small></div>
+  </aside>
+  <div class="main-shell">
+    <header class="topbar"><button class="mobile-menu" id="menu-toggle" aria-label="打开分组">☰</button><span id="breadcrumb">全部能力 / 任务总览</span><button id="about-toggle" class="quiet-button">如何阅读 <span>↗</span></button></header>
+    <main id="main">
+      <section class="hero">
+        <div class="eyebrow">NAVIGATION-GROUNDED SPATIAL TASKS</div>
+        <h1>从空间判断，<br>到真正的导航行动<span>。</span></h1>
+        <p class="lead">看清楚每一道题给模型什么、要求它做什么，以及怎样判断做对了。相近题型按能力放在一起，真实样例与后续设计分别标明。</p>
+        <div class="stats" id="stats"></div>
+      </section>
+      <section id="reading-guide" class="reading-guide" hidden>
+        <div><h2>先看形式，再看能力</h2><p>每道题从一个保存下来的状态开始。“切点”就是当时的观察、位姿、记忆和已有交互；它不是一条新的提示词。</p></div>
+        <div class="guide-grid"><div><b>QA · 查证后回答</b><p>可以查看已有图片、地图和记忆。不得移动、拍摄新图或改正式记忆，答案绑定切点时刻。</p></div><div><b>Agent 决策 · 短窗口内做对</b><p>检查真实调用和窗口结束的记忆。维护题通常直接接着上一条工具回执运行，不提醒模型“现在写记忆”。</p></div><div><b>Agent 执行 · 实际完成事件</b><p>需要真实行动并提交，按到达、穿门等实际事件评分。文字说“到了”不能代替执行。</p></div></div>
+        <p class="guide-note">当前8类试验任务默认使用 super 工具。QA 可以进行工具辅助的查证，因此不能把其成绩解释为纯视觉能力。检查者可展开私有标准答案；这些内容不会提供给被测模型。</p>
+      </section>
+      <div class="toolbar"><div class="form-filters" id="form-filters" role="group" aria-label="任务形式"><button data-form="all" class="active">全部形式</button><button data-form="qa">QA</button><button data-form="decision">Agent 决策</button><button data-form="execution">Agent 执行</button></div><label class="status-filter"><span>数据状态</span><select id="status-filter"><option value="all">全部设计</option><option value="implemented">已有真实样例</option><option value="planned">待构建</option><option value="deferred">暂缓接入</option></select></label></div>
+      <div class="results-line"><span id="results-count">正在加载任务…</span><button class="quiet-button" id="collapse-all">收起详情</button></div>
+      <div id="task-list" aria-live="polite"></div>
+      <footer class="page-footer">来源：Tasks-v2.md · TaskCatalog.md · 当前生成器与独立评分实现。示意答案只说明输出形式，不冒充真实教师示范。</footer>
+    </main>
+  </div>
+  <dialog id="image-dialog"><button id="close-image" aria-label="关闭图片">×</button><img id="large-image" alt=""><p id="image-caption"></p></dialog>
+  <div id="load-error" role="alert" hidden></div>
+</body>
+</html>
