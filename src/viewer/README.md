@@ -1,8 +1,5 @@
 # Offline sequence viewer
 
-For task designs and frozen data examples, use the separate
-[task atlas](tasks/README.md): `bash scripts/serve_task_catalog.sh`.
-
 Read saved continuous-task results without starting Bench, Habitat or model requests.
 
 ```bash

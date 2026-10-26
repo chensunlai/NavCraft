@@ -96,10 +96,3 @@ python -m src.bench.checks.super_tools --gpu 1 \
 
 `task_memory({"action":"edit","content":"Inspect D02; the left approach was blocked. Try the right approach."})` replaces the entire notebook; the receipt is `{"updated":true}`. `task_memory({"action":"read"})` returns `{"content":"..."}`. Empty content clears it. The text lives in `workspace/memory/task.json`, survives successive requests, and is included in the public checkpoint after compaction. It is model-written working memory, not verified evidence or an evaluation result. Goal changes do not silently erase it; the model updates its plan. `initial_state.task_memory` can seed the text. Basic and super tiers both provide this tool.
 
-## Dataset generation
-
-`bash scripts/generate_dataset.sh` prepares real scene labels, collects reproducible cuts,
-derives frozen spatial tasks, runs selected teacher attempts and exports verified training
-records. The default configuration produces eight task types and uses one Sol high worker.
-The same subtask evaluator supports teacher and student runs; private labels never become
-tool feedback. See [generation interfaces and commands](src/dataset/generation/README.md).

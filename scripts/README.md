@@ -16,12 +16,10 @@
 | `check_super_tools.sh` | 真实环境中的 Super 工具检查，不请求模型 |
 | `build_maps.sh` | 默认 Sol high、16 并发，按队列构建 wall/wall_real 与楼梯，使用场景 `raw/` 工作空间 |
 | `build_maps_nonhssd100_full.sh` | 续接新增100个非HSSD场景的原会话，从现有墙图补齐完整地图；Sol high、16并发、GPU0/1 |
-| `generate_dataset.sh` | 准备真实场景与切点，生成 8 类空间任务，单并发 Sol 验收并导出训练记录 |
 | `compare_map_builds.sh` | Sol/Astra high 同场景完整构图，各占 GPU 0/1，独立 Home、工作空间和场景产物 |
 | `report.sh` | 从已有 pilot 记录重新计算并生成报告 |
 | `export_viewer.sh` | 从已有连续任务记录导出静态图文网页 |
 | `serve_viewer.sh` | 提供静态网页，默认 `http://10.82.1.221:8770`；也可修改 DIRECTORY 指向归档的 3D 网页 |
-| `serve_task_catalog.sh` | 展示全部70个任务设计、8类80条真实样例及教师记录，默认 `http://10.82.1.221:8771` |
 
 示例路径对应以前实际执行过的任务。换实验时修改 `RUN`、`OUTPUT`、`DIRECTORY` 等顶部变量；脚本不自动挑选“最近一次”而误用别的运行。新实验默认使用纳秒时间戳目录，不覆盖旧实验。所有脚本前台运行，需要后台运行时由调用方使用 tmux/nohup。
 
@@ -39,7 +37,6 @@
 | 工具 | `config/tools/{basic,super}.yaml` | 工具集合及局部规划方式 |
 | 上下文 | `config/runtime/navigation.yaml` | 上下文容量与压缩阈值 |
 | 构图 | `config/build_maps/{runtime,walls,full}.yaml` | 运行限制、GPU 池、构建阶段和工作空间模式 |
-| 数据生成 | `config/generation/pilot.yaml` | 场景划分、题型配额、教师抽样及生成目录，复用已有模型/环境/工具配置 |
 
 导航脚本用多个 `--config` 合并任务/环境/地图/预算/模型注册表，用多个 `--model-config` 组合实际模型配置。连续任务使用同一模型配置格式；其轮次预算来自冻结 scenario，不用 pilot 预算覆盖。构图脚本复用同一模型与服务配置，读取其中 model/effort/credentials，不继承模型推理并发作为场景构建并发。
 
