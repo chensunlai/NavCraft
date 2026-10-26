@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from src.common.io import read_json
+from src.common.scenes import canonical_scene_id
 
 from .base import EpisodeSource, EpisodeSpec
 
@@ -34,7 +35,7 @@ class VLNCEEpisodeSource(EpisodeSource):
                 raise ValueError(f"Missing instruction or goals: {path}:{source_id}")
             episodes.append(EpisodeSpec(
                 id=identifier, source_id=source_id, benchmark=self.name,
-                scene_id=raw["scene_id"], start_position=raw["start_position"],
+                scene_id=canonical_scene_id(raw["scene_id"]), start_position=raw["start_position"],
                 start_rotation=raw["start_rotation"], source_file=str(path),
                 language=instruction.get("language") if isinstance(instruction, dict) else None,
                 goals=[{"modality": "instruction", "instruction": text.strip(),
@@ -63,9 +64,7 @@ class ObjectNavEpisodeSource(EpisodeSource):
                 identifier = f"objnav:{self.split}:{scene}:{category}:{index}"
                 if not self._wanted(identifier, source_id, requested):
                     continue
-                scene_id = original_scene
-                if scene_id.startswith("hm3d_v0.2/"):
-                    scene_id = "hm3d/" + scene_id[len("hm3d_v0.2/"):]
+                scene_id = canonical_scene_id(original_scene)
                 key = f"{Path(original_scene).name}_{category}"
                 positions = [
                     view["agent_state"]["position"]
@@ -151,7 +150,7 @@ class GOATEpisodeSource(EpisodeSource):
                 if not goals:
                     raise ValueError(f"GOAT episode has no goals after preprocessing: {identifier}")
                 episodes.append(EpisodeSpec(
-                    id=identifier, source_id=source_id, benchmark="goat", scene_id=raw["scene_id"],
+                    id=identifier, source_id=source_id, benchmark="goat", scene_id=canonical_scene_id(raw["scene_id"]),
                     start_position=raw["start_position"], start_rotation=raw["start_rotation"],
                     goals=goals, source_file=str(path), skipped_goals=skipped,
                 ))

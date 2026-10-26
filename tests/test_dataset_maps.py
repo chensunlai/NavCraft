@@ -6,14 +6,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.dataset.maps import load_wall_map, map_directory, prepare_map
+from src.dataset.maps import load_wall_map, map_directory, prepare_map, publish_map, publish_tree
 from src.bench import samples
 
 
 def publish(tmp_path):
     directory = tmp_path / 'maps/hm3d/val/00001-house'
     directory.mkdir(parents=True)
-    scene = {'scene_id': 'house', 'coordinate_system': 'Habitat (X,-Z), height=Y',
+    scene = {'scene_id': 'house', 'coordinate_system': 'Habitat (X,-Z), height=Y', 'units': 'm',
              'levels': [{'id': 'L1', 'floor_height': 0., 'bounds': [[-4, 4], [-5, 5]]},
                         {'id': 'L2', 'floor_height': 3., 'bounds': [[-4, 4], [-5, 5]]}],
              'private_description': 'bed in north room'}
@@ -26,6 +26,7 @@ def publish(tmp_path):
     (directory / 'walls.json').write_text(json.dumps(walls))
     real = {**walls, 'segments': [walls['segments'][0]]}
     (directory / 'wall_real.json').write_text(json.dumps(real))
+    publish_map(directory, directory)
     return directory
 
 
@@ -56,8 +57,9 @@ def test_level_metadata_fallback_and_existing_height_fields(tmp_path):
     levels[0]['bounds'] = [-4, 4, -5, 5]
     (directory / 'scene.json').write_text(json.dumps(scene))
     (directory / 'levels.json').write_text(json.dumps(levels))
+    publish_map(directory, directory)
     _, provenance = load_wall_map(directory, [0, .1, 0])
-    assert 'levels.json' in provenance['source_sha256']
+    assert 'levels.json' in provenance['source']['sha256']
 
 
 def test_invalid_or_ambiguous_maps_are_not_silently_replaced(tmp_path):
@@ -73,12 +75,13 @@ def test_invalid_or_ambiguous_maps_are_not_silently_replaced(tmp_path):
     scene = json.loads((directory / 'scene.json').read_text())
     scene['levels'][1]['floor_height'] = .2
     (directory / 'scene.json').write_text(json.dumps(scene))
+    publish_map(directory, directory)
     with pytest.raises(ValueError, match='exactly one floor'):
         load_wall_map(directory, [0, .1, 0])
     scene['coordinate_system'] = 'Habitat (X,Z)'
     (directory / 'scene.json').write_text(json.dumps(scene))
     with pytest.raises(ValueError, match='coordinates'):
-        load_wall_map(directory, [0, .1, 0])
+        publish_map(directory, directory)
 
 
 def test_scene_path_matching():
@@ -104,8 +107,8 @@ def test_bench_plan_uses_published_map_and_reports_missing(tmp_path, monkeypatch
     job = samples.plan(tmp_path, config)['jobs'][0]
     assert job['map'] == str(directory) and job['map_error'] is None
     assert job['map_source']['level'] == 'L1'
-    assert not (directory / 'map.json').exists()  # Planning is read-only.
-    (directory / 'walls.json').unlink()
+    assert (directory / 'map.json').exists()  # Planning only reads the published artifact.
+    (directory / 'map.json').unlink()
     job = samples.plan(tmp_path, config)['jobs'][0]
     assert job['map_error'] and job['map_source'] is None
 
@@ -149,5 +152,87 @@ def test_published_coordinates_field(tmp_path, declaration, field):
     scene.pop('coordinate_system')
     scene[field] = declaration
     path.write_text(json.dumps(scene))
+    publish_map(directory, directory)
     public, _ = load_wall_map(directory, [0, .1, 0])
     assert public['walls'] == [[[-2., -1.], [2., -1.]]]
+
+
+def test_runtime_uses_frozen_publication_not_raw_files(tmp_path):
+    directory = publish(tmp_path)
+    before, _ = load_wall_map(directory, [0, 0, 0])
+    (directory / 'walls.json').unlink()
+    (directory / 'scene.json').unlink()
+    after, _ = load_wall_map(directory, [0, 0, 0])
+    assert after == before
+    serialized = json.dumps(json.loads((directory / 'map.json').read_text()))
+    for hidden in ('bedroom', 'evidence_frames', 'private_description', 'openings', 'stairs'):
+        assert hidden not in serialized
+
+
+def test_layers_share_calibration_even_with_different_geometry_bounds(tmp_path):
+    directory = publish(tmp_path)
+    wall = json.loads((directory / 'wall_real.json').read_text())
+    wall['segments'][0]['end'] = [25, 1]
+    (directory / 'wall_real.json').write_text(json.dumps(wall))
+    publish_map(directory, directory)
+    complete, _ = load_wall_map(directory, [0, 0, 0])
+    observed, _ = load_wall_map(directory, [0, 0, 0], 'wall_real')
+    assert complete['origin'] == observed['origin']
+    assert complete['size_m'] == observed['size_m']
+
+
+def test_publish_rejects_ambiguous_coordinate_declaration(tmp_path):
+    directory = publish(tmp_path)
+    scene = json.loads((directory / 'scene.json').read_text())
+    scene['coordinate_system'] = 'map=(Habitat X,Z); source contains -Z elsewhere'
+    (directory / 'scene.json').write_text(json.dumps(scene))
+    with pytest.raises(ValueError, match='explicitly declare'):
+        publish_map(directory, directory)
+
+
+def test_publish_queue_indexes_scene_instance_assets(tmp_path):
+    source = publish(tmp_path)
+    destination = tmp_path / 'published'
+    queue = tmp_path / 'queue.json'
+    queue.write_text(json.dumps({'scene_root': 'assets', 'output_root': 'archive', 'scenes': [
+        {'scene_path': 'assets/hssd-hab/scenes/house.scene_instance.json',
+         'output_dir': 'archive/hm3d/val/00001-house'}]}))
+    results = publish_tree(tmp_path / 'maps', destination, [queue])
+    assert results[0]['status'] == 'published'
+    assert map_directory(destination, 'hssd-hab/scenes/house.scene_instance.json') == destination / 'hm3d/val/00001-house'
+
+
+def test_public_map_input_is_validated(tmp_path):
+    source = tmp_path / 'map.json'
+    source.write_text(json.dumps({'origin': [0, 0], 'size_m': 0, 'floor_height': 0, 'walls': []}))
+    with pytest.raises(ValueError, match='positive'):
+        prepare_map(source, [0, 0, 0], tmp_path / 'private')
+
+
+def test_publish_requires_declared_units_and_accepts_archive_unit_field(tmp_path):
+    directory = publish(tmp_path)
+    path = directory / 'scene.json'
+    scene = json.loads(path.read_text())
+    scene['unit'] = scene.pop('units')
+    path.write_text(json.dumps(scene))
+    publish_map(directory, directory)
+    del scene['unit']
+    path.write_text(json.dumps(scene))
+    with pytest.raises(ValueError, match='metres'):
+        publish_map(directory, directory)
+
+
+def test_publish_excludes_declared_non_floor_and_does_not_invent_missing_layer(tmp_path):
+    directory = publish(tmp_path)
+    with pytest.raises(ValueError, match='unavailable'):
+        load_wall_map(directory, [0, 3, 0], 'wall_real')
+    path = directory / 'scene.json'
+    scene = json.loads(path.read_text())
+    scene['levels'][1]['occupied_floor_confirmed'] = False
+    path.write_text(json.dumps(scene))
+    publish_map(directory, directory)
+    document = json.loads((directory / 'map.json').read_text())
+    assert [level['id'] for level in document['levels']] == ['L1']
+    assert document['source']['excluded_levels'] == [{'id': 'L2', 'reason': 'source_marks_non_floor'}]
+    with pytest.raises(ValueError, match='exactly one floor'):
+        load_wall_map(directory, [0, 3, 0])
