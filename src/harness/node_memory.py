@@ -18,7 +18,7 @@ class NodeMemory:
         if type(size) not in (int, float) or not math.isfinite(size) or size <= 0:
             raise ValueError("Map size_m must be positive")
         if not self.path.exists():
-            atomic_json(self.path, [])
+            atomic_json(self.path, {"nodes": [], "rooms": {}})
         nodes = self.nodes
         for node in nodes:
             self._validate(node)
@@ -30,11 +30,22 @@ class NodeMemory:
             atomic_json(self.used_path, sorted(used | identifiers))
 
     @property
+    def state(self):
+        state = json.loads(self.path.read_text())
+        if (not isinstance(state, dict) or set(state) != {"nodes", "rooms"}
+                or not isinstance(state["nodes"], list) or not isinstance(state["rooms"], dict)):
+            raise ValueError("memory/nodes.json must contain nodes array and rooms description object")
+        for room, description in state["rooms"].items():
+            self._room_description(room, description)
+        return state
+
+    @property
     def nodes(self):
-        nodes = json.loads(self.path.read_text())
-        if not isinstance(nodes, list):
-            raise ValueError("memory/nodes.json must be an array")
-        return nodes
+        return self.state["nodes"]
+
+    @property
+    def rooms(self):
+        return self.state["rooms"]
 
     def _used(self):
         used = json.loads(self.used_path.read_text()) if self.used_path.exists() else []
@@ -56,10 +67,36 @@ class NodeMemory:
     def summary(self, limit=10):
         return self.read(limit=min(limit, 10))
 
+    @staticmethod
+    def _room_records(state):
+        members = {}
+        for node in state["nodes"]:
+            if node["room"] is not None:
+                members.setdefault(node["room"], []).append(node["id"])
+        return [{"room": room, "description": state["rooms"].get(room), "nodes": members.get(room, [])}
+                for room in dict.fromkeys([*members, *state["rooms"]])]
+
+    def read_rooms(self, room=None, query=None, limit=10, offset=0):
+        try:
+            self._pagination(limit, offset)
+            if query is not None and not isinstance(query, str):
+                raise ValueError("query must be a string")
+            rows = self._room_records(self.state)
+            if room is not None:
+                rows = [row for row in rows if row["room"] == room]
+                if not rows:
+                    raise ValueError(f"Unknown room: {room}")
+            if query is not None:
+                rows = [row for row in rows
+                        if query.casefold() in (row["room"] + " " + (row["description"] or "")).casefold()]
+            return {"rooms": rows[offset:offset + limit], "total": len(rows),
+                    "next_offset": offset + limit if offset + limit < len(rows) else None}
+        except (ValueError, TypeError, KeyError) as error:
+            return {"error": str(error)}
+
     def read(self, id=None, room=None, query=None, limit=10, offset=0):
         try:
-            if type(limit) is not int or not 1 <= limit <= 300 or type(offset) is not int or offset < 0:
-                raise ValueError("limit must be 1-300; offset must be a nonnegative integer")
+            self._pagination(limit, offset)
             if id is not None:
                 if room is not None or query is not None:
                     raise ValueError("id cannot be combined with room or query")
@@ -73,8 +110,12 @@ class NodeMemory:
                 raise ValueError("room must be a nonempty string or null")
             if query is not None and not isinstance(query, str):
                 raise ValueError("query must be a string")
-            nodes = self.nodes
+            state = self.state
+            nodes = state["nodes"]
             if room is not None:
+                room_record = next((row for row in self._room_records(state) if row["room"] == room), None)
+                if room_record is None:
+                    raise ValueError(f"Unknown room: {room}")
                 nodes = [node for node in nodes if node["room"] == room]
             if query is not None:
                 nodes = [node for node in nodes
@@ -83,6 +124,7 @@ class NodeMemory:
                          | {"history_count": len(detail["history"])}
                          for detail in map(self._detail, nodes[offset:offset + limit])]
             return {"nodes": summaries, "total": len(nodes),
+                    **({"room": room_record} if room is not None else {}),
                     "next_offset": offset + limit if offset + limit < len(nodes) else None}
         except (ValueError, TypeError, KeyError) as error:
             return {"error": str(error)}
@@ -92,7 +134,9 @@ class NodeMemory:
         try:
             if not isinstance(operations, list) or not 1 <= len(operations) <= 20:
                 raise ValueError("operations must contain 1-20 items")
-            state = {node["id"]: node for node in self.nodes}
+            snapshot = self.state
+            state = {node["id"]: node for node in snapshot["nodes"]}
+            rooms = snapshot["rooms"]
             used = self._used() | set(state)
             number = max((int(identifier[1:]) for identifier in used
                           if re.fullmatch(r"N\d{3,}", identifier)), default=0)
@@ -102,6 +146,21 @@ class NodeMemory:
                     raise ValueError(f"Operation {index} must be an object")
                 op, identifier = operation.get("op"), operation.get("id", operation.get("keep"))
                 context = f"Operation {index} {op}" + (f" {identifier}" if identifier else "") + ": "
+                if op == "update" and "id" not in operation and "room" in operation:
+                    self._keys(operation, {"op", "room", "description"})
+                    room = operation["room"]
+                    if "description" not in operation:
+                        raise ValueError("Room update requires description; null clears it")
+                    description = operation["description"]
+                    self._room_description(room, description, allow_null=True)
+                    if room not in rooms and not any(node["room"] == room for node in state.values()):
+                        raise ValueError(f"Unknown room: {room}; assign a node to this room first")
+                    if description is None:
+                        rooms.pop(room, None)
+                    else:
+                        rooms[room] = description
+                    changes.append({"op": op, "room": room})
+                    continue
                 if op == "create":
                     self._keys(operation, {"op", "description", "room"})
                     self._text_fields(operation, require_description=True)
@@ -145,9 +204,23 @@ class NodeMemory:
             return {"error": context + str(error)}
         # Reserve issued IDs before replacing the public snapshot, as entity memory does.
         atomic_json(self.used_path, sorted(used))
-        atomic_json(self.path, list(state.values()))
-        changed = {change["id"] for change in changes}
+        atomic_json(self.path, {"nodes": list(state.values()), "rooms": rooms})
+        changed = {change["id"] for change in changes if "id" in change}
         return {"changes": changes, "nodes": [self._detail(node) for node in state.values() if node["id"] in changed]}
+
+    @staticmethod
+    def _pagination(limit, offset):
+        if type(limit) is not int or not 1 <= limit <= 300 or type(offset) is not int or offset < 0:
+            raise ValueError("limit must be 1-300; offset must be a nonnegative integer")
+
+    @staticmethod
+    def _room_description(room, description, allow_null=False):
+        if not isinstance(room, str) or not room.strip():
+            raise ValueError("room must be a nonempty string")
+        if description is None and allow_null:
+            return
+        if not isinstance(description, str) or not description.strip() or len(description) > 1000:
+            raise ValueError("Room description must be a nonempty string of 1-1000 characters")
 
     @staticmethod
     def _keys(value, allowed):

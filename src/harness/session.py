@@ -161,7 +161,8 @@ class HarnessSession:
             if (self.workspace / "memory" / other_name).exists():
                 raise ValueError("Workspace contains the other memory representation")
             if "memory" in state or not (self.workspace / "memory" / memory_name).exists():
-                write_json(self.workspace / "memory" / memory_name, state.get("memory", []))
+                empty_memory = [] if self.memory_type == "entity" else {"nodes": [], "rooms": {}}
+                write_json(self.workspace / "memory" / memory_name, state.get("memory", empty_memory))
             restored_map = json.loads((self.workspace / "scene/map.json").read_text())
             if restored_map != self.transform:
                 raise ValueError("Snapshot map does not match the requested scene map")

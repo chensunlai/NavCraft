@@ -25,6 +25,8 @@ class NodeMemoryTools:
             source = args.pop("source", "nodes")
             if source == "nodes":
                 result = s.memory.read(**args)
+            elif source == "rooms":
+                result = s.memory.read_rooms(**args)
             else:
                 result = s.observations.history(**args)
                 associations = {}
@@ -44,10 +46,20 @@ class NodeMemoryTools:
                 rows[0] = {**s.observations.crop(source["image"], args["crop"]),
                            **{key: source[key] for key in ("pose", "step", "group") if key in source}}
             return self.navigation.image_reply(rows, nodes=nodes)
-        view = args.get("view", "local")
+        room = None
+        highlight = args.get("highlight")
+        if "room" in args:
+            rooms = s.memory.read_rooms(room=args["room"])
+            if "error" in rooms:
+                return s._reply(rooms, error=True)
+            room = rooms["rooms"][0]
+            highlight = list(dict.fromkeys([*(highlight or []), *room["nodes"]]))
+        view = args.get("view", "explored" if room is not None else "local")
         radius = args.get("radius_m", 6)
         mapped = "explored" if view == "explored" else {"ego" if view == "ego" else "around_self": radius}
-        value = self.navigation.map_value(view=mapped, highlight=args.get("highlight"))
+        value = self.navigation.map_value(view=mapped, highlight=highlight)
+        if room is not None:
+            value = {**value, "room": room}
         return s._reply(value, [value["map"]], [f"[MAP {value['view_id']} | model-written nodes]"])
 
     def edit(self, operations):
@@ -60,15 +72,15 @@ class NodeMemoryTools:
         if len(needs_panorama) > 1:
             raise ValueError("A batch permits at most one create or refresh")
         panorama = s.observations.current_panorama(s.current) if needs_panorama else None
-        before = s.trace.store(s.memory.nodes)
+        before = s.trace.store(s.memory.state)
         result = s.memory.edit(operations, current_panorama=panorama)
         if "error" in result:
             return s._reply({**result, "committed": False}, error=True)
-        s.trace.emit("memory_changed", {"before": before, "after": s.trace.store(s.memory.nodes)})
+        s.trace.emit("memory_changed", {"before": before, "after": s.trace.store(s.memory.state)})
         changes = []
         for change, operation in zip(result["changes"], operations):
             row = dict(change)
-            if operation["op"] != "delete":
+            if operation["op"] != "delete" and "id" in row:
                 node = next((n for n in s.memory.nodes if n["id"] == row["id"]), None)
                 if node is not None:
                     if operation["op"] in {"create", "merge"} or "room" in operation:

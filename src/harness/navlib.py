@@ -43,6 +43,7 @@ def frame(fid):
 
 
 def memory():
+    """Read the entity list, or node-mode {nodes, rooms} snapshot."""
     state = json.loads((_workspace() / "scene/state.json").read_text())
     name = "nodes.json" if state.get("memory_type", "entity") == "node" else "entities.json"
     return json.loads((_workspace() / "memory" / name).read_text())

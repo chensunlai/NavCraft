@@ -201,7 +201,7 @@ def test_summary_never_returns_more_than_ten_nodes(store):
 def test_restored_snapshot_rejects_invalid_records(store, change):
     panorama(store)
     create(store)
-    atomic_json(store.path, [{**store.nodes[0], **change}])
+    atomic_json(store.path, {"nodes": [{**store.nodes[0], **change}], "rooms": {}})
     with pytest.raises(ValueError):
         NodeMemory(store.workspace, store.observations, store.transform)
 
@@ -210,7 +210,114 @@ def test_snapshot_ids_are_reserved_before_deleted(store):
     panorama(store)
     create(store)
     node = {**store.nodes[0], "id": "N057"}
-    atomic_json(store.path, [node])
+    atomic_json(store.path, {"nodes": [node], "rooms": {}})
     restored = NodeMemory(store.workspace, store.observations, store.transform)
     restored.edit([{"op": "delete", "id": "N057"}])
     assert create(restored) == "N058"
+
+
+def test_room_description_is_independent_and_can_be_replaced_or_cleared(store):
+    panorama(store)
+    identifier = create(store, description="A sofa by this viewpoint", room="living_room_1")
+    assert store.rooms == {}
+    assert store.read_rooms()["rooms"] == [
+        {"room": "living_room_1", "description": None, "nodes": [identifier]}]
+    description = "TV faces the sofa; kitchen entrance is beside the bookshelf."
+    update = {"op": "update", "room": "living_room_1", "description": description}
+    result = store.edit([update])
+    assert result == {"changes": [{"op": "update", "room": "living_room_1"}], "nodes": []}
+    assert store.rooms == {"living_room_1": description}
+    assert store.get(identifier)["description"] == "A sofa by this viewpoint"
+    detail = store.read(room="living_room_1")
+    assert detail["room"] == {"room": "living_room_1", "description": description, "nodes": [identifier]}
+    assert detail["nodes"][0]["panorama"] == "p_one"
+    assert "error" not in store.edit([{**update, "description": "Corrected room layout"}])
+    assert store.rooms["living_room_1"] == "Corrected room layout"
+    assert "error" not in store.edit([{**update, "description": None}])
+    assert store.rooms == {} and store.read_rooms()["rooms"][0]["description"] is None
+    assert store.nodes[0]["room"] == "living_room_1"
+
+
+def test_mixed_node_and_room_updates_commit_or_roll_back_together(store):
+    panorama(store)
+    operations = [{"op": "create", "description": "Entrance", "room": "entry"},
+                  {"op": "update", "room": "entry", "description": "Entrance hall connects to lounge"}]
+    before = store.path.read_bytes()
+    failed = store.edit([*operations, {"op": "delete", "id": "N999"}], "p_one")
+    assert "error" in failed and store.path.read_bytes() == before
+    assert not store.used_path.exists()
+    success = store.edit(operations, "p_one")
+    assert "error" not in success and success["nodes"][0]["id"] == "N001"
+    restored = NodeMemory(store.workspace, store.observations, store.transform)
+    assert restored.state == store.state
+    assert restored.rooms["entry"] == operations[1]["description"]
+    before, ledger = store.path.read_bytes(), store.used_path.read_bytes()
+    failed = store.edit([{"op": "update", "room": "entry", "description": "Wrong"},
+                         {"op": "update", "id": "N001", "refresh": True}])
+    assert "error" in failed
+    assert store.path.read_bytes() == before and store.used_path.read_bytes() == ledger
+
+
+def test_room_memberships_follow_node_edits_and_descriptions_survive_empty_groups(store):
+    panorama(store)
+    first, second = create(store, room="lounge"), create(store, room="lounge")
+    create(store, room="kitchen")
+    store.edit([{"op": "update", "room": "lounge", "description": "Sofa opposite TV"}])
+    assert "error" not in store.edit([{"op": "update", "id": second, "room": "kitchen"}])
+    assert store.read_rooms(room="lounge")["rooms"][0]["nodes"] == [first]
+    assert "error" not in store.edit([{"op": "merge", "keep": first, "remove": [second],
+                                       "description": "Doorway", "room": "kitchen"}])
+    lounge = store.read_rooms(room="lounge")["rooms"][0]
+    assert lounge == {"room": "lounge", "description": "Sofa opposite TV", "nodes": []}
+    assert store.read_rooms(room="kitchen")["rooms"][0]["nodes"] == [first, "N003"]
+    assert "error" not in store.edit([{"op": "delete", "id": first}])
+    assert store.read_rooms(room="kitchen")["rooms"][0]["nodes"] == ["N003"]
+    assert "error" not in store.edit([{"op": "update", "room": "lounge", "description": None}])
+    assert "Unknown room" in store.read_rooms(room="lounge")["error"]
+
+
+def test_room_directory_filters_paginates_and_distinguishes_unknown_rooms(store):
+    panorama(store)
+    for room in ("living_room_1", "kitchen", "bedroom"):
+        create(store, room=room)
+    create(store, room=None)
+    store.edit([{"op": "update", "room": "kitchen", "description": "Sink beside window"}])
+    first = store.read_rooms(limit=2)
+    assert first["total"] == 3 and first["next_offset"] == 2
+    assert [row["room"] for row in first["rooms"]] == ["living_room_1", "kitchen"]
+    assert store.read_rooms(offset=2)["rooms"][0]["room"] == "bedroom"
+    assert store.read_rooms(query="WINDOW")["rooms"][0]["room"] == "kitchen"
+    assert store.read_rooms(query="living")["total"] == 1
+    assert store.read_rooms(room="living_room_1")["rooms"][0]["description"] is None
+    assert "Unknown room" in store.read_rooms(room="missing")["error"]
+    assert "Unknown room" in store.read(room="missing")["error"]
+    assert "error" in store.read_rooms(limit=0)
+
+
+@pytest.mark.parametrize("operation", [
+    {"op": "update", "room": "missing", "description": "Unobserved room"},
+    {"op": "update", "room": "客厅"},
+    {"op": "update", "room": "客厅", "description": " "},
+    {"op": "update", "room": "客厅", "description": "x" * 1001},
+    {"op": "update", "room": "客厅", "description": 42},
+    {"op": "update", "room": None, "description": "Room"},
+    {"op": "update", "room": "客厅", "description": "Room", "refresh": True},
+])
+def test_invalid_room_update_preserves_state(store, operation):
+    panorama(store)
+    create(store)
+    before = store.path.read_bytes()
+    assert "error" in store.edit([operation])
+    assert store.path.read_bytes() == before
+
+
+@pytest.mark.parametrize("state", [
+    [], {"nodes": [], "rooms": []}, {"nodes": {}, "rooms": {}},
+    {"nodes": [], "rooms": {"room": None}}, {"nodes": [], "rooms": {"room": " "}},
+    {"nodes": [], "rooms": {"room": "x" * 1001}}, {"nodes": [], "rooms": {" ": "Room"}},
+    {"nodes": [], "rooms": {}, "members": {}},
+])
+def test_room_snapshot_rejects_invalid_storage(store, state):
+    atomic_json(store.path, state)
+    with pytest.raises(ValueError):
+        NodeMemory(store.workspace, store.observations, store.transform)

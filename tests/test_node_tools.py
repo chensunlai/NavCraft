@@ -22,11 +22,15 @@ def schemas():
 
 @pytest.mark.parametrize("arguments", [
     {}, {"id": "N001"}, {"mode": "text", "room": "living_room_1", "query": "sofa"},
+    {"mode": "text", "source": "rooms"},
+    {"mode": "text", "source": "rooms", "room": "living_room_1", "query": "TV", "limit": 2},
     {"mode": "text", "source": "observations", "offset": 3, "limit": 10},
     {"mode": "image", "refs": ["N001", "p_old"]},
     {"mode": "image", "refs": ["f_0001"], "crop": [0, 0, 1, 1]},
     {"mode": "map"}, {"mode": "map", "view": "ego", "radius_m": 6, "highlight": ["N001"]},
     {"mode": "map", "view": "explored"},
+    {"mode": "map", "room": "living_room_1"},
+    {"mode": "map", "room": "living_room_1", "view": "ego", "radius_m": 3},
 ])
 def test_read_schema_accepts_separate_modes(schemas, arguments):
     assert schemas["memory_read"].is_valid(arguments)
@@ -35,12 +39,15 @@ def test_read_schema_accepts_separate_modes(schemas, arguments):
 @pytest.mark.parametrize("arguments", [
     {"mode": "image", "refs": ["N001"], "room": "kitchen"},
     {"mode": "text", "source": "observations", "query": "sofa"},
+    {"mode": "text", "source": "rooms", "id": "N001"},
+    {"mode": "text", "source": "rooms", "room": None},
     {"id": "N001", "room": "kitchen"},
     {"mode": "image", "refs": ["p_one", "p_two"], "crop": [0, 0, 1, 1]},
     {"mode": "image", "refs": ["p_one", "p_two", "p_three"]},
     {"mode": "map", "view": "explored", "radius_m": 6},
     {"mode": "map", "query": "sofa"}, {"mode": "text", "limit": 0},
     {"mode": "map", "radius_m": 0}, {"mode": "image", "refs": []},
+    {"mode": "map", "room": " "}, {"mode": "map", "room": "living_room_1", "radius_m": 3},
 ])
 def test_read_schema_rejects_mixed_or_unbounded_requests(schemas, arguments):
     assert not schemas["memory_read"].is_valid(arguments)
@@ -50,6 +57,8 @@ def test_read_schema_rejects_mixed_or_unbounded_requests(schemas, arguments):
     {"op": "create", "description": "Entrance", "room": None},
     {"op": "update", "id": "N001", "refresh": True},
     {"op": "update", "id": "N001", "room": None},
+    {"op": "update", "room": "living_room_1", "description": "Sofa facing a TV"},
+    {"op": "update", "room": "living_room_1", "description": None},
     {"op": "delete", "id": "N001"},
     {"op": "merge", "keep": "N001", "remove": ["N002"], "description": "Entrance"},
 ])
@@ -65,6 +74,10 @@ def test_edit_schema_accepts_flat_node_operations(schemas, operation):
     {"op": "update", "id": "N001", "fields": {"description": "Entrance"}},
     {"op": "merge", "keep": "N001", "remove": ["N002"]},
     {"op": "delete", "id": "N001", "description": "Entrance"},
+    {"op": "update", "room": "living_room_1"},
+    {"op": "update", "room": "living_room_1", "description": " "},
+    {"op": "update", "room": "living_room_1", "description": "a" * 1001},
+    {"op": "update", "room": "living_room_1", "description": "Layout", "refresh": True},
 ])
 def test_edit_schema_rejects_old_or_incomplete_operations(schemas, operation):
     assert not schemas["memory_edit"].is_valid({"operations": [operation]})
@@ -133,8 +146,8 @@ def test_create_binds_existing_panorama_and_records_before_after_without_images(
     node_tools.navigation.images.assert_not_called()
     kind, event = session.trace.events[0]
     assert kind == "memory_changed"
-    assert session.trace.blobs[event["before"]["$trace_blob"]] == []
-    assert session.trace.blobs[event["after"]["$trace_blob"]][0]["id"] == identifier
+    assert session.trace.blobs[event["before"]["$trace_blob"]] == {"nodes": [], "rooms": {}}
+    assert session.trace.blobs[event["after"]["$trace_blob"]]["nodes"][0]["id"] == identifier
 
 
 def test_missing_current_panorama_does_not_capture_or_mutate_memory(node_tools):
@@ -252,6 +265,86 @@ def test_remote_description_edit_never_requests_current_panorama(node_tools):
     assert reply["value"] == {"changes": [{"op": "update", "id": identifier}], "committed": True}
     assert reply["refs"] == []
     assert node_tools.session.memory.get(identifier)["description"] == "Corrected room description"
+
+
+def test_room_description_read_edit_and_clear_need_no_capture(node_tools):
+    identifier = create_node(node_tools)
+    session = node_tools.session
+    session.observations.current_panorama = Mock(side_effect=AssertionError("Unexpected capture lookup"))
+    before = len(session.observations.items)
+    reply = node_tools.edit([{"op": "update", "room": "living_room_1",
+                              "description": "Sofa opposite television; dining table beside window."}])
+    assert reply["value"] == {"changes": [{"op": "update", "room": "living_room_1"}], "committed": True}
+    directory = node_tools.read(source="rooms")
+    room = directory["value"]["rooms"][0]
+    assert room == {"room": "living_room_1", "description": session.memory.rooms["living_room_1"],
+                    "nodes": [identifier]}
+    assert directory["refs"] == [] and not directory["error"]
+    assert node_tools.read(room="living_room_1")["value"]["room"] == room
+    assert node_tools.read(source="rooms", query="television")["value"]["total"] == 1
+    event = session.trace.events[-1][1]
+    assert session.trace.blobs[event["before"]["$trace_blob"]]["rooms"] == {}
+    assert session.trace.blobs[event["after"]["$trace_blob"]]["rooms"] == session.memory.rooms
+    node_tools.edit([{"op": "update", "room": "living_room_1", "description": None}])
+    assert node_tools.read(source="rooms")["value"]["rooms"] == [
+        {"room": "living_room_1", "description": None, "nodes": [identifier]}]
+    assert session.memory.get(identifier)["description"] == "Entrance with a sofa"
+    assert len(session.observations.items) == before
+    session.environment.observe.assert_not_called()
+    session.environment.panorama.assert_not_called()
+
+
+def test_mixed_node_and_room_edits_have_paired_receipts_and_full_trace(node_tools):
+    reply = node_tools.edit([
+        {"op": "create", "room": "living_room_1", "description": "Entrance with a sofa"},
+        {"op": "update", "room": "living_room_1", "description": "Sofa facing television"}])
+    assert not reply["error"] and reply["value"]["committed"]
+    first, second = reply["value"]["changes"]
+    assert first == {"op": "create", "id": "N001", "room": "living_room_1", "panorama": "p_first"}
+    assert second == {"op": "update", "room": "living_room_1"}
+    session = node_tools.session
+    assert session.trace.blobs[session.trace.events[-1][1]["after"]["$trace_blob"]] == session.memory.state
+
+
+def test_room_map_highlights_members_and_preserves_explicit_view(node_tools):
+    first = create_node(node_tools)
+    second = create_node(node_tools)
+    node_tools.edit([{"op": "update", "room": "living_room_1", "description": "Shared living area"}])
+    reply = node_tools.read(mode="map", room="living_room_1", highlight=[second])
+    node_tools.navigation.map_value.assert_called_once_with(view="explored", highlight=[second, first])
+    assert reply["value"]["room"] == {
+        "room": "living_room_1", "description": "Shared living area", "nodes": [first, second]}
+    assert len(reply["refs"]) == 1
+    node_tools.navigation.map_value.reset_mock()
+    node_tools.read(mode="map", room="living_room_1", view="ego", radius_m=3)
+    node_tools.navigation.map_value.assert_called_once_with(view={"ego": 3}, highlight=[first, second])
+    node_tools.edit([{"op": "update", "id": first, "room": "kitchen"}])
+    node_tools.navigation.map_value.reset_mock()
+    node_tools.read(mode="map", room="living_room_1")
+    node_tools.navigation.map_value.assert_called_once_with(view="explored", highlight=[second])
+
+
+def test_room_map_rejects_unknown_group_and_keeps_described_empty_room(node_tools):
+    identifier = create_node(node_tools)
+    missing = node_tools.read(mode="map", room="missing")
+    assert missing["error"] and missing["refs"] == []
+    node_tools.navigation.map_value.assert_not_called()
+    node_tools.edit([{"op": "update", "room": "living_room_1", "description": "Known room layout"},
+                     {"op": "update", "id": identifier, "room": None}])
+    reply = node_tools.read(mode="map", room="living_room_1")
+    assert not reply["error"] and reply["value"]["room"]["nodes"] == []
+    node_tools.navigation.map_value.assert_called_once_with(view="explored", highlight=[])
+
+
+def test_room_edit_respects_qa_readonly_boundary(node_tools):
+    create_node(node_tools)
+    session = node_tools.session
+    session._qa = True
+    before = session.memory.path.read_bytes()
+    with pytest.raises(ValueError, match="existing-evidence"):
+        node_tools.edit([{"op": "update", "room": "living_room_1", "description": "Changed layout"}])
+    assert session.memory.path.read_bytes() == before
+    assert not node_tools.read(source="rooms")["error"]
 
 
 def test_qa_and_multiple_captures_are_rejected_before_writes(node_tools):

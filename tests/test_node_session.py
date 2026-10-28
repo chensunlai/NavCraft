@@ -143,7 +143,9 @@ def test_readonly_question_cannot_write_or_capture(factory):
     session._qa = True
     before = session.memory.path.read_bytes()
     for name, args in (("observe", {"mode": "panorama"}), ("memory_edit", {"operations": [
-            {"op": "update", "id": identifier, "description": "Changed"}]})):
+            {"op": "update", "id": identifier, "description": "Changed"}]}),
+            ("memory_edit", {"operations": [{"op": "update", "room": "living_room_1",
+                                             "description": "Changed room"}]})):
         reply, _ = call(session, name, args)
         assert reply["result"]["isError"]
     reply, _ = call(session, "memory_read", {"mode": "image", "refs": [identifier]})
@@ -153,6 +155,9 @@ def test_readonly_question_cannot_write_or_capture(factory):
 def test_snapshot_restores_node_refs_calibration_and_ids(factory, tmp_path):
     first = factory()
     identifier, panorama = node(first)
+    reply, _ = call(first, "memory_edit", {"operations": [{"op": "update", "room": "living_room_1",
+                                                          "description": "Sofa faces the TV; dining entrance by the shelf."}]})
+    assert not reply["result"]["isError"]
     call(first, "move", {"mode": "steps", "actions": ["move_forward"]})
     snapshot = tmp_path / "snapshot"
     first.snapshot(snapshot)
@@ -161,8 +166,16 @@ def test_snapshot_restores_node_refs_calibration_and_ids(factory, tmp_path):
     restored = factory(state=state)
     assert restored.transform == first.transform
     assert restored.current == first.current
-    assert restored.memory.nodes == first.memory.nodes
+    assert restored.memory.state == first.memory.state
     assert restored.observations.image(panorama)["path"] == first.observations.image(panorama)["path"]
+    reply, directory = call(restored, "memory_read", {"mode": "text", "source": "rooms"})
+    assert not reply["result"]["isError"] and not reply["result"]["images"]
+    assert directory["rooms"] == [{"room": "living_room_1", "nodes": [identifier],
+                                    "description": first.memory.rooms["living_room_1"]}]
+    reply, mapped = call(restored, "memory_read", {"mode": "map", "room": "living_room_1"})
+    assert not reply["result"]["isError"] and reply["result"]["images"]
+    assert mapped["room"] == directory["rooms"][0]
+    assert mapped["node_index"] == [{"id": identifier, "room": "living_room_1"}]
     with pytest.raises(ValueError, match="memory_type"):
         factory("entity", state)
     call(restored, "memory_edit", {"operations": [{"op": "delete", "id": identifier}]})
