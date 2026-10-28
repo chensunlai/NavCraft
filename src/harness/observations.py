@@ -1,5 +1,6 @@
 """Publish only RGB and map-relative pose; simulator annotations stay private."""
 
+from copy import deepcopy
 import hashlib
 import json
 import math
@@ -59,12 +60,92 @@ class Observations:
             raise ValueError(f"Unknown frame: {fid}")
         return self.items[fid]
 
+    @staticmethod
+    def _valid_pose(pose):
+        return (isinstance(pose, dict) and set(pose) == {"pos", "heading"}
+                and isinstance(pose["pos"], list) and len(pose["pos"]) == 2
+                and all(type(value) in (int, float) and math.isfinite(value)
+                        for value in [*pose["pos"], pose["heading"]]))
+
+    def panorama(self, group):
+        """Return one complete, immutable scene panorama at its capture pose."""
+        if not isinstance(group, str) or not group.startswith("p_"):
+            raise ValueError("Expected a panorama group ID (p_)")
+        frames = [row for row in self.items.values() if row.get("group") == group]
+        if (len(frames) != 6 or any(row.get("kind") != "observation" for row in frames)
+                or any(type(row.get("yaw")) not in (int, float) for row in frames)
+                or sorted(row["yaw"] for row in frames) != list(range(0, 360, 60))):
+            raise ValueError(f"Panorama {group} must contain six scene observations at yaw 0,60,120,180,240,300")
+        frames.sort(key=lambda row: row["yaw"])
+        pose, step = frames[0].get("pose"), frames[0].get("step")
+        if not self._valid_pose(pose):
+            raise ValueError(f"Panorama {group} requires a valid capture pose")
+        for row in frames:
+            current = row.get("pose")
+            if (not self._valid_pose(current)
+                    or current["pos"] != pose["pos"] or row.get("step") != step):
+                raise ValueError(f"Panorama {group} requires valid poses at one position and step")
+        return deepcopy({"group": group, "frames": frames, "pose": pose, "step": step})
+
+    def current_panorama(self, current):
+        """Reuse only a complete panorama with the current step and body pose."""
+        if (not isinstance(current, dict) or not self._valid_pose(current.get("pose"))
+                or type(current.get("step")) is not int or current["step"] < 0
+                or current.get("kind", "observation") != "observation"):
+            return None
+        groups = dict.fromkeys(row["group"] for row in reversed(list(self.items.values()))
+                               if isinstance(row.get("group"), str))
+        for group in groups:
+            try:
+                panorama = self.panorama(group)
+            except ValueError:
+                continue
+            if panorama["step"] == current.get("step") and panorama["pose"] == current.get("pose"):
+                return group
+        return None
+
+    def history(self, limit=10, offset=0):
+        """List scene captures chronologically, grouping complete panoramas."""
+        if type(limit) is not int or not 1 <= limit <= 300 or type(offset) is not int or offset < 0:
+            raise ValueError("limit must be 1-300; offset must be a nonnegative integer")
+        events, seen = [], set()
+        for row in self.items.values():
+            if row.get("kind") != "observation":
+                continue
+            group = row.get("group")
+            if group in seen:
+                continue
+            if group:
+                try:
+                    panorama = self.panorama(group)
+                except ValueError:
+                    panorama = None
+                if panorama is not None:
+                    seen.add(group)
+                    events.append({"image": group, "group": group, "kind": "panorama",
+                                   "frames": [frame["frame"] for frame in panorama["frames"]],
+                                   "pose": panorama["pose"], "step": panorama["step"]})
+                    continue
+            events.append({"image": row["frame"], "kind": "observation", "frames": [row["frame"]],
+                           "pose": deepcopy(row.get("pose")), "step": row.get("step")})
+        return {"events": events[offset:offset + limit], "total": len(events),
+                "next_offset": offset + limit if offset + limit < len(events) else None}
+
     def image(self, reference):
         """Resolve only registered public images, including crops and map views."""
         if reference in self.items:
             row = {"image": reference, **self.items[reference]}
         elif reference in self.views:
             row = self.views[reference]
+        elif isinstance(reference, str) and reference.startswith("p_"):
+            panorama = self.panorama(reference)
+            frames = [frame["frame"] for frame in panorama["frames"]]
+            row = next((view for view in self.views.values()
+                        if [source["image"] for source in view["sources"]] == frames), None)
+            if row is None:
+                row = self.grid(frames)
+            row = {**row, "image": reference, "group": reference, "kind": "panorama",
+                   "pose": panorama["pose"], "step": panorama["step"]}
         else:
             path = self.directory / "maps/index.jsonl"
             maps = {r["view_id"]: r for r in map(json.loads, path.read_text().splitlines())} if path.exists() else {}
@@ -81,7 +162,7 @@ class Observations:
         """Map a displayed pixel to its original frame or map view."""
         row = self.image(reference)
         validate_pixel(pixel, *row["size"], reference)
-        if reference not in self.views:
+        if "sources" not in row:
             return reference, list(pixel)
         for tile in row["sources"]:
             left, top, right, bottom = tile["bounds"]
