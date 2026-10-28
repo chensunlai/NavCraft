@@ -55,8 +55,8 @@ def node(session, description="Sofa facing the television"):
 
 def test_modes_have_separate_public_memory_and_fixed_tool_schemas(factory):
     entity, place = factory("entity"), factory("node")
-    assert len(entity.tool_specs) == 7 and len(place.tool_specs) == 5
-    assert set(t["name"] for t in place.tool_specs) == {"observe", "move", "memory_read", "memory_edit", "submit"}
+    assert len(entity.tool_specs) == 8 and len(place.tool_specs) == 6
+    assert set(t["name"] for t in place.tool_specs) == {"observe", "move", "memory_read", "memory_edit", "task_read", "submit"}
     assert entity.transform["walls"] and not place.transform["walls"]
     assert place.current["pose"]["pos"] == [.5, .5]
     assert (entity.workspace / "memory/entities.json").exists()

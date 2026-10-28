@@ -49,7 +49,7 @@ def call(session, name, args):
 
 
 def test_tool_names_stay_consistent_and_geometry_is_opt_in():
-    names = {"observe", "move", "map_view", "view_images", "memory_read", "memory_edit", "submit"}
+    names = {"observe", "move", "map_view", "view_images", "memory_read", "memory_edit", "task_read", "submit"}
     basic = {tool["name"]: tool for tool in specifications()}
     super_tools = {tool["name"]: tool for tool in specifications("super")}
     assert set(basic) == set(super_tools) == names

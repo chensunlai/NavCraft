@@ -39,8 +39,10 @@ class FakeClient:
         self.initialized = None
         self.prompts = 0
         self.closed = False
+        self.requests = []
 
     def request(self, op, args=None, **kwargs):
+        self.requests.append((op, args))
         if op == "init":
             self.initialized = args
             return {"session_id": "one-session"}
@@ -82,7 +84,10 @@ def test_persistent_prompts_and_submit_stops_remaining_calls(session):
     assert first.answer == "1" and second.answer == "2"
     assert session.client.prompts == 2 and session.environment.steps == 2
     assert session.client.after_submit["control"]["end_run"]
-    assert session.checkpoint()["content"].count("First request") == 1
+    assert session._prompts == ["First request", "Second request"]
+    assert "checkpoint" not in session.client.initialized
+    assert all(op != "set_checkpoint" for op, _ in session.client.requests)
+    assert "checkpoint" not in session.client.after_submit
 
 
 def test_refresh_after_host_change_preserves_memory_and_session(session):
@@ -131,32 +136,17 @@ def test_target_has_no_private_pose_and_panorama_restores_current(session):
     assert session.environment.steps == 0
 
 
-def test_checkpoint_tracks_only_the_current_requests_target_images(session):
+def test_failed_prompt_does_not_replace_queryable_task(session):
     first = session.register_target(session.environment.image)
     second = session.register_target(session.environment.image)
-    instruction = "Find the first pictured object.\nUse the side entrance, then stop beside it."
+    instruction = "Find the first pictured object. Use the side entrance."
     session.prompt(instruction, images=[first])
-    checkpoint = session.checkpoint()
-    facts = json.loads(checkpoint["content"].split("\n", 1)[1])
-    assert facts["target_frames"] == [first]
-    assert facts["current_request"] == instruction
-    assert checkpoint["image_labels"] == [f"[CURRENT {session.current['frame']}]", f"[TARGET {first}]"]
-    assert checkpoint["images"][1] == session.observations.get(first)["path"]
-
+    before = session.tools.task_read()["result"]
     session.refresh_observation()
-    assert session.checkpoint()["images"][1] == checkpoint["images"][1]
-    assert json.loads(session.checkpoint()["content"].split("\n", 1)[1])["current_request"] == instruction
+    assert session.tools.task_read()["result"] == before
     with pytest.raises(FileNotFoundError):
         session.prompt("Invalid next request", images=[second, "missing.jpg"])
-    assert session.checkpoint()["image_labels"][-1] == f"[TARGET {first}]"
-
-    session.prompt("Find the second pictured object", images=[second])
-    assert session.checkpoint()["image_labels"][-1] == f"[TARGET {second}]"
-    assert session.observations.get(first)["path"] not in session.checkpoint()["images"]
-    session.prompt("Find a chair")
-    checkpoint = session.checkpoint()
-    assert json.loads(checkpoint["content"].split("\n", 1)[1])["target_frames"] == []
-    assert checkpoint["images"] == [session.current["path"]]
+    assert session.tools.task_read()["result"] == before
     assert session.observations.get(first) and session.observations.get(second)
 
 
@@ -184,10 +174,9 @@ def test_free_workspace_notes_persist_without_fixed_task_memory(session):
     assert notes.read_text() == "Left approach blocked. Try the right side."
     assert not (session.workspace / "memory/task.json").exists()
     assert "task_memory" not in {tool["name"] for tool in session.tool_specs}
-    facts = json.loads(session.checkpoint()["content"].split("\n", 1)[1])
-    assert "task_memory" not in facts
-    assert facts["scratch_files"] == ["scratch/route-notes.md"]
-    assert notes.read_text() not in session.checkpoint()["content"]
+    task = session.tools.task_read()["result"]
+    assert "scratch_files" not in json.dumps(task)
+    assert notes.read_text() not in json.dumps(task)
 
 
 def test_move_with_panorama_returns_one_reusable_image_and_keeps_motion_receipt(session):
@@ -288,10 +277,9 @@ def test_memory_read_validation_is_tool_error(session):
     assert session._tool("invalid-read", "memory_read", {"ids": [], "filter": {}})["result"]["isError"]
 
 
-def test_failed_memory_edit_preserves_revision_and_change_history(session):
+def test_failed_memory_edit_preserves_change_history(session):
     from src.harness.trace import read_trace
 
-    revision = session.checkpoint()["revision"]
     invalid = session._tool("bad-edit", "memory_edit", {"operations": [
         {"op": "create", "id": "R01", "type": "room", "fields": {"name": "room"}},
         {"op": "create", "id": "O01", "type": "object", "fields": {"name": "chair", "room": "R99"}},
@@ -299,7 +287,6 @@ def test_failed_memory_edit_preserves_revision_and_change_history(session):
     assert invalid["result"]["isError"]
     assert "No memory changes applied" in invalid["result"]["content"][0]["text"]
     assert session.memory.entities == []
-    assert session.checkpoint()["revision"] == revision
     trace = session.private / "trace.jsonl"
     assert not any(event["type"] == "memory_changed" for event in read_trace(trace))
 
@@ -307,14 +294,12 @@ def test_failed_memory_edit_preserves_revision_and_change_history(session):
         {"op": "create", "id": "R01", "type": "room", "fields": {"name": "room"}},
     ]})
     assert not valid["result"]["isError"]
-    assert session.checkpoint()["revision"] == revision + 1
     changes = [event["data"] for event in read_trace(trace) if event["type"] == "memory_changed"]
     assert len(changes) == 1
     assert changes[0]["before"] != changes[0]["after"]
 
 
 def test_memory_location_validation_reports_unchanged_batch(session):
-    revision = session.checkpoint()["revision"]
     operations = [
         {"op": "create", "id": "R01", "type": "room", "fields": {"name": "room"}},
         {"op": "create", "id": "O01", "type": "object", "fields": {
@@ -324,7 +309,7 @@ def test_memory_location_validation_reports_unchanged_batch(session):
     text = invalid["result"]["content"][0]["text"]
     assert invalid["result"]["isError"]
     assert "location cannot be combined" in text and "No memory changes applied" in text
-    assert session.memory.entities == [] and session.checkpoint()["revision"] == revision
+    assert session.memory.entities == []
     del operations[1]["fields"]["location"]
     valid = session._tool("location-fixed", "memory_edit", {"operations": operations})
     assert not valid["result"]["isError"]

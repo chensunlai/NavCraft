@@ -13,7 +13,7 @@ function message(content: AssistantMessage["content"], stopReason: AssistantMess
   return { role: "assistant", content, stopReason, model: "fixture", provider: "navcraft", api: "openai-responses", timestamp: Date.now(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
 }
 
-async function setup(outputs: AssistantMessage[], realTransport = false, appendCheckpoint = false) {
+async function setup(outputs: AssistantMessage[], realTransport = false, appendContext = false) {
   const dir = await mkdtemp(join(tmpdir(), "navcraft-core-server-"));
   const workspace = join(dir, "workspace");
   for (const folder of ["scene", "observations", "memory", "scratch"]) await mkdir(join(workspace, folder), { recursive: true });
@@ -29,10 +29,10 @@ async function setup(outputs: AssistantMessage[], realTransport = false, appendC
   const inputs: any[] = [];
   const createRuntime = async (options: RuntimeOptions) => {
     const result = await runtime(options);
-    if (appendCheckpoint) result.session.subscribe(event => {
+    if (appendContext) result.session.subscribe(event => {
       if (event.type === 'message_end' && event.message.role === 'assistant') {
-        void result.session.sendCustomMessage({ customType: 'public_checkpoint',
-          content: 'Public facts restored', display: false }, { triggerTurn: false });
+        void result.session.sendCustomMessage({ customType: 'fixture_context',
+          content: 'Extension context', display: false }, { triggerTurn: false });
       }
     });
     if (!realTransport) result.session.agent.streamFunction = (_model, context) => {
@@ -280,7 +280,7 @@ test("generic tools callback to Python while prompt is pending, then preserve sk
     const call = await f.wait((record) => record.type === "tool_request");
     assert.equal(call.call_id, "call_1"); assert.equal(call.name, "inspect_local");
     assert.deepEqual(call.args, { label: "first" });
-    f.send("reply", "tool_reply", { call_id: call.call_id, result: { content: [{ type: "text", text: "new public goal" }] }, checkpoint: { content: "new public goal", revision: 1 }, control: { stop_remaining_tools: true } });
+    f.send("reply", "tool_reply", { call_id: call.call_id, result: { content: [{ type: "text", text: "new public goal" }] }, control: { stop_remaining_tools: true } });
     assert.equal((await f.wait((record) => record.id === "reply")).ok, true);
     const settled = await f.wait((record) => record.type === "settled");
     assert.equal(settled.answer, "continued with the new public target");
@@ -289,7 +289,6 @@ test("generic tools callback to Python while prompt is pending, then preserve sk
     const paired = f.inputs[1].messages.filter((item: any) => item.role === "toolResult");
     assert.deepEqual(paired.map((item: any) => item.toolCallId), ["call_1", "call_2"]);
     assert.match(paired[1].content[0].text, /Not executed/);
-    assert.equal(f.server.checkpoint?.revision, 1);
     assert.ok(f.records.some((record) => record.type === "event" && record.event.type === "turn_start"));
     const seq = f.records.filter((record) => record.type === "event").map((record) => record.seq);
     assert.deepEqual(seq, seq.map((_value, index) => index + 1));
@@ -307,7 +306,7 @@ test("a truncated answer is reported as output_limit rather than completed", asy
   } finally { await f.close(); }
 });
 
-test('a deferred checkpoint cannot conceal a truncated assistant response', async () => {
+test('a deferred extension message cannot conceal a truncated assistant response', async () => {
   const f = await setup([message([], 'length')], false, true);
   try {
     await f.initialize();
@@ -474,14 +473,13 @@ test("busy prompts are rejected and abort pairs the whole batch before a subsequ
 test("Core accepts explicit auth, configurable compaction and stream-only recording without exposing credentials", async () => {
   const f = await setup([message([{ type: "text", text: "done" }], "stop")]);
   try {
-    await f.initialize({ tracePersist: false, checkpoint: { content: "public state", revision: "r1" } });
+    await f.initialize({ tracePersist: false });
     f.send("configure", "configure", { compaction: { enabled: true, reserveTokens: 65000, keepRecentTokens: 1200 } });
     const configured = await f.wait((record) => record.id === "configure");
     assert.equal(configured.ok, true);
     assert.deepEqual(configured.data.compaction, { enabled: true, reserveTokens: 65000, keepRecentTokens: 1200 });
     assert.ok(f.records.some((record) => record.type === "event" && record.event.type === "runtime_configured"
       && record.event.data.compaction.reserveTokens === 65000));
-    assert.equal(f.server.checkpoint?.revision, "r1");
     const saved = await readFile(join(f.dir, "config.json"), "utf8");
     assert.ok(!saved.includes("fixture-only-secret"));
     assert.equal(JSON.parse(saved).auth, "[PRIVATE]");
@@ -595,14 +593,13 @@ test("a late Python receipt after prompt timeout is archived without converting 
     f.send("prompt", "prompt", { text: "Inspect", seconds: 0.03 });
     await f.wait((record) => record.type === "tool_request");
     assert.equal((await f.wait((record) => record.type === "settled")).reason, "timeout");
-    f.send("late_reply", "tool_reply", { call_id: "late", result: { content: [{ type: "text", text: "Actual execution completed before callback delivery" }] }, checkpoint: { content: "do not apply late checkpoint" }, control: { end_run: true } });
+    f.send("late_reply", "tool_reply", { call_id: "late", result: { content: [{ type: "text", text: "Actual execution completed before callback delivery" }] }, control: { end_run: true } });
     const ack = await f.wait((record) => record.id === "late_reply");
     assert.equal(ack.ok, true);
     assert.equal(ack.data.accepted, false);
     assert.equal(ack.data.reason, "timeout");
     assert.equal(f.produced(), 1);
     assert.ok(f.records.some((record) => record.type === "event" && record.event.type === "late_tool_reply"));
-    assert.notEqual(f.server.checkpoint?.content, "do not apply late checkpoint");
     f.send("unknown", "tool_reply", { call_id: "never_requested", result: { content: [] } });
     assert.equal((await f.wait((record) => record.id === "unknown")).ok, false);
     f.send("next", "prompt", { text: "Continue discussion" });

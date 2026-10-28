@@ -41,7 +41,7 @@ export class Trace {
   }
   emit(type: string, data: unknown = {}) {
     // Compact only the audit copy. Pi's messages and the outgoing request stay untouched.
-    const archived = this.archive(data, ['model_input', 'http_request', 'checkpoint_summary_input'].includes(type));
+    const archived = this.archive(data, ['model_input', 'http_request', 'summary_input'].includes(type));
     const line = JSON.stringify({ timestamp: new Date().toISOString(), type, data: archived });
     if (this.persist) appendFileSync(join(this.directory, 'trace.jsonl'), line + '\n');
     this.onEvent?.(JSON.parse(line));

@@ -60,7 +60,7 @@ def fixture_run(tmp_path, *, memory_events=True):
         public = {"content": [{"type": "text", "text": json.dumps({"frame": frames[index - 1]["frame"], "step": index - 1})}],
                   "images": [frames[index - 1]["path"]], "image_labels": ["[CURRENT]"], "isError": False}
         trace.emit("public_tool_reply", {"call_id": f"call{index}", "name": "observe", "args": {"mode": "current"},
-                                        "result": public, "checkpoint": {"images": [frames[index - 1]["path"]]}})
+                                        "result": public})
         trace.emit("tool_execution_end", {"toolCallId": f"call{index}", "toolName": "observe", "result": public})
         trace.emit("tool_execution_start", {"toolCallId": f"native{index}", "toolName": "bash", "args": {"command": "printf test"}})
         trace.emit("tool_execution_end", {"toolCallId": f"native{index}", "toolName": "bash", "result": {

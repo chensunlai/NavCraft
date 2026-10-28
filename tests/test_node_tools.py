@@ -104,7 +104,7 @@ def node_tools(tmp_path):
     observations.add(image, step=4, pose={"pos": [.5, .6], "heading": 0})
     memory = NodeMemory(tmp_path, observations, transform, private_dir=tmp_path / "private")
     session = SimpleNamespace(memory=memory, observations=observations, current=frames[0],
-                              trace=RecordingTrace(), _qa=False, _revision=0,
+                              trace=RecordingTrace(), _qa=False,
                               environment=SimpleNamespace(observe=Mock(), panorama=Mock()))
     session._reply = lambda value, refs=(), labels=(), error=False: {
         "value": value, "refs": list(refs), "labels": list(labels), "error": error}
@@ -129,7 +129,6 @@ def test_create_binds_existing_panorama_and_records_before_after_without_images(
     session.environment.observe.assert_not_called()
     session.environment.panorama.assert_not_called()
     node_tools.navigation.images.assert_not_called()
-    assert session._revision == 1
     kind, event = session.trace.events[0]
     assert kind == "memory_changed"
     assert session.trace.blobs[event["before"]["$trace_blob"]] == []
@@ -142,7 +141,7 @@ def test_missing_current_panorama_does_not_capture_or_mutate_memory(node_tools):
     reply = node_tools.edit([{"op": "create", "description": "A room"}])
     assert reply["error"] and reply["value"]["committed"] is False
     assert "observe" in reply["value"]["error"]
-    assert session.memory.nodes == [] and session._revision == 0 and session.trace.events == []
+    assert session.memory.nodes == [] and session.trace.events == []
     session.environment.observe.assert_not_called()
     session.environment.panorama.assert_not_called()
 

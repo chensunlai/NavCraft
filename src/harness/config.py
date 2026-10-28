@@ -25,7 +25,7 @@ def credentials(config, repo=REPO):
     return result
 
 
-def core_options(config, repo, directory, workspace, tools, checkpoint):
+def core_options(config, repo, directory, workspace, tools):
     effort = config.get("reasoning_effort", "high")
     if effort not in {"off", "minimal", "low", "medium", "high", "xhigh", "max"}:
         raise ValueError("Unsupported reasoning_effort")
@@ -54,6 +54,6 @@ def core_options(config, repo, directory, workspace, tools, checkpoint):
             "contextWindow": context, "compact": True,
             "compaction": {"reserveTokens": context - threshold, "keepRecentTokens": 4096},
             "systemPrompt": system_prompt, "tools": tools,
-            "checkpoint": checkpoint, "tracePersist": False,
+            "tracePersist": False,
             "executionPolicy": {"readOnly": ["scene", "observations", "memory"],
                                 "readWrite": ["scratch"]}}

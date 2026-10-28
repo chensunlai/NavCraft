@@ -111,7 +111,6 @@ class HarnessSession:
         self._requests = 0
         self._prompts = []
         self._target_frames = []
-        self._revision = 0
         for name in ("scene", "observations", "memory", "scratch"):
             (self.workspace / name).mkdir(parents=True, exist_ok=True)
         self.private.mkdir(parents=True, exist_ok=True)
@@ -210,7 +209,7 @@ class HarnessSession:
         if self.client is not None:
             return
         options = core_options(self.config, self.repo, self.directory, self.workspace,
-                               self.tool_specs, self.checkpoint())
+                               self.tool_specs)
         if self._session_file:
             options["sessionFile"] = str(self._session_file)
         elif self._history:
@@ -249,8 +248,7 @@ class HarnessSession:
                      "current_request": getattr(self, "_current_request", ""),
                      "target_frames": self._target_frames, "submitted_requests": self._prompts,
                      "observations_count": self._observations,
-                     "tool_receipts": {identifier: [arguments, {key: value for key, value in receipt.items() if key != "checkpoint"}]
-                                       for identifier, (arguments, receipt) in self._calls.items()},
+                     "tool_receipts": deepcopy(self._calls),
                      "environment": self.environment.state() if hasattr(self.environment, "state") else None}
             if session_file:
                 state["session_file"] = "private/pi-session.jsonl"
@@ -263,39 +261,8 @@ class HarnessSession:
         return len(json.loads(path.read_text())["attempts"]) if path.exists() else self._requests
 
     def _publish_state(self):
-        self._revision += 1
         write_json(self.workspace / "scene/state.json", {"memory_type": self.memory_type, "pose": self.current["pose"],
                 "frame": self.current["frame"], "step": self.environment.steps})
-
-    def checkpoint(self):
-        # Content is frozen by the Core only at compaction; ordinary turns append receipts.
-        memory_facts = ({"recorded_entities": [
-            {key: entity.get(key) for key in ("id", "type", "name", "room")}
-            for entity in self.memory.entities]} if self.memory_type == "entity" else
-            {"recorded_nodes": self.memory.summary(limit=10),
-             "memory_directory": "memory/nodes.json; use memory_read for nodes and history"})
-        scratch = self.workspace / "scratch"
-        files = sorted(path.relative_to(self.workspace).as_posix() for path in scratch.rglob("*")
-                       if path.is_file() and not path.is_symlink() and path.resolve().is_relative_to(scratch.resolve()))
-        facts = {"as_of_step": self.environment.steps,
-                 "current_request": getattr(self, "_current_request", ""),
-                 "current_question": self._current_question, "question_frames": self._question_frames,
-                 "submitted_requests": self._prompts, "pose": self.current["pose"],
-                 "frame": self.current["frame"], "target_frames": self._target_frames,
-                 "frame_size": self.observations.image(self.current["frame"])["size"],
-                 "memory_type": self.memory_type, **memory_facts, "scratch_files": files[:100],
-                 "notes_directory": "scratch/; list it for files written since this snapshot"}
-        if len(files) > 100:
-            facts["omitted_scratch_files"] = len(files) - 100
-        images, labels = [self.current["path"]], [f"[CURRENT {self.current['frame']}]"]
-        for kind, frames in (("TARGET", self._target_frames), ("QUESTION", self._question_frames)):
-            for frame in frames:
-                row = self.observations.get(frame)
-                if row["path"] not in images:
-                    images.append(row["path"])
-                    labels.append(f"[{kind} {frame}]")
-        return {"content": "State at capture time; later receipts take precedence. Entities and scratch files are model records, not verified facts:\n" + json.dumps(facts, ensure_ascii=False),
-                "images": images, "image_labels": labels, "revision": self._revision}
 
     def register_target(self, image):
         return self.observations.add(image, kind="target")["frame"]
@@ -346,7 +313,7 @@ class HarnessSession:
     def _reply(self, value, refs=(), labels=(), *, error=False, end=False):
         result = {"content": [{"type": "text", "text": json.dumps(value, ensure_ascii=False, separators=(",", ":"))}],
                   "images": list(refs), "image_labels": list(labels), "isError": error}
-        reply = {"result": result, "checkpoint": self.checkpoint()}
+        reply = {"result": result}
         if end:
             reply["control"] = {"stop_remaining_tools": True, "end_run": True}
         return reply
@@ -430,7 +397,6 @@ class HarnessSession:
                 captions.append(f"Image {len(refs)}: [{'QUESTION' if mode == 'ask' else 'TARGET'} {row['frame']}]")
             if mode == "prompt":
                 self._target_frames = target_frames
-            self._revision += 1
             self._busy = True
         started, prompt_id = time.monotonic(), uuid.uuid4().hex
         before, action_start = charged_requests(self.private), self.environment.steps
@@ -463,7 +429,6 @@ class HarnessSession:
                             "images": refs, "limits": asdict(limits)})
             active_tools = ["read", "write", "edit", "bash", *[t["name"] for t in self.tool_specs]]
             self.client.request("configure", {"maxRequests": before + limits.max_requests, "allowedTools": active_tools})
-            self.client.request("set_checkpoint", {"checkpoint": self.checkpoint()})
             for attempt in range(2):
                 active_seconds = time.monotonic() - started - (wait_seconds(self.private) - wait_before)
                 extra = {}

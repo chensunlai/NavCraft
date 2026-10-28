@@ -85,7 +85,7 @@ def main():
                       "room_and_door": {"room", "door"} <= {e["type"] for e in session.memory.entities},
                       "all_submitted": all(r["submitted"] for r in results)}
             if args.mode == "compaction":
-                checks["compaction_triggered"] = bool(session.trace.types.get("checkpoint_compaction_result"))
+                checks["compaction_triggered"] = bool(session.trace.types.get("summary_compaction_result"))
             result = {"kind": "integration_check", "model": config["model"], "reasoning_effort": config["reasoning_effort"],
                       "prompts": results, "gpu": args.gpu, "checks": checks, "passed": all(checks.values())}
         write_json(output / "check.json", result)

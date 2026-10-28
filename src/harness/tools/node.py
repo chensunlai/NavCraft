@@ -60,7 +60,6 @@ class NodeMemoryTools:
         result = s.memory.edit(operations, current_panorama=panorama)
         if "error" in result:
             return s._reply({**result, "committed": False}, error=True)
-        s._revision += 1
         s.trace.emit("memory_changed", {"before": before, "after": s.trace.store(s.memory.nodes)})
         changes = []
         for change, operation in zip(result["changes"], operations):

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentMessage, StreamFn } from '@earendil-works/pi-agent-core';
@@ -86,6 +86,8 @@ test('native short summary preserves xhigh and total output allowance, shortens 
   const { result, calls } = await summarize([assistant('x'.repeat(350)), assistant('Door still uncertain. Inspect its far side.')]);
   assert.equal(calls.length, 2);
   assert.ok(calls.every(call => call.options?.maxTokens === 8192 && call.options.reasoning === 'xhigh'));
+  assert.match(JSON.stringify(calls[0].context), /task_read/);
+  assert.doesNotMatch(JSON.stringify(calls[0].context), /host separately supplies/);
   assert.match(JSON.stringify(calls[1].context), /draft-summary/);
   assert.doesNotMatch(result.summary, /read-files|Turn Context|memory\/entities/);
   assert.equal(result.usage?.totalTokens, 60);
@@ -96,153 +98,91 @@ test('two overlong summaries fail without truncation or unbounded retries', asyn
   await assert.rejects(summarize([assistant('x'.repeat(301)), assistant('y'.repeat(301))]), /visible token limit/);
 });
 
-test('reasoning-only, truncated and tool-producing summaries cannot become checkpoints', async () => {
+test('reasoning-only, truncated and tool-producing summaries cannot replace history', async () => {
   await assert.rejects(summarize([{ ...assistant(''), content: [{ type: 'thinking', thinking: 'reasoning only' }] }]), /visible text/);
   await assert.rejects(summarize([assistant('partial answer', 'length')]), /token cap/);
   await assert.rejects(summarize([{ ...assistant(''), content: [{ type: 'toolCall', id: 'call', name: 'move', arguments: {} }] }]), /call a tool/);
 });
 
-test('actual model requests append to a frozen checkpoint until the next compaction', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'navcraft-lite-compaction-'));
-  const workspace = join(directory, 'workspace');
-  for (const folder of ['scene', 'observations', 'memory', 'scratch']) await mkdir(join(workspace, folder), { recursive: true });
-  await writeFile(join(workspace, 'observations', 'current.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aB5cAAAAASUVORK5CYII=', 'base64'));
-  await writeFile(join(workspace, 'observations', 'reference.webp'), Buffer.from('UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEAAQAcJaQAA3AA/v89WAAAAA==', 'base64'));
-  const original = globalThis.fetch;
-  const payloads: Record<string, unknown>[] = [];
-  const instruction = 'Find the pictured chair beside the window. Use the left entrance, not the doorway behind the sofa.';
-  const systemPrompt = 'Navigation fixture: maintain evidence-backed memory.\nA submission acknowledgement is not a success score.';
-  const notesPath = 'scratch/route-notes.md';
-  const checkpoint = { content: `PUBLIC SNAPSHOT step=12; current_request=${instruction}; current_question=Which doorway matches the picture?; frame=f_latest; workspace_files=${notesPath}`, revision: 4,
-    images: ['observations/current.png', 'observations/reference.webp'],
-    image_labels: ['[CURRENT f_latest]', '[TARGET f_reference]'] };
-  globalThis.fetch = async (_input, init) => {
-    payloads.push(JSON.parse(String(init?.body)));
-    const chunks = [
-      { id: 'fixture', choices: [{ index: 0, delta: { role: 'assistant', content: JSON.stringify(payloads.at(-1)).includes('<conversation>') ? 'Door identity uncertain; inspect its other side.' : 'I will inspect the door.' }, finish_reason: null }] },
-      { id: 'fixture', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
-    ];
-    return new Response(chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n',
-      { headers: { 'content-type': 'text/event-stream' } });
-  };
-  let active: Awaited<ReturnType<typeof runtime>> | undefined;
-  try {
-    const options: Parameters<typeof runtime>[0] = { workspace, directory, budgetFile: join(directory, 'requests.json'), maxRequests: 8,
-      auth: { baseUrl: 'http://fixture.invalid', model: 'fixture', apiKey: 'fixture-secret' },
-      api: 'openai-completions', coding: false, compact: false, thinkingLevel: 'xhigh',
-      compaction: { reserveTokens: 8768, keepRecentTokens: 100 },
-      python: process.env.NAVCRAFT_TEST_PYTHON ?? '/home/chen/.local/anaconda3/envs/vln/bin/python',
-      systemPrompt, executionPolicy: { readOnly: ['scene', 'observations', 'memory'], readWrite: ['scratch'] },
-      tools: [{ name: 'observe', label: 'Observe', description: 'Fixture observation',
-        parameters: { type: 'object', properties: {} }, execute: async () => ({ content: [{ type: 'text', text: 'fixture' }], details: {} }) }],
-      initialMessages: [{ role: 'user', content: 'OLD DISCARDED HISTORY '.repeat(1000), timestamp: 0 },
-        ...[round(0), round(1), round(2), round(3)].flat().filter((message): message is AssistantMessage | Extract<AgentMessage, { role: 'toolResult' }> => message.role === 'assistant' || message.role === 'toolResult')],
-      checkpoint: () => checkpoint,
-    };
-    active = await runtime(options);
-    const result = await active.session.compact();
-    assert.equal(result.summary, 'Door identity uncertain; inspect its other side.');
-    assert.equal(active.budget.used, 1);
-    await active.session.continueRun();
-    assert.equal(active.budget.used, 2);
-    assert.equal(payloads[0].reasoning_effort, 'xhigh');
-    assert.equal(payloads[0].max_completion_tokens, 8192);
-    const input = JSON.stringify(payloads[1]);
-    const firstMessages = payloads[1].messages as { role: string; content: unknown }[];
-    assert.ok(input.includes(JSON.stringify(systemPrompt).slice(1, -1)));
-    assert.ok(input.includes(instruction));
-    assert.ok(input.includes(notesPath));
-    assert.match(input, /Which doorway matches the picture/);
-    assert.match(input, /PUBLIC SNAPSHOT step=12/);
-    assert.match(input, /CURRENT f_latest/);
-    assert.match(input, /data:image\/webp;base64/);
-    assert.match(input, /Door identity uncertain/);
-    assert.doesNotMatch(input, /OLD DISCARDED HISTORY|observe-0|observe-1/);
-    assert.match(input, /observe-2/);
-    assert.match(input, /observe-3/);
-    assert.ok(input.indexOf('observe-3') < input.indexOf('PUBLIC SNAPSHOT'));
-    assert.ok(!firstMessages.some(message => message.role === 'user' && message.content === 'Continue'));
-
-    // Public state changes alone must not rewrite an earlier snapshot or image.
-    checkpoint.content = 'PUBLIC SNAPSHOT step=20; current_request=Find a table; frame=f_after_moving';
-    checkpoint.images = ['observations/current.png'];
-    checkpoint.image_labels = ['[CURRENT f_after_moving]'];
-    checkpoint.revision = 5;
-    const sessionFile = active.session.sessionManager.getSessionFile();
-    assert.ok(sessionFile);
-    active.session.dispose();
-    active = await runtime({ ...options, initialMessages: undefined, sessionFile });
-    for (let index = 0; index < 4; index++) {
-      await active.session.prompt(index ? `Keep discussing the table: ${index}` : 'Next goal: find a table');
-      const messages = payloads[index + 2].messages as typeof firstMessages;
-      assert.deepEqual(messages.slice(0, firstMessages.length), firstMessages);
-      assert.match(JSON.stringify(messages), /CURRENT f_latest/);
-      assert.doesNotMatch(JSON.stringify(messages), /CURRENT f_after_moving|Removed from context/);
-    }
-
-    // The old target is released at the next boundary, not on each new prompt.
-    await active.session.compact();
-    await active.session.continueRun();
-    assert.equal(active.budget.used, 8);
-    const next = JSON.stringify(payloads.at(-1));
-    assert.match(next, /PUBLIC SNAPSHOT step=20|Find a table|CURRENT f_after_moving/);
-    assert.doesNotMatch(next, /CURRENT f_latest|TARGET f_reference|data:image\/webp;base64/);
-    assert.ok(!next.includes(instruction));
-    const checkpoints = active.session.sessionManager.getEntries().filter(entry =>
-      entry.type === 'custom_message' && entry.customType === 'public_checkpoint');
-    assert.equal(checkpoints.length, 2, 'original checkpoints remain in the persisted audit trail');
-    checkpoint.images = ['observations/missing.png'];
-    const beforeFailure = active.session.sessionManager.getEntries();
-    await assert.rejects(active.session.compact(), /Compaction cancelled/);
-    assert.deepEqual(active.session.sessionManager.getEntries(), beforeFailure);
-    assert.equal(active.budget.used, 8, 'invalid public state cannot discard history or request a summary');
-  } finally {
-    active?.session.dispose();
-    globalThis.fetch = original;
-    await rm(directory, { recursive: true, force: true });
-  }
-});
-
-test('automatic compaction appends its snapshot before the following request', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'navcraft-auto-compaction-'));
+test('tool-loop compaction adds no facts; task_read restores task text and image as ordinary history', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'navcraft-tool-loop-compaction-'));
   const workspace = join(directory, 'workspace');
   await mkdir(workspace);
   const original = globalThis.fetch;
-  const payloads: Record<string, unknown>[] = [];
+  const payloads: Record<string, any>[] = [];
+  const instruction = 'Find the pictured chair beside the window using the left entrance.';
+  const target = 'UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEAAQAcJaQAA3AA/v89WAAAAA==';
+  const summary = 'The doorway remains uncertain. Inspect its other side.';
+  let decisions = 0, reads = 0, summaries = 0;
   globalThis.fetch = async (_input, init) => {
     const body = JSON.parse(String(init?.body));
     payloads.push(body);
-    const summary = JSON.stringify(body).includes('<conversation>');
-    const chunks = [
-      { id: 'fixture', choices: [{ index: 0, delta: { role: 'assistant', content: summary ? 'Review the doorway.' : 'Observed the doorway.' }, finish_reason: null }] },
-      { id: 'fixture', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
-      { id: 'fixture', choices: [], usage: { prompt_tokens: payloads.length === 1 ? 25000 : 100, completion_tokens: 10, total_tokens: payloads.length === 1 ? 25010 : 110 } },
+    const isSummary = JSON.stringify(body).includes('<conversation>');
+    if (isSummary) summaries++;
+    else decisions++;
+    const name = decisions === 1 ? 'observe' : decisions === 2 ? 'task_read' : undefined;
+    const item = !isSummary && name
+      ? { type: 'function_call', id: `fc_${decisions}`, call_id: `call_${decisions}`,
+          name, arguments: '{}' }
+      : { type: 'message', id: `msg_${payloads.length}`, role: 'assistant', status: 'completed',
+          content: [{ type: 'output_text', text: isSummary ? summary : 'The task and reference are available.', annotations: [] }] };
+    const inputTokens = !isSummary && decisions === 1 ? 25000 : 100;
+    const events = [
+      { type: 'response.output_item.done', output_index: 0, item },
+      { type: 'response.completed', response: { id: `resp_${payloads.length}`, status: 'completed', output: [item],
+        usage: { input_tokens: inputTokens, output_tokens: 10, total_tokens: inputTokens + 10 } } },
     ];
-    return new Response(chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n',
+    return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(''),
       { headers: { 'content-type': 'text/event-stream' } });
   };
   let active: Awaited<ReturnType<typeof runtime>> | undefined;
   try {
-    active = await runtime({ workspace, directory, budgetFile: join(directory, 'requests.json'), maxRequests: 4,
+    active = await runtime({ workspace, directory, budgetFile: join(directory, 'requests.json'), maxRequests: 5,
       auth: { baseUrl: 'http://fixture.invalid', model: 'fixture', apiKey: 'fixture-secret' },
-      api: 'openai-completions', coding: false, compact: true,
+      api: 'openai-responses', coding: false, compact: true, thinkingLevel: 'xhigh',
       compaction: { reserveTokens: 8768, keepRecentTokens: 100 },
       python: process.env.NAVCRAFT_TEST_PYTHON ?? '/home/chen/.local/anaconda3/envs/vln/bin/python',
-      systemPrompt: 'Fixture agent.',
-      initialMessages: [{ role: 'user', content: 'Inspect the doorway.', timestamp: 0 },
+      systemPrompt: 'Navigate using tools. Read the current task with task_read when needed.',
+      initialMessages: [{ role: 'user', content: [{ type: 'text', text: instruction },
+        { type: 'image', data: target, mimeType: 'image/webp' }], timestamp: 0 },
         ...[round(0), round(1), round(2), round(3)].flat().filter((message): message is AssistantMessage | Extract<AgentMessage, { role: 'toolResult' }> => message.role === 'assistant' || message.role === 'toolResult')],
-      checkpoint: () => ({ content: 'PUBLIC SNAPSHOT step=4; frame=f_0004', revision: 4 }),
+      tools: [
+        { name: 'observe', label: 'Observe', description: 'Read the current view',
+          parameters: { type: 'object', properties: {} },
+          execute: async () => ({ content: [{ type: 'text', text: 'Current doorway view.' }], details: {} }) },
+        { name: 'task_read', label: 'Task', description: 'Read the current task and reference image',
+          parameters: { type: 'object', properties: {} },
+          execute: async () => { reads++; return { content: [{ type: 'text', text: instruction },
+            { type: 'text', text: '[TARGET f_reference]' },
+            { type: 'image', data: target, mimeType: 'image/webp' }], details: {} }; } },
+      ],
     });
     await active.session.continueRun();
-    assert.equal(active.budget.used, 2, 'one normal request and one threshold summary');
-    await active.session.prompt('Continue checking the doorway.');
-    assert.equal(active.budget.used, 3);
-    const input = JSON.stringify(payloads[2]);
-    assert.match(input, /PUBLIC SNAPSHOT step=4/);
-    assert.match(input, /Review the doorway/);
-    assert.doesNotMatch(input, /observe-0|observe-1|observe-2/);
-    assert.ok(input.indexOf('Observed the doorway') < input.indexOf('PUBLIC SNAPSHOT'));
-    assert.ok(input.indexOf('PUBLIC SNAPSHOT') < input.indexOf('Continue checking the doorway'));
+    assert.equal(decisions, 3);
+    assert.equal(summaries, 1);
+    assert.equal(reads, 1);
+    assert.equal(active.budget.used, 4, 'three decisions and one summary share the request budget');
+    assert.equal(payloads[1].reasoning.effort, 'xhigh');
+    assert.equal(payloads[1].max_output_tokens, 8192);
+    const beforeRead = payloads[2].input as Record<string, any>[];
+    const afterRead = payloads[3].input as typeof beforeRead;
+    const before = JSON.stringify(beforeRead);
+    assert.match(before, /The doorway remains uncertain/);
+    assert.doesNotMatch(before, /public_checkpoint|PUBLIC SNAPSHOT/);
+    assert.ok(!before.includes(instruction), 'compaction does not inject the task');
+    assert.ok(!before.includes(target), 'compaction does not inject the target image');
+    assert.match(before, /observe-3/);
+    assert.doesNotMatch(before, /observe-0|observe-1|observe-2/);
+    assert.ok(beforeRead.some(item => item.type === 'function_call_output' && item.call_id === 'call_1'));
+    assert.deepEqual(afterRead.slice(0, beforeRead.length), beforeRead,
+      'the task reply appends to an unchanged request prefix');
+    const taskCall = afterRead.find(item => item.type === 'function_call' && item.name === 'task_read');
+    const taskReceipt = afterRead.find(item => item.type === 'function_call_output' && item.call_id === taskCall?.call_id);
+    assert.ok(taskCall && taskReceipt, 'the task has a paired ordinary tool receipt');
+    assert.ok(JSON.stringify(taskReceipt).includes(instruction));
+    assert.ok(JSON.stringify(taskReceipt).includes(target));
+    assert.ok(!active.session.sessionManager.getEntries().some(entry => entry.type === 'custom_message'),
+      'compaction adds no hidden custom message');
   } finally {
     active?.session.dispose();
     globalThis.fetch = original;

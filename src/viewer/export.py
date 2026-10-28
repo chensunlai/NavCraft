@@ -233,8 +233,7 @@ def _model_export(model_dir, output, assets, model_id=None):
                      "args": value.get("args", start.get("args", {})), "result": _short(text),
                      "images": _tool_images(body, model_dir, assets),
                      "error": bool(body.get("isError") or value.get("isError")), "truncated": len(text) > TEXT_LIMIT}
-            checkpoint = value.get("checkpoint", {})
-            current = _frame_ids(checkpoint.get("images", []), frames)
+            current = []
             if name in {"observe", "move"}:
                 captured = list(current)
                 for block in body.get("content", []):
@@ -243,7 +242,8 @@ def _model_export(model_dir, output, assets, model_id=None):
                             captured.extend(_frame_ids(json.loads(block["text"]), frames))
                         except (ValueError, TypeError):
                             pass
-                frame_ranges[prompt_index].update(captured)
+                current = [fid for fid in captured if frames[fid].get("kind") == "observation"]
+                frame_ranges[prompt_index].update(current)
             if current:
                 reply["frame"] = current[0]
                 reply["step"] = frames[current[0]].get("step")

@@ -132,6 +132,24 @@ class NavigationTools:
         labels = [f"[{kinds[row['kind']]} {row['image']}]" for row in rows]
         return s._reply({"images": metadata}, [row["path"] for row in rows], labels)
 
+    def task_read(self):
+        s = self.session
+        value = {"request": getattr(s, "_current_request", "")}
+        groups = [("target", s._target_frames)]
+        if s._qa:
+            value["question"] = s._current_question
+            groups.append(("question", s._question_frames))
+        images, refs, labels = [], [], []
+        for kind, frames in groups:
+            for frame in dict.fromkeys(frames):
+                row = s.observations.image(frame)
+                images.append({"kind": kind, "frame": frame, "size": row["size"]})
+                refs.append(row["path"])
+                labels.append(f"[{kind.upper()} {frame} | {row['size'][0]}x{row['size'][1]}]")
+        if images:
+            value["images"] = images
+        return s._reply(value, refs, labels)
+
     def map_value(self, overlay=None, project=None, **args):
         s = self.session
         if overlay is not None and not s.spatial.enabled:
@@ -220,7 +238,6 @@ class NavigationTools:
             result["error"] += ". No memory changes applied."
             return s._reply(result, error=True)
         s.spatial.remember_sources(operations, sources)
-        s._revision += 1
         s.trace.emit("memory_changed", {"before": before, "after": s.trace.store(s.memory.entities)})
         identifiers = {change["id"] for change in result["changes"]}
         result["entities"] = [{k: e[k] for k in ("id", "point", "anchor", "room", "connects", "passage", "evidence") if k in e}
@@ -240,7 +257,7 @@ class NavigationTools:
 
     def execute(self, name, args):
         s = self.session
-        if s._qa and name not in {"view_images", "memory_read", "map_view", "submit"}:
+        if s._qa and name not in {"view_images", "memory_read", "map_view", "task_read", "submit"}:
             raise ValueError("This question permits only existing-evidence queries and submission")
         if s._movement_exhausted and name in {"move", "observe"}:
             raise ValueError("Movement window ended; finish using existing evidence")
@@ -250,6 +267,8 @@ class NavigationTools:
             return self.move(**args)
         if name == "view_images":
             return self.images(**args)
+        if name == "task_read":
+            return self.task_read(**args)
         if name == "memory_read":
             if self.node_tools:
                 return self.node_tools.read(**args)

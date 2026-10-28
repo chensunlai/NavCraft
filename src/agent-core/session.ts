@@ -6,7 +6,7 @@ import { createCodingTools, type ExecutionPolicy } from './sandbox.js';
 import { Trace } from './trace.js';
 import { RequestBudget } from './budget.js';
 import { retryService } from './service-retry.js';
-import { createCheckpointCompaction, type PublicCheckpoint } from './compaction.js';
+import { createNavigationCompaction } from './compaction.js';
 import { createImageTransport } from './image-transport.js';
 import type { StreamFn, ThinkingLevel } from '@earendil-works/pi-agent-core';
 
@@ -47,7 +47,6 @@ export interface RuntimeOptions {
   initialMessages?: Message[];
   coding?: boolean; extensions?: ExtensionFactory[]; compact?: boolean;
   contextWindow?: number; compaction?: { reserveTokens: number; keepRecentTokens: number };
-  checkpoint?: () => PublicCheckpoint | undefined | Promise<PublicCheckpoint | undefined>;
   executionPolicy?: ExecutionPolicy; tracePersist?: boolean;
   totalLimit?: number | null; onEvent?: (event: { timestamp: string; type: string; data: unknown }) => void;
 }
@@ -79,8 +78,7 @@ export async function runtime(options: RuntimeOptions) {
   const tools = [...(options.coding === false ? [] : createCodingTools(options.workspace, options.python!, options.executionPolicy)), ...(options.tools ?? [])];
   const settingsManager = SettingsManager.inMemory({ compaction, retry: { enabled: false }, cacheWarming: 'off' });
   let controlledStream!: StreamFn;
-  const factories = [...(options.extensions ?? []), createCheckpointCompaction((...args) => controlledStream(...args),
-    options.checkpoint ?? (() => undefined), trace, options.executionPolicy, options.python)];
+  const factories = [...(options.extensions ?? []), createNavigationCompaction((...args) => controlledStream(...args), trace, options.python)];
   let resourceLoader: ResourceLoader = explicitLoader(options.systemPrompt);
   if (factories.length) {
     const loader = new DefaultResourceLoader({ cwd: options.workspace, agentDir, settingsManager, extensionFactories: factories, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true, systemPrompt: options.systemPrompt });

@@ -1,4 +1,4 @@
-"""The seven navigation interfaces; shared references have one schema."""
+"""Navigation interfaces; shared references have one schema."""
 
 from src.common.actions import ACTIONS
 
@@ -104,6 +104,7 @@ def specifications(tool_tier="basic", memory_type="entity"):
                         "remove": {**ids, "minItems": 1, "description": "merge: distinct existing IDs of the same type as keep, excluding keep, e.g. [\"O02\"]."}},
                         "required": ["op"], "additionalProperties": False}}}, ["operations"]),
         definition("submit", "Submit completion of the current request; include answer for a question. Ends this request, not the session. Acknowledgement contains no evaluation outcome.", {"answer": string}),
+        definition("task_read", "Read the current navigation request and its target images. During a question, also return the active question and its images without replacing the navigation request. Images are labelled TARGET or QUESTION with frame IDs and sizes. No earlier requests, evaluation results, new observation or motion.", {}),
     ]
     if memory_type == "entity":
         return tools
@@ -115,4 +116,4 @@ def specifications(tool_tier="basic", memory_type="entity"):
     if enhanced:
         move_tool["parameters"]["properties"]["target"] = node_reference()
         move_tool["description"] += " Node targets resolve to visited anchors and use straight motion, like map coordinates; they do not authorize automatic route planning."
-    return [observe, move_tool, *memory_specifications(), indexed["submit"]]
+    return [observe, move_tool, *memory_specifications(), indexed["submit"], indexed["task_read"]]

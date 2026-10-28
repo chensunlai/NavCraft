@@ -9,9 +9,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { convertToLlm, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { runtime, type RuntimeOptions } from "./session.js";
 import type { ExecutionPolicy } from "./sandbox.js";
-import type { PublicCheckpoint } from "./compaction.js";
 import { labelledImages, loadImages } from "./image-content.js";
-export type { PublicCheckpoint } from "./compaction.js";
 
 export interface RemoteToolDefinition {
   name: string;
@@ -28,7 +26,6 @@ export interface RemoteToolResult {
 export interface ToolReply {
   call_id: string;
   result: RemoteToolResult;
-  checkpoint?: PublicCheckpoint;
   control?: { stop_remaining_tools?: boolean; end_run?: boolean; end_after_turn?: boolean };
 }
 
@@ -59,7 +56,6 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
   let active: ActiveRuntime | undefined;
   let workspace = "";
   let executionPolicy: ExecutionPolicy | undefined;
-  let checkpoint: PublicCheckpoint | undefined;
   let running: Promise<void> | undefined;
   let currentPrompt: PromptRun | undefined;
   let promptStarting = false;
@@ -136,7 +132,6 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
       try {
         workspace = args.workspace;
         executionPolicy = args.executionPolicy;
-        checkpoint = args.checkpoint;
         toolTimeoutSeconds = args.toolTimeoutSeconds ?? 120;
         const definitions = register(args.tools ?? []);
         if (args.initialMessages) {
@@ -150,7 +145,7 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
             message.content = content;
           }
         }
-        active = await createRuntime({ ...args, tools: definitions, checkpoint: () => checkpoint, onEvent: emit } as RuntimeOptions);
+        active = await createRuntime({ ...args, tools: definitions, onEvent: emit } as RuntimeOptions);
         if (closed) { active.session.dispose(); throw new Error("Core closed during initialization"); }
         const previousBefore = active.session.agent.beforeToolCall;
         active.session.agent.beforeToolCall = async (context, signal) => {
@@ -203,7 +198,6 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
         }
         const visual = await loadImages(workspace, reply.result.images, executionPolicy);
         if (interrupted.has(reply.call_id)) return lateReply();
-        if (reply.checkpoint !== undefined) checkpoint = reply.checkpoint;
         if (reply.control?.stop_remaining_tools) stopRemainingTools = true;
         if (reply.control?.end_run) { endRun = true; stopRemainingTools = true; }
         if (reply.control?.end_after_turn) endAfterTurn = true;
@@ -242,7 +236,6 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
       return { messages, session_id: active!.session.sessionManager.getSessionId(),
         session_file: active!.session.sessionManager.getSessionFile() };
     }
-    if (request.op === "set_checkpoint") { checkpoint = args.checkpoint; return { updated: true, revision: checkpoint?.revision }; }
     if (request.op === "configure") {
       if (args.maxTurns !== undefined) {
         if (!currentPrompt || !Number.isInteger(args.maxTurns) || args.maxTurns < 1
@@ -363,8 +356,7 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
         }
         catch (cause) { error = String(cause); }
         finally { clearTimeout(timer); }
-        // Deferred public checkpoints can follow the final assistant message.
-        // They must not hide a model failure or turn an empty output into success.
+        // Extension messages must not hide the final assistant failure or empty output.
         const last = prompt.lastAssistant;
         const noAction = last?.role === "assistant" && last.stopReason === "stop"
           && !last.content.some((block: AssistantMessage["content"][number]) => block.type === "toolCall" || (block.type === "text" && block.text.trim()));
@@ -400,7 +392,7 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
     })();
   });
   reader.on("close", () => { if (!closed) void shutdown(); });
-  return { close: shutdown, get checkpoint() { return checkpoint; } };
+  return { close: shutdown };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
