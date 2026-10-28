@@ -175,6 +175,8 @@ def _relocation_preflight(environment, rounds):
 
 
 def run_sequence(repo, model_config, scenario_path, scene_map, directory, environment_config):
+    if model_config.get("memory_type", "entity") != "entity":
+        raise ValueError("This custom sequence evaluates entity memory; use bench run/pilot for node navigation")
     repo, scenario_path, directory = Path(repo).resolve(), Path(scenario_path).resolve(), Path(directory).resolve()
     scenario = json.loads(scenario_path.read_text())
     _validate(scenario)

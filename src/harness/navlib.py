@@ -43,7 +43,9 @@ def frame(fid):
 
 
 def memory():
-    return json.loads((_workspace() / "memory/entities.json").read_text())
+    state = json.loads((_workspace() / "scene/state.json").read_text())
+    name = "nodes.json" if state.get("memory_type", "entity") == "node" else "entities.json"
+    return json.loads((_workspace() / "memory" / name).read_text())
 
 
 def pose():

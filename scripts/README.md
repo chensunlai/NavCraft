@@ -8,6 +8,7 @@
 |---|---|
 | `doctor.sh` | 检查冻结样本、场景路径、现有地图和本地依赖，不请求模型 |
 | `run_episode.sh` | Sol 单条 ObjectNav；选择命令中的模型、顶部任务 ID 和工具配置 |
+| `run_node_goat.sh` | 221 Sol high、super、空白地图节点记忆，执行一条 GOAT 连续多目标 episode |
 | `run_pilot.sh` | 三模型共用 10 条 ObjectNav/R2R 交替任务，各自并发 1/4/2 |
 | `run_sequence.sh` | Astra + Super 工具执行 Qa 连续任务，保持同一会话和记忆 |
 | `compare_sequences.sh` | DeepSeek、27B、Sol、Astra 依次执行相同连续任务，产物和会话独立 |
@@ -35,6 +36,7 @@
 | 任务 | `config/tasks/` | 冻结 episode 列表、连续任务与地图路径、场景构建队列 |
 | 预算 | `config/budgets/navigation.yaml` | 完整导航的动作、请求、时间限制 |
 | 工具 | `config/tools/{basic,super}.yaml` | 工具集合及局部规划方式 |
+| 记忆 | `config/memory/{entity,node}.yaml` | 默认实体记忆或新增到访节点记忆；通过 `--model-config` 组合 |
 | 上下文 | `config/runtime/navigation.yaml` | 上下文容量与压缩阈值 |
 | 构图 | `config/build_maps/{runtime,walls,full}.yaml` | 运行限制、GPU 池、构建阶段和工作空间模式 |
 

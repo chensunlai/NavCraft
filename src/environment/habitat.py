@@ -34,6 +34,7 @@ class Environment:
         self.trajectory = [self.position()]
         self.motion_trajectory = [self.position()]
         self.trajectory_breaks = []
+        self.motion_trajectory_breaks = []
         self.motions = []
         self.current = None
         self._frame = 0
@@ -89,6 +90,7 @@ class Environment:
         self.trajectory = [self.position()]
         self.motion_trajectory = [self.position()]
         self.trajectory_breaks = []
+        self.motion_trajectory_breaks = []
         self.current = None
 
     def state(self):
@@ -96,13 +98,14 @@ class Environment:
         return deepcopy({"pose": self.pose(), "steps": self.steps, "path_length": self.path_length,
                 "frame": self._frame, "trajectory": self.trajectory,
                 "motion_trajectory": self.motion_trajectory,
-                "trajectory_breaks": self.trajectory_breaks, "motions": self.motions})
+                "trajectory_breaks": self.trajectory_breaks,
+                "motion_trajectory_breaks": self.motion_trajectory_breaks, "motions": self.motions})
 
     def restore_state(self, state):
         if self.steps:
             raise ValueError("Cut state can only be restored before movement")
         self.restore_pose(state["pose"])
-        for name in ("steps", "path_length", "trajectory", "motion_trajectory", "trajectory_breaks", "motions"):
+        for name in ("steps", "path_length", "trajectory", "motion_trajectory", "trajectory_breaks", "motion_trajectory_breaks", "motions"):
             if name in state:
                 setattr(self, name, deepcopy(state[name]))
         self._frame = state.get("frame", 0)
@@ -120,6 +123,7 @@ class Environment:
                                "camera_rotation_xyzw": rotation})
         self.trajectory_breaks.append(len(self.trajectory))
         self.trajectory.append(self.position())
+        self.motion_trajectory_breaks.append(len(self.motion_trajectory))
         self.motion_trajectory.append(self.position())
         self.current = None
         private = self.directory / "private"

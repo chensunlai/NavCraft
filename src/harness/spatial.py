@@ -15,7 +15,8 @@ from .memory import location
 class SpatialTools:
     def __init__(self, session):
         self.session = session
-        self.geometry = Geometry(session.workspace, session.private, session.transform)
+        self.geometry = Geometry(session.workspace, session.private, session.transform,
+                                 bounded=session.memory_type != "node")
         self.sources_path = session.private / "location_sources.json"
         self.enabled = session.tool_tier == "super"
         self.planner = session.config.get("goto_planner", "local")
@@ -144,6 +145,11 @@ class SpatialTools:
     def target(self, target):
         if not isinstance(target, dict):
             raise ValueError("target must be an image/pixel, uv or entity reference")
+        if set(target) == {"node"}:
+            if self.session.memory_type != "node":
+                raise ValueError("Node references require node memory")
+            node = self.session.memory.get(target["node"])
+            return {"uv": node["pose"]["pos"], "height": 0, "observed": False}
         if set(target) == {"image", "pixel"}:
             reference, pixel = self.session.observations.resolve_pixel(target["image"], target["pixel"])
             if reference.startswith("m_"):
@@ -167,8 +173,9 @@ class SpatialTools:
         if set(target) == {"uv"}:
             uv = target["uv"]
             if (not isinstance(uv, list) or len(uv) != 2 or
-                    any(type(v) not in (int, float) or not math.isfinite(v) or not 0 <= v <= 1 for v in uv)):
-                raise ValueError("uv must contain two finite numbers in [0,1]")
+                    any(type(v) not in (int, float) or not math.isfinite(v)
+                        or (self.session.memory_type != "node" and not 0 <= v <= 1) for v in uv)):
+                raise ValueError("uv must contain two finite numbers within the map coordinate domain")
             return {"uv": uv, "height": 0, "observed": False}
         raise ValueError("target must specify exactly image/pixel, uv or entity")
 

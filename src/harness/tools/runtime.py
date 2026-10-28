@@ -10,6 +10,10 @@ from ..memory_feedback import memory_feedback
 class NavigationTools:
     def __init__(self, session):
         self.session = session
+        self.node_tools = None
+        if session.memory_type == "node":
+            from .node import NodeMemoryTools
+            self.node_tools = NodeMemoryTools(session, self)
 
     def observe(self, mode="current", project=False):
         s = self.session
@@ -124,7 +128,7 @@ class NavigationTools:
         if layout == "grid":
             rows = [s.observations.grid([row["image"] for row in rows])]
         metadata = [{k: row[k] for k in ("image", "frame", "step", "pose", "group", "yaw", "size") if k in row} for row in rows]
-        kinds = {"target": "TARGET", "question": "QUESTION", "map": "MAP", "derived": "VIEW", "observation": "HISTORY"}
+        kinds = {"target": "TARGET", "question": "QUESTION", "map": "MAP", "derived": "VIEW", "observation": "HISTORY", "panorama": "HISTORY"}
         labels = [f"[{kinds[row['kind']]} {row['image']}]" for row in rows]
         return s._reply({"images": metadata}, [row["path"] for row in rows], labels)
 
@@ -133,7 +137,11 @@ class NavigationTools:
         if overlay is not None and not s.spatial.enabled:
             raise ValueError("RGB overlay requires super tools")
         points = s.spatial.geometry.overlay(overlay) if overlay else None
-        trajectory = [world_to_uv(p, s.transform) for p in s.environment.trajectory]
+        node_mode = s.memory_type == "node"
+        path = (getattr(s.environment, "motion_trajectory", s.environment.trajectory)
+                if node_mode else s.environment.trajectory)
+        trajectory = [world_to_uv(p, s.transform) for p in path]
+        breaks = getattr(s.environment, "motion_trajectory_breaks" if node_mode else "trajectory_breaks", ())
         projected, markers = [], []
         if project is not None:
             if (not isinstance(project, dict) or set(project) != {"source", "points"}
@@ -149,7 +157,14 @@ class NavigationTools:
                 except ValueError as error:
                     projected.append({"label": label, "error": str(error)})
         value = s.renderer.render(s.current["pose"], trajectory, overlay_points=points, located_points=markers,
-                                  trajectory_breaks=getattr(s.environment, "trajectory_breaks", ()), **args)
+                                  trajectory_breaks=breaks, **args)
+        if node_mode:
+            value.pop("visible_ids", None)
+            records = value.get("records", [])
+            value["records"] = records[:10]
+            if len(records) > 10:
+                value["omitted_records"] = len(records) - 10
+            return {k: v for k, v in value.items() if k not in {"pixel_to_uv", "plot_bounds"}}
         # The renderer owns the exact displayed extent, including rotated views.
         ids = args.get("highlight") or value.pop("visible_ids")
         value.pop("visible_ids", None)
@@ -236,8 +251,12 @@ class NavigationTools:
         if name == "view_images":
             return self.images(**args)
         if name == "memory_read":
+            if self.node_tools:
+                return self.node_tools.read(**args)
             return self.read_memory(**args)
         if name == "memory_edit":
+            if self.node_tools:
+                return self.node_tools.edit(**args)
             return self.edit_memory(**args)
         if name == "map_view":
             value = self.map_value(**args)

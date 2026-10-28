@@ -1,6 +1,37 @@
 # 导航 Harness：实现与接口
 
-Python 持有环境、公开观察和空间记忆，Pi Core 持有唯一的模型会话。模型通过七个导航工具与原生文件工具自主组织观察、查图、记忆维护和运动；程序不规定固定的导航阶段。
+Python 持有环境、公开观察和空间记忆，Pi Core 持有唯一的模型会话。模型通过所选记忆模式的工具与原生文件工具自主组织观察、检索、记忆维护和运动；程序不规定固定的导航阶段。
+
+## 记忆模式
+
+会话创建时通过 `memory_type: entity / node` 选择，默认 `entity`。配置片段位于 `config/memory/`，与模型、basic/super、预算配置组合。实体模式保留原墙图、七工具和 `memory/entities.json`；下文既有实体接口描述仍适用于该模式。
+
+节点模式使用空白底图与 `memory/nodes.json`，只暴露 `observe / move / memory_read / memory_edit / submit`。它与实体模式共用观察、运动、读图、地图渲染、Pi 会话及压缩，未创建第二套 Harness。模式写入运行结果和快照，跨模式恢复会报错；节点模式无需已构建墙图。
+
+每个节点存 `id / anchor / panorama / room / description / history`：位置取首次全景的真实拍摄位置，摘要独立于图片，房间只是分组，历史只存全景引用。节点位置不是画面中物体的位置。`create` 自动分配 ID，模型提供摘要及可选房间；`update(refresh=true)` 在距固定锚点 1 米内更新默认全景，保留摘要；纯文字与分组可远程修订；`merge` 要求综合摘要并合并历史引用，`delete` 不删除原始观察。
+
+创建或刷新之前必须取得当前完整全景，可以直接使用 `move(after=panorama)` 的结果。编辑不隐式拍图；移动后不得把旧图绑定到新位置。示例：
+
+```json
+{"operations":[{"op":"create","room":"living_room_1","description":"Sofa facing a TV; a bookshelf beside the dining entrance."}]}
+{"operations":[{"op":"update","id":"N001","refresh":true}]}
+```
+
+节点模式读工具按目的分三支：
+
+| 读取 | 示例 | 回执 |
+|---|---|---|
+| 文本索引 | `{"mode":"text","query":"TV"}` | 节点摘要、位置和全景引用，不自动附图。单 `id` 读取详情，历史可分页。 |
+| 历史图片 | `{"mode":"image","refs":["N001"]}` | 默认节点全景；也可直接打开 `p_ / f_ / i_ / m_`，支持单图裁剪。 |
+| 节点地图 | `{"mode":"map","view":"ego","radius_m":6}` | 空白底图、节点与实际微步轨迹，附最多 10 条节点短索引。 |
+
+`mode:text, source:observations` 可以分页发现未挂节点的途中观察；全景六张图算一个事件，目标/问题图不会混入场景历史。历史图片的拍摄位姿和朝向不因节点刷新而改变。
+
+节点坐标复用原换算公式，但标定从起点生成：初始 `[0.5,0.5]`、每坐标单位 20 米，墙线为空；超出初始 `[0,1]` 时扩展显示范围，不重新标定。房间只着色分组，不生成房间边界或相邻节点之间的虚构路线。super 下的 `target:{node:N001}` 按普通地图坐标直行，不自动授予 NavMesh 规划资格；RGB 选点仍使用原有几何辅助。
+
+运行 `bash scripts/run_node_goat.sh` 可用 221 Sol high、super 档跑一个现有 GOAT 连续多目标 episode。`python -m src.bench run/pilot` 支持两种模式；旧自建 sequence 含实体记忆评分，仅支持 entity，避免把两种不同含义的记忆混合评分。
+
+这两种配置也改变墙图和读工具条件，因此对比结果是完整模式的对比，不是纯存储格式消融。节点模式的压缩快照只带有限摘要和查询入口，原始图片与自由笔记仍在文件中。
 
 ## 从请求到下一次决策
 

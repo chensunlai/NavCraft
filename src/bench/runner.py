@@ -95,6 +95,8 @@ def run_episode(repo, model_config, episode, environment_config, scene_map, dire
     directory.mkdir(parents=True, exist_ok=True)
     result = {"episode_id": episode.id, "benchmark": episode.benchmark,
               "model": model_config["model"], "reasoning_effort": model_config["reasoning_effort"],
+              "memory_type": model_config.get("memory_type", "entity"),
+              "tool_tier": model_config.get("tool_tier", "basic"),
               "status": "running", "started_at": datetime.now(timezone.utc).isoformat(),
               "planned_goals": len(episode.goals), "gpu": environment_config["gpu"]}
     write_json(directory / "result.json", result)
@@ -102,14 +104,16 @@ def run_episode(repo, model_config, episode, environment_config, scene_map, dire
     environment = session = None
     rows = []
     try:
-        scene_map = prepare_map(scene_map, episode.start_position, directory / "private", map_layer)
+        if model_config.get("memory_type", "entity") != "node":
+            scene_map = prepare_map(scene_map, episode.start_position, directory / "private", map_layer)
         environment = Environment(episode, {**environment_config, "tool_tier": model_config.get("tool_tier", "basic")},
                                   directory / "private/environment")
         preflight = validate_single_floor(environment, episode)
         write_json(directory / "private/preflight.json", preflight)
         if not preflight["passed"]:
             raise ValueError("Single-floor/reachability preflight failed; inspect private/preflight.json")
-        session = open_session(repo, model_config, directory, environment, Path(scene_map))
+        session = open_session(repo, model_config, directory, environment,
+                               Path(scene_map) if scene_map is not None else None)
         rows, reason, failed = execute_goals(environment, session, episode,
                                             PromptLimits(**limits), directory)
         result.update(status="infrastructure_error" if failed else "completed", finish_reason=reason)

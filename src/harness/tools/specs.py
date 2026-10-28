@@ -19,9 +19,11 @@ def reference():
     ]}
 
 
-def specifications(tool_tier="basic"):
+def specifications(tool_tier="basic", memory_type="entity"):
     if tool_tier not in {"basic", "super"}:
         raise ValueError("tool_tier must be basic or super")
+    if memory_type not in {"entity", "node"}:
+        raise ValueError("memory_type must be entity or node")
     enhanced = tool_tier == "super"
     string = {"type": "string"}
     ids = {"type": "array", "items": string}
@@ -74,7 +76,7 @@ def specifications(tool_tier="basic"):
         memory["near"] = {"oneOf": [
             {"type": "object", "properties": {"self": {"type": "number", "exclusiveMinimum": 0}}, "required": ["self"], "additionalProperties": False},
             {"type": "object", "properties": {"entity": string, "radius": {"type": "number", "exclusiveMinimum": 0}}, "required": ["entity", "radius"], "additionalProperties": False}]}
-    return [
+    tools = [
         definition("observe", "Capture current RGB or a six-view panorama. Images are already attached; reopen only for detail. size is [width,height]; pixel=[x,y] uses the selected image ID's coordinates, not another tile or image. Panorama yaw is right-positive relative to the capture body heading, which is restored. Viewing a tile does not turn the body." +
                    (" project=true also attaches a local RGB projection map." if enhanced else ""), observe),
         definition("move", "steps executes 1-6 actions: translation 0.25m, turn 30deg; sliding may add up to 15deg yaw. after selects endpoint RGB (default) or panorama. Feedback reports actual execution. Does not submit." +
@@ -103,3 +105,14 @@ def specifications(tool_tier="basic"):
                         "required": ["op"], "additionalProperties": False}}}, ["operations"]),
         definition("submit", "Submit completion of the current request; include answer for a question. Ends this request, not the session. Acknowledgement contains no evaluation outcome.", {"answer": string}),
     ]
+    if memory_type == "entity":
+        return tools
+    from .node_specs import memory_specifications, node_reference
+    indexed = {tool["name"]: tool for tool in tools}
+    observe = definition("observe", "Capture current RGB or a six-view panorama. Images are attached. Panorama directions refer to the capture body heading; viewing a tile does not turn the body. A current panorama can be indexed with memory_edit without another capture.",
+                         {"mode": {"type": "string", "enum": ["current", "panorama"]}})
+    move_tool = indexed["move"]
+    if enhanced:
+        move_tool["parameters"]["properties"]["target"] = node_reference()
+        move_tool["description"] += " Node targets resolve to visited anchors and use straight motion, like map coordinates; they do not authorize automatic route planning."
+    return [observe, move_tool, *memory_specifications(), indexed["submit"]]

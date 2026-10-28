@@ -20,6 +20,7 @@ from src.common.io import write_json
 from .config import core_options
 from .core_client import CoreClient
 from .memory import MemoryStore
+from .node_memory import NodeMemory
 from .maps import MapRenderer
 from .observations import Observations
 from .service_retry import charged_requests, wait_seconds
@@ -75,8 +76,11 @@ class HarnessSession:
         self.private = self.directory / "private"
         self.environment = environment
         self.config = config
+        self.memory_type = config.get("memory_type", "entity")
+        if self.memory_type not in {"entity", "node"}:
+            raise ValueError("memory_type must be entity or node")
         self.tool_tier = config.get("tool_tier", "basic")
-        self.tool_specs = specifications(self.tool_tier)
+        self.tool_specs = specifications(self.tool_tier, self.memory_type)
         self._validators = {tool["name"]: Draft7Validator(tool["parameters"]) for tool in self.tool_specs}
         self.spatial = None
         self.tools = NavigationTools(self)
@@ -112,16 +116,30 @@ class HarnessSession:
             (self.workspace / name).mkdir(parents=True, exist_ok=True)
         self.private.mkdir(parents=True, exist_ok=True)
         try:
-            shutil.copyfile(scene_map, self.workspace / "scene/map.json")
-            self.transform = json.loads((self.workspace / "scene/map.json").read_text())
-            validate_map(self.transform)
-            shutil.copyfile(Path(__file__).with_name("navlib.py"), self.workspace / "scene/navlib.py")
-            shutil.copyfile(Path(__file__).parents[1] / "common/coordinates.py", self.workspace / "scene/coordinates.py")
             state = initial_state or {}
+            restoring = any(key in state for key in ("workspace", "session_file", "history", "memory"))
+            if ("memory_type" in state or restoring) and state.get("memory_type", "entity") != self.memory_type:
+                raise ValueError("Snapshot memory_type does not match the requested mode; start a new session")
             if state.get("environment"):
                 environment.restore_state(state["environment"])
             elif state.get("pose"):
                 environment.restore_pose(state["pose"])
+            if self.memory_type == "entity":
+                shutil.copyfile(scene_map, self.workspace / "scene/map.json")
+            elif state.get("workspace"):
+                shutil.copyfile(Path(state["workspace"]) / "scene/map.json", self.workspace / "scene/map.json")
+            else:
+                x, height, z = environment.pose()["position"]
+                write_json(self.workspace / "scene/map.json", {
+                    "origin": [x - 10, z - 10], "size_m": 20,
+                    "floor_height": height, "walls": [],
+                })
+            self.transform = json.loads((self.workspace / "scene/map.json").read_text())
+            validate_map(self.transform)
+            if self.memory_type == "node" and self.transform["walls"]:
+                raise ValueError("Node memory requires a public map without walls")
+            shutil.copyfile(Path(__file__).with_name("navlib.py"), self.workspace / "scene/navlib.py")
+            shutil.copyfile(Path(__file__).parents[1] / "common/coordinates.py", self.workspace / "scene/coordinates.py")
             if state.get("workspace"):
                 for name in ("scene", "observations", "memory", "scratch"):
                     source = Path(state["workspace"]) / name
@@ -139,14 +157,19 @@ class HarnessSession:
                 shutil.copyfile(state["session_file"], self._session_file)
             if state.get("observations"):
                 shutil.copytree(state["observations"], self.workspace / "observations", dirs_exist_ok=True)
-            if "memory" in state or not (self.workspace / "memory/entities.json").exists():
-                write_json(self.workspace / "memory/entities.json", state.get("memory", []))
+            memory_name = "entities.json" if self.memory_type == "entity" else "nodes.json"
+            other_name = "nodes.json" if self.memory_type == "entity" else "entities.json"
+            if (self.workspace / "memory" / other_name).exists():
+                raise ValueError("Workspace contains the other memory representation")
+            if "memory" in state or not (self.workspace / "memory" / memory_name).exists():
+                write_json(self.workspace / "memory" / memory_name, state.get("memory", []))
             restored_map = json.loads((self.workspace / "scene/map.json").read_text())
             if restored_map != self.transform:
                 raise ValueError("Snapshot map does not match the requested scene map")
             self.observations = Observations(self.workspace, self.transform)
-            self.memory = MemoryStore(self.workspace, self.private)
-            self.renderer = MapRenderer(self.workspace, self.memory)
+            self.memory = (MemoryStore(self.workspace, self.private) if self.memory_type == "entity" else
+                           NodeMemory(self.workspace, self.observations, self.transform, self.private))
+            self.renderer = MapRenderer(self.workspace, self.memory, memory_type=self.memory_type)
             self.spatial = SpatialTools(self)
             self.current = (self.observations.get(state["current_frame"]) if state.get("current_frame")
                             else self._capture(environment.observe()))
@@ -169,9 +192,11 @@ class HarnessSession:
             self.trace.emit("application_started", {
                 "model": config["model"], "reasoning_effort": config.get("reasoning_effort", "high"),
                 "source_sha256": source_hash.hexdigest(),
-                "prompt_sha256": hashlib.sha256((self.repo / "config/prompts/navigation.md").read_bytes()).hexdigest(),
-                "map_sha256": hashlib.sha256(Path(scene_map).read_bytes()).hexdigest(),
+                "prompt_sha256": hashlib.sha256((self.repo / "config/prompts" /
+                    ("navigation_node.md" if self.memory_type == "node" else "navigation.md")).read_bytes()).hexdigest(),
+                "map_sha256": hashlib.sha256((self.workspace / "scene/map.json").read_bytes()).hexdigest(),
                 "memory_source": state.get("memory_source", "empty"),
+                "memory_type": self.memory_type,
                 "tool_tier": self.tool_tier,
                 "goto_planner": self.spatial.planner if self.spatial.enabled else None,
             })
@@ -218,7 +243,8 @@ class HarnessSession:
             if session_file:
                 (destination / "private").mkdir(exist_ok=True)
                 shutil.copyfile(session_file, destination / "private/pi-session.jsonl")
-            state = {"pose": self.environment.pose(), "current_frame": self.current["frame"],
+            state = {"memory_type": self.memory_type,
+                     "pose": self.environment.pose(), "current_frame": self.current["frame"],
                      "workspace": "workspace", "private_dir": "private", "history": history,
                      "current_request": getattr(self, "_current_request", ""),
                      "target_frames": self._target_frames, "submitted_requests": self._prompts,
@@ -238,13 +264,16 @@ class HarnessSession:
 
     def _publish_state(self):
         self._revision += 1
-        write_json(self.workspace / "scene/state.json", {"pose": self.current["pose"],
+        write_json(self.workspace / "scene/state.json", {"memory_type": self.memory_type, "pose": self.current["pose"],
                 "frame": self.current["frame"], "step": self.environment.steps})
 
     def checkpoint(self):
         # Content is frozen by the Core only at compaction; ordinary turns append receipts.
-        entities = [{key: entity.get(key) for key in ("id", "type", "name", "room")}
-                    for entity in self.memory.entities]
+        memory_facts = ({"recorded_entities": [
+            {key: entity.get(key) for key in ("id", "type", "name", "room")}
+            for entity in self.memory.entities]} if self.memory_type == "entity" else
+            {"recorded_nodes": self.memory.summary(limit=10),
+             "memory_directory": "memory/nodes.json; use memory_read for nodes and history"})
         scratch = self.workspace / "scratch"
         files = sorted(path.relative_to(self.workspace).as_posix() for path in scratch.rglob("*")
                        if path.is_file() and not path.is_symlink() and path.resolve().is_relative_to(scratch.resolve()))
@@ -254,7 +283,7 @@ class HarnessSession:
                  "submitted_requests": self._prompts, "pose": self.current["pose"],
                  "frame": self.current["frame"], "target_frames": self._target_frames,
                  "frame_size": self.observations.image(self.current["frame"])["size"],
-                 "recorded_entities": entities, "scratch_files": files[:100],
+                 "memory_type": self.memory_type, **memory_facts, "scratch_files": files[:100],
                  "notes_directory": "scratch/; list it for files written since this snapshot"}
         if len(files) > 100:
             facts["omitted_scratch_files"] = len(files) - 100

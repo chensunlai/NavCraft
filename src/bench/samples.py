@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from src.common.scenes import resolve_scene
+from src.common.config import merge_config, read_config
 
 from src.dataset.episodes import create_source
 from src.dataset.maps import map_directory as scene_map_directory, load_wall_map
@@ -49,21 +50,26 @@ def plan(repo, config):
     hashes = {family: hashlib.sha256((repo / SOURCES[family]["selection_file"]).read_bytes()).hexdigest()
               for family in {e.benchmark for e in episodes}}
     jobs = []
-    maps = config["maps"]
+    maps = config.get("maps", {})
+    modes = {merge_config(read_config(repo / path), config.get("model_overrides", {})).get("memory_type", "entity")
+             for path in config.get("models", {}).values()}
+    node_only = modes == {"node"}
     for i, episode in enumerate(episodes):
         scene = resolve_scene(repo / config["environment"]["scenes"], episode.scene_id)
-        directory = map_directory(repo, episode, maps["root"])
+        directory = None if node_only else map_directory(repo, episode, maps.get("root", "data/scene_maps"))
         info, error = None, None
         try:
-            _, info = load_wall_map(directory, episode.start_position, maps.get("layer", "walls"))
-            expected = Path(episode.scene_id).name.split(".")[0]
-            if info["scene_id"] != expected:
-                raise ValueError(f"Expected scene {expected}, map declares {info['scene_id']}")
+            if not node_only:
+                _, info = load_wall_map(directory, episode.start_position, maps.get("layer", "walls"))
+                expected = Path(episode.scene_id).name.split(".")[0]
+                if info["scene_id"] != expected:
+                    raise ValueError(f"Expected scene {expected}, map declares {info['scene_id']}")
         except (OSError, ValueError, KeyError, TypeError) as exception:
             error = str(exception)
         jobs.append({"index": i, "episode_id": episode.id, "benchmark": episode.benchmark,
                      "scene": str(scene.resolve()), "floor_height": episode.start_position[1],
-                     "map": str(directory), "map_layer": maps.get("layer", "walls"),
+                     "map": None if node_only else str(directory), "map_layer": maps.get("layer", "walls"),
+                     "map_condition": "blank" if node_only else "walls",
                      "map_source": info, "map_error": error,
                      "planned_goals": len(episode.goals)})
     return {"selection_sha256": hashes, "dispatch_order": config["episodes"], "jobs": jobs}
