@@ -26,7 +26,8 @@ def test_panorama_has_frame_labels_without_pixel_grid(observations):
 
     with patch.object(ImageDraw.ImageDraw, "text", record):
         grid = observations.grid(frames)
-    assert texts == [f"{frame} | 640x480 | right {i * 60} deg" for i, frame in enumerate(frames)]
+    assert texts == [f"view {i + 1} | right {i * 60} deg | detail: {frame}"
+                     for i, frame in enumerate(frames)]
     with Image.open(observations.workspace / grid["path"]) as image:
         assert image.size == (1920, 1012)
     assert source.read_bytes() == original

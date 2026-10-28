@@ -261,4 +261,10 @@ class SpatialTools:
             result["bearing_after"] = round(bearing, 2)
         else:
             result.update(reached=reached, remaining=round(remaining, 3), planner=planner)
+        if "node" in target:
+            result["target_node"] = target["node"]
+            if not face and stop == "blocked":
+                result["hint"] = "Straight approach blocked; choose an intermediate visible waypoint around the obstacle."
+            elif not face and stop == "max_actions":
+                result["hint"] = "Action limit reached before the node; inspect the endpoint before continuing."
         return result

@@ -7,7 +7,7 @@ import pytest
 
 from src.common.config import read_config
 from src.dataset.episodes import EpisodeSpec
-from src.environment import Environment
+from src.environment import Environment, MotionResult
 from src.environment.fake import FakeSimulator
 from src.harness.session import HarnessSession, read_snapshot
 
@@ -98,6 +98,43 @@ def test_refresh_uses_current_panorama_and_keeps_searchable_summary(factory):
     assert saved["anchor"] == original and saved["panorama"] != original
     assert session.memory.read(query="television")["total"] == 1
     assert session.spatial.target({"node": identifier})["observed"] is False
+
+
+def test_panorama_pixels_use_the_displayed_grid_not_an_original_frame(factory):
+    session = factory()
+    _, panorama = call(session, "observe", {"mode": "panorama"})
+    image = panorama["image"]
+    assert image.startswith("i_")
+    assert session.observations.image(panorama["group"])["image"] == image
+    # Pick a real pixel in the second tile using the actual displayed image ID.
+    reference, pixel = session.observations.resolve_pixel(image, [1100, 400])
+    assert reference == panorama["views"][1]["frame"]
+    assert pixel == [460, 374]
+    with pytest.raises(ValueError, match="pixel_out_of_bounds"):
+        session.observations.resolve_pixel(reference, [1100, 400])
+
+
+@pytest.mark.parametrize("blocked", [False, True])
+def test_node_approach_reports_partial_progress_without_new_route_planning(factory, blocked):
+    session = factory()
+    identifier, _ = node(session)
+    call(session, "move", {"mode": "steps", "actions": ["move_backward"] * 4})
+    before = session.environment.steps
+    # A visited anchor does not allow the tool to ask NavMesh for a route.
+    session.environment.shortest_path = lambda *_: pytest.fail("node must use straight motion")
+    if blocked:
+        def stop(action, degrees=None):
+            session.environment.steps += 1
+            return MotionResult(collision=True, blocked=True)
+        session._perform_motion = stop
+    reply, result = call(session, "move", {"mode": "approach", "target": {"node": identifier},
+                                           "max_actions": 1})
+    assert not reply["result"]["isError"]
+    assert result["target_node"] == identifier and result["planner"] == "straight"
+    assert result["stop"] == ("blocked" if blocked else "max_actions")
+    assert not result["reached"] and not session._submitted
+    assert session.environment.steps == before + 1
+    assert "waypoint" in result["hint"] if blocked else "Action limit" in result["hint"]
 
 
 def test_readonly_question_cannot_write_or_capture(factory):

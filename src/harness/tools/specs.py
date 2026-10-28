@@ -110,7 +110,7 @@ def specifications(tool_tier="basic", memory_type="entity"):
         return tools
     from .node_specs import memory_specifications, node_reference
     indexed = {tool["name"]: tool for tool in tools}
-    observe = definition("observe", "Capture current RGB or a six-view panorama. Images are attached. Panorama directions refer to the capture body heading; viewing a tile does not turn the body. A current panorama can be indexed with memory_edit without another capture.",
+    observe = definition("observe", "Capture current RGB or a six-view panorama. Images are attached. Select pixels on the returned image ID at its size; f_ IDs inside the panorama reopen single-frame detail with different coordinates. Panorama directions refer to the capture body heading; viewing a tile does not turn the body. A current panorama can be indexed with memory_edit without another capture.",
                          {"mode": {"type": "string", "enum": ["current", "panorama"]}})
     move_tool = indexed["move"]
     if enhanced:

@@ -48,7 +48,7 @@ def test_explored_includes_anchors_and_trajectory_outside_initial_range(node_map
     view = renderer.render(pose, path)
     assert view["bounds"] == pytest.approx([-.15, -.25, 1.35, .85])
     assert view["visible_ids"] == ["N001", "N002", "N003"]
-    assert view["records"][0] == {
+    assert next(record for record in view["records"] if record["id"] == "N001") == {
         "id": "N001", "room": "living_room_1", "panorama": "p_4",
         "description": "Entrance beside the bookshelf"}
     for node in renderer.memory.nodes:
@@ -60,6 +60,39 @@ def test_explored_includes_anchors_and_trajectory_outside_initial_range(node_map
     full = renderer.render(pose, path, view="full")
     assert full["bounds"] == view["bounds"]
     assert full["pixel_to_uv"] == view["pixel_to_uv"]
+
+
+def test_map_index_covers_all_nodes_with_highlighted_then_nearest_details(node_map):
+    renderer, _, panoramas = node_map
+    renderer.memory.nodes = []
+    for number in range(1, 16):
+        group = f"p_{number}"
+        panoramas[group] = {"pose": {"pos": [.5 + (16 - number) * .01, .5], "heading": 0}}
+        renderer.memory.nodes.append({"id": f"N{number:03d}", "anchor": group, "panorama": group,
+                                      "room": f"room_{number % 3}", "description": f"Place {number}",
+                                      "history": [group]})
+    pose = {"pos": [.5, .5], "heading": 0}
+    view = renderer.render(pose, [], highlight=["N012", "N003"])
+    assert view["node_index"] == [{"id": node["id"], "room": node["room"]}
+                                   for node in renderer.memory.nodes]
+    assert [record["id"] for record in view["records"]] == ["N012", "N003", "N015", "N014", "N013"]
+    assert view["omitted_records"] == 10
+    nearest = renderer.render(pose, [])
+    assert [record["id"] for record in nearest["records"]] == ["N015", "N014", "N013", "N012", "N011"]
+    assert nearest["node_index"] == view["node_index"]
+
+
+@pytest.mark.parametrize("view, expected", [({"around_self": 2}, ["N001", "N002"]),
+                                            ({"ego": 2}, ["N001"])])
+def test_node_map_index_and_details_respect_actual_crop(node_map, view, expected):
+    renderer, _, panoramas = node_map
+    panoramas["p_1"]["pose"]["pos"] = [.55, .5]
+    panoramas["p_2"]["pose"]["pos"] = [.59, .59]
+    panoramas["p_3"]["pose"]["pos"] = [.9, .9]
+    result = renderer.render({"pos": [.5, .5], "heading": 45}, [], view=view, highlight=["N003", "N002"])
+    assert [node["id"] for node in result["node_index"]] == expected
+    assert set(node["id"] for node in result["records"]) == set(expected)
+    assert "omitted_records" not in result
 
 
 @pytest.mark.parametrize("heading", [0, 45, 90, 180, 270])

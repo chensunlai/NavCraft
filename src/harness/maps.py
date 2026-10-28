@@ -292,8 +292,16 @@ class MapRenderer:
                   "image_size": [width, height], "warnings": warnings,
                   "visible_ids": [e["id"] for e in entities if record_location(e) is not None and inside(record_location(e))]}
         if node_mode:
+            visible = [indexed[identifier] for identifier in result["visible_ids"]]
+            result["node_index"] = [{"id": node["id"], "room": node["room"]} for node in visible]
+            priority = {identifier: rank for rank, identifier in enumerate(dict.fromkeys(highlight or []))}
+            related = sorted(visible, key=lambda node: (
+                priority.get(node["id"], len(priority)),
+                math.dist(positions[node["id"]], pose["pos"]), node["id"]))
             result["records"] = [{key: node[key] for key in ("id", "room", "panorama", "description")}
-                                 for node in entities if node["id"] in result["visible_ids"]]
+                                 for node in related[:5]]
+            if len(related) > 5:
+                result["omitted_records"] = len(related) - 5
         with (output / "index.jsonl").open("a") as stream:
             stream.write(json.dumps({**result, "width": width, "height": height,
                                      "view": view, "pose": pose}, ensure_ascii=False) + "\n")

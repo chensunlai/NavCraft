@@ -144,7 +144,7 @@ class Observations:
                         if [source["image"] for source in view["sources"]] == frames), None)
             if row is None:
                 row = self.grid(frames)
-            row = {**row, "image": reference, "group": reference, "kind": "panorama",
+            row = {**row, "group": reference, "kind": "panorama",
                    "pose": panorama["pose"], "step": panorama["step"]}
         else:
             path = self.directory / "maps/index.jsonl"
@@ -217,6 +217,6 @@ class Observations:
             sx, sy = original[0] / image.width, original[1] / image.height
             sources.append({"image": reference, "bounds": [x, y, x + image.width, y + image.height],
                             "pixel_to_source": [[sx, 0, -sx * x], [0, sy, -sy * y]]})
-            caption = f"{reference} | {original[0]}x{original[1]}" + (f" | right {row['yaw']} deg" if "yaw" in row else "")
-            draw.text((x + 5, y - 20), caption, fill="black")
+            caption = f"view {i + 1}" + (f" | right {row['yaw']} deg" if "yaw" in row else "")
+            draw.text((x + 5, y - 20), caption + f" | detail: {reference}", fill="black")
         return self._save_view(result, sources)

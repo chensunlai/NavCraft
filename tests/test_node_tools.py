@@ -12,6 +12,7 @@ from src.harness.node_memory import NodeMemory
 from src.harness.observations import Observations
 from src.harness.tools.node import NodeMemoryTools
 from src.harness.tools.node_specs import memory_specifications, node_reference
+from src.harness.tools.runtime import NavigationTools
 
 
 @pytest.fixture
@@ -110,6 +111,7 @@ def node_tools(tmp_path):
         "value": value, "refs": list(refs), "labels": list(labels), "error": error}
     navigation = SimpleNamespace(
         images=Mock(return_value={"opened": True}),
+        image_reply=Mock(return_value={"opened": True}),
         map_value=Mock(return_value={"map": "observations/maps/m_0001.png", "view_id": "m_0001"}))
     return NodeMemoryTools(session, navigation)
 
@@ -166,10 +168,70 @@ def test_node_image_and_crop_delegate_to_existing_image_reader(node_tools):
     identifier = create_node(node_tools)
     reply = node_tools.read(mode="image", refs=[identifier], crop=[0, 0, .5, 1])
     assert reply == {"opened": True}
-    node_tools.navigation.images.assert_called_once_with(
-        images=[{"image": "p_first", "crop": [0, 0, .5, 1]}], layout="separate")
+    rows = node_tools.navigation.image_reply.call_args.args[0]
+    nodes = node_tools.navigation.image_reply.call_args.kwargs["nodes"]
+    assert len(rows) == len(nodes) == 1
+    assert rows[0]["image"].startswith("i_")
+    assert rows[0]["group"] == "p_first"
+    assert rows[0]["pose"] == nodes[0]["observation_pose"]
+    assert nodes[0]["id"] == identifier
+    # The selected crop pixel remains tied to the original observed frame.
+    assert node_tools.session.observations.resolve_pixel(rows[0]["image"], [2, 28]) == ("f_0002", [2, 2])
     node_tools.session.environment.observe.assert_not_called()
     node_tools.session.environment.panorama.assert_not_called()
+
+
+def test_refreshed_node_keeps_anchor_and_capture_pose_distinct(node_tools):
+    identifier = create_node(node_tools)
+    session = node_tools.session
+    image = session.observations.workspace / "source.png"
+    refreshed = [session.observations.add(image, step=8, pose={"pos": [.52, .5], "heading": yaw},
+                                         group="p_refreshed", yaw=yaw) for yaw in range(0, 360, 60)]
+    session.current = refreshed[0]
+    assert not node_tools.edit([{"op": "update", "id": identifier, "refresh": True}])["error"]
+    before = (len(session.observations.items), session.memory.path.read_bytes())
+    node_tools.read(mode="image", refs=[identifier, "f_0001"])
+    rows = node_tools.navigation.image_reply.call_args.args[0]
+    nodes = node_tools.navigation.image_reply.call_args.kwargs["nodes"]
+    assert rows[0]["image"].startswith("i_") and rows[0]["group"] == "p_refreshed"
+    assert rows[0]["pose"]["pos"] == [.52, .5]
+    assert nodes[0]["id"] == identifier and nodes[0]["pose"]["pos"] == [.5, .5]
+    assert rows[1]["image"] == "f_0001" and nodes[1] is None
+    assert before == (len(session.observations.items), session.memory.path.read_bytes())
+    node_tools.read(mode="image", refs=[identifier], crop=[0, 0, .5, 1])
+    row = node_tools.navigation.image_reply.call_args.args[0][0]
+    assert row["pose"]["pos"] == [.52, .5] and row["step"] == 8
+    assert row["group"] == "p_refreshed"
+    assert before == (len(session.observations.items), session.memory.path.read_bytes())
+    session.environment.observe.assert_not_called()
+    session.environment.panorama.assert_not_called()
+
+
+def test_node_identity_and_actual_capture_pose_reach_image_receipt(node_tools):
+    identifier = create_node(node_tools)
+    session = node_tools.session
+    image = session.observations.workspace / "source.png"
+    frames = [session.observations.add(image, step=9, pose={"pos": [.52, .5], "heading": yaw},
+                                      group="p_new", yaw=yaw) for yaw in range(0, 360, 60)]
+    session.current = frames[0]
+    node_tools.edit([{"op": "update", "id": identifier, "refresh": True}])
+    node_tools.navigation.image_reply = lambda rows, nodes=None: NavigationTools.image_reply(
+        SimpleNamespace(session=session), rows, nodes=nodes)
+
+    reply = node_tools.read(mode="image", refs=[identifier, "f_0001"])
+    first, second = reply["value"]["images"]
+    assert first["node"] == identifier and first["image"].startswith("i_") and first["group"] == "p_new"
+    assert first["pose"]["pos"] == [.52, .5]
+    assert first["anchor_pose"]["pos"] == [.5, .5]
+    assert identifier in reply["labels"][0] and first["image"] in reply["labels"][0]
+    assert "node" not in second and "anchor_pose" not in second
+    assert "TARGET" in reply["labels"][1]
+
+    cropped = node_tools.read(mode="image", refs=[identifier], crop=[0, 0, .5, 1])
+    row = cropped["value"]["images"][0]
+    assert row["image"].startswith("i_") and row["node"] == identifier
+    assert row["pose"] == first["pose"] and row["anchor_pose"] == first["anchor_pose"]
+    assert row["image"] in cropped["labels"][0]
 
 
 @pytest.mark.parametrize("arguments,expected", [

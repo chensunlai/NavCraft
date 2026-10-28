@@ -35,11 +35,15 @@ class NodeMemoryTools:
                     event.get("group", event["image"]), [])} for event in result["events"]]}
             return s._reply(result, error="error" in result)
         if mode == "image":
-            images = []
-            for reference in args["refs"]:
-                image = s.memory.get(reference)["panorama"] if reference.startswith("N") else reference
-                images.append({"image": image, **({"crop": args["crop"]} if "crop" in args else {})})
-            return self.navigation.images(images=images, layout="separate")
+            nodes = [s.memory.get(reference) if reference.startswith("N") else None
+                     for reference in args["refs"]]
+            rows = [s.observations.image(node["panorama"] if node else reference)
+                    for reference, node in zip(args["refs"], nodes)]
+            if "crop" in args:
+                source = rows[0]
+                rows[0] = {**s.observations.crop(source["image"], args["crop"]),
+                           **{key: source[key] for key in ("pose", "step", "group") if key in source}}
+            return self.navigation.image_reply(rows, nodes=nodes)
         view = args.get("view", "local")
         radius = args.get("radius_m", 6)
         mapped = "explored" if view == "explored" else {"ego" if view == "ego" else "around_self": radius}

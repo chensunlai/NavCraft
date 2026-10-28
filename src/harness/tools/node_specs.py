@@ -10,7 +10,8 @@ def node_reference():
     pair = {"type": "array", "minItems": 2, "maxItems": 2,
             "items": {"type": "number"}}
     return {"oneOf": [
-        _object({"node": {"type": "string", "pattern": "^N[0-9]{3,}$"}}, ["node"]),
+        _object({"node": {"type": "string", "pattern": "^N[0-9]{3,}$",
+                          "description": "Visited anchor. Approach steers directly toward it, not along a recorded route; choose intermediate visible waypoints around obstacles."}}, ["node"]),
         _object({"image": {"type": "string"}, "pixel": pair}, ["image", "pixel"]),
         _object({"uv": pair}, ["uv"]),
     ]}
@@ -58,9 +59,12 @@ def memory_specifications():
                         "a paginated summary or one id's details; room/query filter summaries. query matches "
                         "recorded text, not scene contents. source=observations lists all captured scene events, "
                         "including unrecorded stops. Text never attaches images. image opens 1-2 node, panorama, "
-                        "or registered image refs; a node opens its current panorama. crop=[left,top,right,bottom] "
+                        "or registered image refs; a node opens its current panorama. Returned node/anchor_pose identify "
+                        "the place; pose is the actual picture's capture pose. Select pixels with the returned image ID "
+                        "and size, including panorama grids and crops; frame IDs inside grids only reopen detail. crop=[left,top,right,bottom] "
                         "is normalized and requires one ref. map renders visited nodes and actual paths on a blank "
-                        "map; local/ego radius_m defaults to 6, explored fits recorded locations. Reading never "
+                        "map with a complete visible node_index and up to five descriptions (highlighted, then nearby); "
+                        "local/ego radius_m defaults to 6, explored fits recorded locations. Reading never "
                         "captures images or moves. Image pixels refer to the displayed image ID and size.",
          "parameters": {"type": "object", "oneOf": [node_list, node_detail, observations, images, maps]}},
         {"name": "memory_edit",

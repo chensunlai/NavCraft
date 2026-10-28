@@ -41,7 +41,7 @@ class NavigationTools:
                      "views": [{"frame": v["frame"], "yaw": v["yaw"],
                                 "size": s.observations.image(v["frame"])["size"]} for v in views],
                      "step": s.environment.steps, "pose": s.current["pose"]}
-            refs, labels = [image["path"]], [f"[CURRENT {image['image']} | six views already attached]"]
+            refs, labels = [image["path"]], [f"[CURRENT {image['image']} | {image['size'][0]}x{image['size'][1]} | select pixels on this whole image; f_ IDs reopen detail]"]
         s._publish_state()
         if project:
             mapped = self.map_value(view={"ego": 6}, overlay=[v["frame"] for v in views])
@@ -127,10 +127,20 @@ class NavigationTools:
                 else s.observations.image(item["image"]) for item in images]
         if layout == "grid":
             rows = [s.observations.grid([row["image"] for row in rows])]
+        return self.image_reply(rows)
+
+    def image_reply(self, rows, nodes=None):
+        """Keep the displayed image ID, capture pose and optional node anchor together."""
+        nodes = nodes if nodes is not None else [None] * len(rows)
         metadata = [{k: row[k] for k in ("image", "frame", "step", "pose", "group", "yaw", "size") if k in row} for row in rows]
         kinds = {"target": "TARGET", "question": "QUESTION", "map": "MAP", "derived": "VIEW", "observation": "HISTORY", "panorama": "HISTORY"}
-        labels = [f"[{kinds[row['kind']]} {row['image']}]" for row in rows]
-        return s._reply({"images": metadata}, [row["path"] for row in rows], labels)
+        labels = []
+        for row, detail, node in zip(rows, metadata, nodes):
+            if node is not None:
+                detail.update(node=node["id"], anchor_pose=node["pose"])
+            identity = f"{node['id']} | " if node else ""
+            labels.append(f"[{kinds[row['kind']]} {identity}image={row['image']} | {row['size'][0]}x{row['size'][1]}]")
+        return self.session._reply({"images": metadata}, [row["path"] for row in rows], labels)
 
     def task_read(self):
         s = self.session
@@ -178,10 +188,6 @@ class NavigationTools:
                                   trajectory_breaks=breaks, **args)
         if node_mode:
             value.pop("visible_ids", None)
-            records = value.get("records", [])
-            value["records"] = records[:10]
-            if len(records) > 10:
-                value["omitted_records"] = len(records) - 10
             return {k: v for k, v in value.items() if k not in {"pixel_to_uv", "plot_bounds"}}
         # The renderer owns the exact displayed extent, including rotated views.
         ids = args.get("highlight") or value.pop("visible_ids")

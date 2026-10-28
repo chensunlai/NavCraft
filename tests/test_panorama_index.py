@@ -25,7 +25,8 @@ def test_panorama_reference_reuses_existing_grid_and_survives_reopen(observation
     assert group["pose"] == frames[0]["pose"]
     assert [row["frame"] for row in group["frames"]] == [row["frame"] for row in frames]
     image = observations.image("p_one")
-    assert image["image"] == "p_one"
+    assert image["image"] == grid["image"]
+    assert image["group"] == "p_one"
     assert image["path"] == grid["path"]
     assert len(observations.views) == 1
     assert observations.resolve_pixel("p_one", [650, 556]) == (frames[4]["frame"], [10, 24])
