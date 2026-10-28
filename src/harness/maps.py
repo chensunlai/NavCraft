@@ -1,5 +1,6 @@
 """Public wall/memory views with reversible image-to-map coordinates."""
 
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -11,7 +12,15 @@ from .memory import MemoryStore, location
 from .map_labels import layout_labels
 
 
-COLORS = {"room": "#2563eb", "door": "#c57813", "object": "#748096", "locate": "#9333ea"}
+COLORS = {"room": "#2563eb", "door": "#c57813", "object": "#748096", "locate": "#9333ea", "node": "#748096"}
+ROOM_COLORS = ("#2563eb", "#c57813", "#16836b", "#9333ea", "#b83f69", "#387e9b", "#716b24", "#aa522e")
+
+
+def _node_color(room):
+    if room is None:
+        return COLORS["node"]
+    number = int.from_bytes(hashlib.sha256(room.encode()).digest()[:4], "big")
+    return ROOM_COLORS[number % len(ROOM_COLORS)]
 
 
 def _font(size, bold=False):
@@ -26,12 +35,20 @@ def _font(size, bold=False):
 
 
 class MapRenderer:
-    def __init__(self, workspace, memory=None):
+    def __init__(self, workspace, memory=None, *, memory_type="entity"):
+        if memory_type not in {"entity", "node"}:
+            raise ValueError("memory_type must be entity or node")
+        if memory_type == "node" and memory is None:
+            raise ValueError("Node maps require a node memory store")
         self.workspace = Path(workspace)
         self.memory = memory if memory is not None else MemoryStore(self.workspace)
+        self.memory_type = memory_type
 
     def render(self, pose, trajectory, view="explored", labels="id", highlight=None, *, overlay_points=None,
                trajectory_breaks=(), located_points=()):
+        node_mode = self.memory_type == "node"
+        if node_mode and (overlay_points is not None or located_points):
+            raise ValueError("Node maps show only visited nodes and trajectory")
         if labels not in {"id", "name", "both", "none"}:
             raise ValueError("labels must be id, name, both, or none")
         for point in located_points:
@@ -43,11 +60,19 @@ class MapRenderer:
         size = float(data["size_m"])
         if not math.isfinite(size) or size <= 0:
             raise ValueError("map size_m must be positive")
-        entities = self.memory.entities
+        entities = self.memory.nodes if node_mode else self.memory.entities
+        positions = ({node["id"]: self.memory.observations.panorama(node["anchor"])["pose"]["pos"]
+                      for node in entities} if node_mode else {})
+
+        def record_location(record):
+            return positions[record["id"]] if node_mode else location(record)
+
         indexed = {e["id"]: e for e in entities}
-        warnings = [f"{e['id']} has no location" for e in entities if location(e) is None]
+        warnings = [f"{e['id']} has no location" for e in entities if record_location(e) is None]
+        if node_mode and view == "full":
+            view = "explored"
         ego = isinstance(view, dict) and set(view) == {"ego"}
-        points, padding = [], 2 / size
+        points, padding = [], (1 if node_mode else 2) / size
         if ego:
             radius = view["ego"]
             if type(radius) not in (int, float) or not math.isfinite(radius) or radius <= 0:
@@ -78,6 +103,8 @@ class MapRenderer:
         else:
             if view == "explored":
                 points = list(trajectory or []) + [pose["pos"]] + [p["uv"] for p in located_points]
+                if node_mode:
+                    points.extend(positions.values())
             elif isinstance(view, dict) and set(view) == {"around"}:
                 ids = view["around"]
                 if not isinstance(ids, list) or not ids:
@@ -85,8 +112,8 @@ class MapRenderer:
                 for identifier in ids:
                     if identifier not in indexed:
                         warnings.append(f"{identifier} does not exist")
-                    elif location(indexed[identifier]) is not None:
-                        points.append(location(indexed[identifier]))
+                    elif record_location(indexed[identifier]) is not None:
+                        points.append(record_location(indexed[identifier]))
                 if not points:
                     raise ValueError("around contains no located entities")
             elif isinstance(view, dict) and set(view) == {"around_self"}:
@@ -96,10 +123,10 @@ class MapRenderer:
                 points, padding = [pose["pos"]], radius / size
             else:
                 raise ValueError("invalid map view")
-            bounds = [max(0., min(p[0] for p in points) - padding),
-                      max(0., min(p[1] for p in points) - padding),
-                      min(1., max(p[0] for p in points) + padding),
-                      min(1., max(p[1] for p in points) + padding)]
+            bounds = [min(p[0] for p in points) - padding, min(p[1] for p in points) - padding,
+                      max(p[0] for p in points) + padding, max(p[1] for p in points) + padding]
+            if not node_mode:
+                bounds = [max(0., bounds[0]), max(0., bounds[1]), min(1., bounds[2]), min(1., bounds[3])]
         if not ego:
             if bounds[0] >= bounds[2] or bounds[1] >= bounds[3]:
                 raise ValueError("requested view is outside the map canvas")
@@ -142,7 +169,7 @@ class MapRenderer:
                     a = [value, bounds[1]] if axis == 0 else [bounds[0], value]
                     b = [value, bounds[3]] if axis == 0 else [bounds[2], value]
                     draw.line([pixel(a), pixel(b)], fill="#e7e9ec", width=1)
-        for segment in data["walls"]:
+        for segment in (() if node_mode else data["walls"]):
             uv = [xz_to_uv(*p, data) for p in segment]
             draw.line([pixel(p) for p in uv], fill="#262a2f", width=2)
         if len(trajectory or []) > 1:
@@ -155,20 +182,23 @@ class MapRenderer:
             warnings.append(f"{identifier} does not exist")
         markers, label_items = [], []
         for entity in entities:
-            point = location(entity)
+            point = record_location(entity)
             if point is None or not inside(point):
                 continue
             px, py = pixel(point)
-            structural = entity["type"] != "object"
+            kind = "node" if node_mode else entity["type"]
+            color = _node_color(entity["room"]) if node_mode else COLORS[kind]
+            name = (entity["room"] or entity["id"]) if node_mode else entity["name"]
+            structural = kind != "object"
             marker_radius = 6 if structural else 3
-            markers.append({"point": [px, py], "radius": marker_radius, "id": entity["id"], "type": entity["type"]})
-            label = {"id": entity["id"], "name": entity["name"],
-                     "both": f"{entity['id']} {entity['name']}", "none": ""}[labels]
+            markers.append({"point": [px, py], "radius": marker_radius, "id": entity["id"], "type": kind, "color": color})
+            label = {"id": entity["id"], "name": name,
+                     "both": f"{entity['id']} {name}", "none": ""}[labels]
             if not label:
                 continue
             selected_font = bold if structural else font
             box = draw.textbbox((0, 0), label, font=selected_font)
-            label_items.append({"id": entity["id"], "type": entity["type"], "text": label,
+            label_items.append({"id": entity["id"], "type": kind, "text": label, "color": color,
                                 "point": [px, py], "size": [box[2] - box[0] + 6, box[3] - box[1] + 4],
                                 "priority": 0 if structural else 1})
         for point in located_points:
@@ -191,18 +221,18 @@ class MapRenderer:
         self.last_label_layout, missing = layout_labels(label_items, plot_bounds, obstacles)
         warnings.extend(f"{identifier} label could not be placed" for identifier in missing)
         for label in self.last_label_layout:
-            draw.line([tuple(point) for point in label["leader"]], fill=COLORS[label["type"]], width=1)
+            draw.line([tuple(point) for point in label["leader"]], fill=label.get("color", COLORS[label["type"]]), width=1)
         for label in self.last_label_layout:
             selected_font = bold if label["type"] != "object" else font
             rect = label["rect"]
             box = draw.textbbox((0, 0), label["text"], font=selected_font)
             draw.rectangle(rect, fill="white")
             draw.text((rect[0] + 3 - box[0], rect[1] + 2 - box[1]), label["text"],
-                      fill=COLORS[label["type"]], font=selected_font)
+                      fill=label.get("color", COLORS[label["type"]]), font=selected_font)
         for marker in markers:
             px, py = marker["point"]
             marker_radius, kind = marker["radius"], marker["type"]
-            color = COLORS[kind]
+            color = marker.get("color", COLORS[kind])
             if kind == "locate":
                 continue
             if kind == "room":
@@ -260,7 +290,10 @@ class MapRenderer:
         result = {"map": path.relative_to(self.workspace).as_posix(), "view_id": path.stem,
                   "bounds": bounds, "pixel_to_uv": affine, "plot_bounds": plot_bounds,
                   "image_size": [width, height], "warnings": warnings,
-                  "visible_ids": [e["id"] for e in entities if location(e) is not None and inside(location(e))]}
+                  "visible_ids": [e["id"] for e in entities if record_location(e) is not None and inside(record_location(e))]}
+        if node_mode:
+            result["records"] = [{key: node[key] for key in ("id", "room", "panorama", "description")}
+                                 for node in entities if node["id"] in result["visible_ids"]]
         with (output / "index.jsonl").open("a") as stream:
             stream.write(json.dumps({**result, "width": width, "height": height,
                                      "view": view, "pose": pose}, ensure_ascii=False) + "\n")

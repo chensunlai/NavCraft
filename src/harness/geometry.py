@@ -29,9 +29,10 @@ def validate_pixel(pixel, width, height, image_id):
 
 
 class Geometry:
-    def __init__(self, workspace, private_dir, transform):
+    def __init__(self, workspace, private_dir, transform, *, bounded=True):
         self.workspace, self.private = Path(workspace), Path(private_dir)
         self.transform = transform
+        self.bounded = bounded
 
     def load_frame(self, frame):
         """Return metric optical-Z depth and its private camera/body metadata."""
@@ -88,7 +89,9 @@ class Geometry:
         if not np.isfinite(point).all():
             raise ValueError("invalid_projection")
         uv = self._uv(point[None])[0]
-        if np.any(uv < -1e-10) or np.any(uv > 1 + 1e-10):
+        if not np.isfinite(uv).all():
+            raise ValueError("invalid_projection")
+        if self.bounded and (np.any(uv < -1e-10) or np.any(uv > 1 + 1e-10)):
             raise ValueError("outside_canvas")
         floor_limits = camera.get("floor_y_range")
         if floor_limits and not floor_limits[0] <= point[1] <= floor_limits[1]:
@@ -104,7 +107,8 @@ class Geometry:
         displacement = point[[0, 2]] - np.asarray(camera["body_position"])[[0, 2]]
         heading = heading_from_forward(camera["body_forward"])
         relative = relative_xz(float(displacement[0]), float(displacement[1]), heading)
-        return {"uv": np.clip(self._uv(point[None])[0], 0, 1).round(4).tolist(),
+        uv = self._uv(point[None])[0]
+        return {"uv": (np.clip(uv, 0, 1) if self.bounded else uv).round(4).tolist(),
                 "distance": round(relative["distance_m"], 3),
                 "bearing": round(relative["bearing_degrees"], 2),
                 "height": round(float(point[1] - camera["floor_height"]), 3), "valid": True}
@@ -122,9 +126,10 @@ class Geometry:
             raise ValueError(f"pixel_outside_map_plot: image={view_id}; "
                              f"valid plot x:[{left},{right}], y:[{top},{bottom}]")
         uv = np.asarray(apply_affine(view["pixel_to_uv"], [x, y]))
-        if not np.isfinite(uv).all() or np.any(uv < -1e-10) or np.any(uv > 1 + 1e-10):
+        if (not np.isfinite(uv).all()
+                or self.bounded and (np.any(uv < -1e-10) or np.any(uv > 1 + 1e-10))):
             raise ValueError("outside_canvas")
-        return {"uv": np.clip(uv, 0, 1).round(4).tolist()}
+        return {"uv": (np.clip(uv, 0, 1) if self.bounded else uv).round(4).tolist()}
 
     def overlay(self, frames, max_range=6, minheight=.1, maxheight=1.8):
         """Return at most 50k [u,v,r,g,b] rows from actual RGB-D observations."""
@@ -144,7 +149,9 @@ class Geometry:
             ranges = np.linalg.norm(points[:, [0, 2]] - np.asarray(camera["body_position"])[[0, 2]], axis=1)
             uv = self._uv(points)
             valid = (np.isfinite(points).all(axis=1) & (heights >= minheight) & (heights <= maxheight)
-                     & (ranges <= max_range) & (uv >= 0).all(axis=1) & (uv <= 1).all(axis=1))
+                     & (ranges <= max_range) & np.isfinite(uv).all(axis=1))
+            if self.bounded:
+                valid &= (uv >= 0).all(axis=1) & (uv <= 1).all(axis=1)
             path = (self.workspace / public[frame]["path"]).resolve()
             if not path.is_relative_to((self.workspace / "observations").resolve()):
                 raise ValueError("Observation image is outside the public image directory")
