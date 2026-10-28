@@ -21,8 +21,7 @@ Commands use `{id, op, args}` and receive `{id, ok, data}`. Logs go to stderr. `
 | --- | --- |
 | `init` | Model/auth, workspace, Python executable, tool definitions, permission policy, limits, optional saved session/history |
 | `prompt` | User text, optional image paths, effective time limit |
-| `tool_reply` | Match `call_id`; return text/image references, optional public checkpoint and host stop controls |
-| `set_checkpoint` | Replace already-public facts used after compaction |
+| `tool_reply` | Match `call_id`; return text/image references and host stop controls |
 | `configure` | Update the cumulative request ceiling or compaction settings |
 | `abort`, `close` | Cancel the current prompt or release the session |
 
@@ -36,7 +35,7 @@ Defaults: 32,768 tokens, approximately 24,000-token compaction threshold. Before
 
 Compaction retains two complete rounds and calls Pi's native summarizer once for the older history. The navigation summary prompt lives in the local Pi source. It preserves the requested reasoning effort and an 8,192-token total output allowance; only the visible summary is limited to 300 tokens. `python -m src.harness.tokenizer` counts that text with the fixed local tokenizer on CPU. An overlong summary gets at most one native shortening call; invalid summaries cancel compaction rather than replacing history with partial text.
 
-Python supplies the factual head through `checkpoint`; the Core never invents pose, entities, or success. After compression, its request projection contains that head, Pi's summary, and the retained rounds. A current frame and checkpoint content retain their recorded times.
+Compaction adds no separate facts, task, or image snapshot. The model retrieves the current request and its reference images through the Python `task_read` tool when needed. Its receipt enters the ordinary tool history; later requests append to that history until the next pruning or compaction boundary. The Core owns no duplicate task state.
 
 ## Records and limits
 
