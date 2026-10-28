@@ -8,22 +8,31 @@ Python 持有环境、公开观察和空间记忆，Pi Core 持有唯一的模�
 
 节点模式使用空白底图与 `memory/nodes.json`，只暴露 `observe / move / memory_read / memory_edit / task_read / submit`。它与实体模式共用观察、运动、读图、地图渲染、Pi 会话及压缩，未创建第二套 Harness。模式写入运行结果和快照，跨模式恢复会报错；节点模式无需已构建墙图。
 
-每个节点存 `id / anchor / panorama / room / description / history`：位置取首次全景的真实拍摄位置，摘要独立于图片，房间只是分组，历史只存全景引用。节点位置不是画面中物体的位置。`create` 自动分配 ID，模型提供摘要及可选房间；`update(refresh=true)` 在距固定锚点 1 米内更新默认全景，保留摘要；纯文字与分组可远程修订；`merge` 要求综合摘要并合并历史引用，`delete` 不删除原始观察。
+每个节点存 `id / anchor / panorama / room / description / history`：位置取首次全景的真实拍摄位置，摘要独立于图片，历史只存全景引用。节点位置不是画面中物体的位置。`create` 自动分配 ID，模型提供摘要及可选房间；`update(refresh=true)` 在距固定锚点 1 米内更新默认全景，保留摘要；纯文字与分组可远程修订；`merge` 要求综合摘要并合并历史引用，`delete` 不删除原始观察。
+
+`memory/nodes.json` 在同一个原子快照中保存 `{"nodes":[节点记录],"rooms":{"living_room_1":"房间整体描述"}}`。房间描述由模型独立维护，记录整体布局、主要物体、空间关系和核实过的出口；节点描述关注各观察位置。房间关联的节点从 `node.room` 实时计算，证据沿用节点全景，不另存成员列表或图片。尚未撰写房间描述时，查询返回 `description:null`，不自动拼接节点摘要。
 
 创建或刷新之前必须取得当前完整全景，可以直接使用 `move(after=panorama)` 的结果。编辑不隐式拍图；移动后不得把旧图绑定到新位置。示例：
 
 ```json
 {"operations":[{"op":"create","room":"living_room_1","description":"Sofa facing a TV; a bookshelf beside the dining entrance."}]}
 {"operations":[{"op":"update","id":"N001","refresh":true}]}
+{"operations":[{"op":"update","room":"living_room_1","description":"Sofa faces the TV; the dining entrance is beside the bookshelf."}]}
 ```
+
+不带 `id` 的房间更新替换整体描述（最多 1000 字符），`description:null` 清除描述而不改节点归属；它无需新观察，可与节点编辑同批提交。房间名必须已有节点引用或已有描述。节点重新分组、合并、删除后，房间成员自动变化；已有房间描述保留，模型根据新证据修订。
+
+当前节点快照使用上述对象格式；此前仅保存节点数组的实验原件保留，不直接作为当前格式恢复。
 
 节点模式读工具按目的分三支：
 
 | 读取 | 示例 | 回执 |
 |---|---|---|
 | 文本索引 | `{"mode":"text","query":"TV"}` | 节点摘要、位置和全景引用，不自动附图。单 `id` 读取详情，历史可分页。 |
+| 房间目录／详情 | `{"mode":"text","source":"rooms"}`，可加 `room` 或 `query` | 分页返回房间名、整体描述及节点 ID。`source:nodes` 按 `room` 查节点时也附房间描述。 |
 | 历史图片 | `{"mode":"image","refs":["N001"]}` | 返回 `node`、实际显示 `image`、全景 `group`、图片拍摄 `pose` 与固定 `anchor_pose`；裁剪使用新图片 ID。也可直接打开 `p_ / f_ / i_ / m_`。 |
 | 节点地图 | `{"mode":"map","view":"ego","radius_m":6}` | 空白底图、节点与实际微步轨迹；`node_index` 包含全部可见 ID＋房间，`records` 最多 5 条详细描述，优先高亮再取附近节点。 |
+| 按房间高亮 | `{"mode":"map","room":"living_room_1"}` | 默认展示已探索范围，高亮该房间全部节点并附整体描述；可叠加 `highlight`，显式 `local/ego` 则仍按裁剪范围显示。 |
 
 `mode:text, source:observations` 可以分页发现未挂节点的途中观察；全景六张图算一个事件，目标/问题图不会混入场景历史。历史图片的拍摄位姿和朝向不因节点刷新而改变。`p_` 是全景索引，读取后实际显示图统一返回对应 `i_`，与裁剪后的 `i_` 一样按显示尺寸选点；拼图内标为 `detail: f_` 的 ID 只用于单独打开原帧，不能配拼图坐标。
 
@@ -176,7 +185,8 @@ ID 后接 2–4 位数字；名称最多 40 字符、描述 300 字符、证据 
 ├── observations/index.jsonl     原始帧、位姿、全景分组
 ├── observations/views.jsonl     裁剪/拼图的来源与像素变换
 ├── observations/maps/           地图图片、视图变换索引
-├── memory/entities.json         正式实体；唯一写入口 memory_edit
+├── memory/entities.json         entity 模式的正式实体
+├── memory/nodes.json            node 模式的节点＋房间描述；两种模式仅保留各自文件
 └── scratch/                     自由笔记、脚本、计算结果；可写
 
 <run>/private/                   模型不可见
