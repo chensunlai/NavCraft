@@ -110,6 +110,37 @@ def _memory_delta(before, after):
             "revised": sorted(key for key in right.keys() & left.keys() if right[key] != left[key])}
 
 
+def _memory_records(memory, frames):
+    """Project node memory into display records without changing saved state."""
+    if isinstance(memory, list):
+        return deepcopy(memory)
+    groups = {}
+    for frame in frames.values():
+        if frame.get("kind") == "observation" and frame.get("group"):
+            groups.setdefault(frame["group"], []).append(frame)
+    for group in groups.values():
+        group.sort(key=lambda frame: frame.get("yaw", 0))
+    records, members = [], {}
+    for node in memory["nodes"]:
+        anchor = groups.get(node["anchor"], [])
+        evidence = list(dict.fromkeys(frame["frame"] for group in node["history"]
+                                     for frame in groups.get(group, [])))
+        records.append({"id": node["id"], "type": "node", "name": node["id"],
+                        "description": node["description"], "room": node["room"],
+                        "point": deepcopy(anchor[0].get("pose", {}).get("pos")) if anchor else None,
+                        "evidence": evidence})
+        if node["room"] is not None:
+            members.setdefault(node["room"], []).append(node)
+    for room in dict.fromkeys([*members, *memory["rooms"]]):
+        nodes = members.get(room, [])
+        evidence = list(dict.fromkeys(group[0]["frame"] for node in nodes
+                                     if (group := groups.get(node["panorama"]))))
+        records.append({"id": "room:" + room, "type": "room", "name": room,
+                        "description": memory["rooms"].get(room), "anchor": None,
+                        "nodes": [node["id"] for node in nodes], "evidence": evidence})
+    return records
+
+
 def _round_summary(row, specification, model):
     memory = row.get("memory", {})
     summary = {key: deepcopy(value) for key, value in row.items()
@@ -192,12 +223,15 @@ def _model_export(model_dir, output, assets, model_id=None):
                                                 if (path := _workspace_image(model_dir / "workspace", reference))]})
             continue
         if kind == "memory_changed":
-            memory = deepcopy(value["after"])
+            memory = _memory_records(value["after"], frames)
             if active is not None:
                 if active["memory_status"] == "No memory snapshot recovered yet.":
-                    active["memory_before"] = deepcopy(value["before"])
+                    active["memory_before"] = _memory_records(value["before"], frames)
                 active["memory_after"] = deepcopy(memory)
-                active["memory_status"] = "Exact recorded memory snapshots; locations and identities are model claims."
+                active["memory_status"] = (
+                    "Display records derived from saved node/room snapshots; descriptions and grouping are model claims."
+                    if isinstance(value["after"], dict) else
+                    "Exact recorded memory snapshots; locations and identities are model claims.")
             continue
         if active is None:
             continue
@@ -251,7 +285,8 @@ def _model_export(model_dir, output, assets, model_id=None):
         elif kind == "compaction_end":
             active["events"].append({"type": "notice", "time": timestamp,
                                      "text": "The recorded conversation was compacted at this point.", "images": []})
-    final_memory = _read(model_dir / "workspace/memory/entities.json", [])
+    memory_file = "nodes.json" if result.get("memory_type") == "node" else "entities.json"
+    final_memory = _memory_records(_read(model_dir / "workspace/memory" / memory_file, []), frames)
     for index, detail in enumerate(details):
         captured = frame_ranges.get(index, set())
         if captured:
