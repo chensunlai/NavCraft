@@ -64,7 +64,13 @@ export function countSummaryTokens(python: string, text: string, signal?: AbortS
 export function createNavigationCompaction(sharedStream: StreamFn, trace: CompactionTrace,
   python?: string): ExtensionFactory {
   return pi => {
+    let completedTurns = 0, retryAfterTurn = 0;
+    pi.on('turn_end', async () => { completedTurns++; });
     pi.on('session_before_compact', async (event, ctx) => {
+      if (event.reason === 'threshold' && completedTurns < retryAfterTurn) {
+        trace.emit('summary_compaction_skipped', { reason: 'failure_cooldown', remaining_turns: retryAfterTurn - completedTurns });
+        return { cancel: true };
+      }
       trace.emit('summary_compaction_start', { reason: event.reason, tokensBefore: event.preparation.tokensBefore });
       try {
         if (!ctx.model || !python) throw new Error('Compaction requires model and local tokenizer Python');
@@ -87,15 +93,17 @@ export function createNavigationCompaction(sharedStream: StreamFn, trace: Compac
         const result = await compact(preparation, auth.baseUrl ? { ...ctx.model, baseUrl: auth.baseUrl } : ctx.model,
           auth.apiKey, headers, event.customInstructions, event.signal, ctx.thinkingLevel, stream,
           auth.env, { enabled: false, maxRetries: 0, baseDelayMs: 0 }, undefined, ctx.sessionManager.getSessionId(),
-          { maxVisibleTokens: 300, countTokens: async text => {
+          { targetVisibleTokens: 1000, maxVisibleTokens: 2000, countTokens: async text => {
             const count = await countSummaryTokens(python, text, event.signal);
-            trace.emit('summary_length', { visible_tokens: count, limit: 300 });
+            trace.emit('summary_length', { visible_tokens: count, target: 1000, limit: 2000 });
             return count;
           } });
         event.signal.throwIfAborted();
+        retryAfterTurn = 0;
         trace.emit('summary_compaction_result', result);
         return { compaction: result };
       } catch (error) {
+        retryAfterTurn = completedTurns + 2;
         trace.emit('summary_compaction_cancelled', { error: String(error) });
         return { cancel: true };
       }

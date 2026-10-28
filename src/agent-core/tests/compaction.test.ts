@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentMessage, StreamFn } from '@earendil-works/pi-agent-core';
 import { createAssistantMessageEventStream, type AssistantMessage, type Model, type SimpleStreamOptions } from '@earendil-works/pi-ai';
-import { compact, SessionManager } from '@earendil-works/pi-coding-agent';
-import { completeRoundStarts, keepRecentRounds } from '../compaction.js';
+import { compact, SessionManager, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { completeRoundStarts, createNavigationCompaction, keepRecentRounds } from '../compaction.js';
 import { runtime } from '../session.js';
 
 function assistant(text: string, stopReason: AssistantMessage['stopReason'] = 'stop'): AssistantMessage {
@@ -78,15 +78,17 @@ async function summarize(outputs: AssistantMessage[]) {
     fileOps: { read: new Set(['memory/entities.json']), edited: new Set(), written: new Set() } },
     model, 'fixture', undefined, undefined, undefined, 'xhigh', stream,
     undefined, { enabled: false, maxRetries: 0, baseDelayMs: 0 }, undefined, 'fixture-session',
-    { maxVisibleTokens: 300, countTokens: async text => text.length });
+    { targetVisibleTokens: 1000, maxVisibleTokens: 2000, countTokens: async text => text.length });
   return { result, calls };
 }
 
 test('native short summary preserves xhigh and total output allowance, shortens once, and checks final text', async () => {
-  const { result, calls } = await summarize([assistant('x'.repeat(350)), assistant('Door still uncertain. Inspect its far side.')]);
+  const { result, calls } = await summarize([assistant('x'.repeat(2001)), assistant('Door still uncertain. Inspect its far side.')]);
   assert.equal(calls.length, 2);
   assert.ok(calls.every(call => call.options?.maxTokens === 8192 && call.options.reasoning === 'xhigh'));
   assert.match(JSON.stringify(calls[0].context), /task_read/);
+  assert.match(JSON.stringify(calls[0].context), /at most 1000 visible tokens/);
+  assert.match(JSON.stringify(calls[0].context), /hard maximum of 2000 visible tokens/);
   assert.doesNotMatch(JSON.stringify(calls[0].context), /host separately supplies/);
   assert.match(JSON.stringify(calls[1].context), /draft-summary/);
   assert.doesNotMatch(result.summary, /read-files|Turn Context|memory\/entities/);
@@ -95,7 +97,38 @@ test('native short summary preserves xhigh and total output allowance, shortens 
 });
 
 test('two overlong summaries fail without truncation or unbounded retries', async () => {
-  await assert.rejects(summarize([assistant('x'.repeat(301)), assistant('y'.repeat(301))]), /visible token limit/);
+  await assert.rejects(summarize([assistant('x'.repeat(2001)), assistant('y'.repeat(2001))]), /visible token limit/);
+});
+
+test('summaries within the hard maximum are accepted even above the preferred target', async () => {
+  for (const length of [1000, 1001, 2000]) {
+    const { result, calls } = await summarize([assistant('x'.repeat(length))]);
+    assert.equal(calls.length, 1);
+    assert.equal(result.summary.length, length);
+  }
+});
+
+test('failed automatic compaction waits two turns; manual and overflow remain available', async () => {
+  const handlers = new Map<string, (event: never, context: never) => unknown>();
+  const events: string[] = [];
+  const pi = { on: (name: string, handler: (event: never, context: never) => unknown) => handlers.set(name, handler) };
+  const stream: StreamFn = () => { throw new Error('No model request expected without a tokenizer'); };
+  await createNavigationCompaction(stream, { emit: type => events.push(type) })(pi as unknown as ExtensionAPI);
+  const attempt = async (reason: string) => handlers.get('session_before_compact')!(
+    { reason, preparation: { tokensBefore: 25000 } } as never, {} as never);
+  const turn = async () => handlers.get('turn_end')!({} as never, {} as never);
+  await attempt('threshold');
+  await attempt('threshold');
+  await turn();
+  await attempt('threshold');
+  assert.equal(events.filter(type => type === 'summary_compaction_start').length, 1);
+  assert.equal(events.filter(type => type === 'summary_compaction_skipped').length, 2);
+  await turn();
+  await attempt('threshold');
+  await attempt('manual');
+  await attempt('overflow');
+  assert.equal(events.filter(type => type === 'summary_compaction_start').length, 4);
+  assert.equal(events.filter(type => type === 'summary_compaction_cancelled').length, 4);
 });
 
 test('reasoning-only, truncated and tool-producing summaries cannot replace history', async () => {
