@@ -253,6 +253,7 @@ class HarnessSession:
                  "current_question": self._current_question, "question_frames": self._question_frames,
                  "submitted_requests": self._prompts, "pose": self.current["pose"],
                  "frame": self.current["frame"], "target_frames": self._target_frames,
+                 "frame_size": self.observations.image(self.current["frame"])["size"],
                  "recorded_entities": entities, "scratch_files": files[:100],
                  "notes_directory": "scratch/; list it for files written since this snapshot"}
         if len(files) > 100:

@@ -37,6 +37,8 @@ def core_options(config, repo, directory, workspace, tools, checkpoint):
     system_prompt = prompt_path.read_text()
     if config.get("tool_tier", "basic") == "super":
         system_prompt += "\nSuper geometry is enabled. RGB depth stays private. Shared image/pixel references use the displayed image's pixels, including registered crops and panoramas. A projected pixel is a surface, not necessarily an object centre or doorway. move(face/approach) acts on your selected point; reached is not task success. Memory fields.location can resolve that same reference. Geometry cannot recognize mirrors or glass.\n"
+    else:
+        system_prompt += "\nBasic tools are active: move uses steps only. Map-image pixels can be converted to global UV; RGB pixels cannot be projected to the map. Use supported map references or evidence-based UV estimates, and leave uncertain locations null.\n"
 
     return {"workspace": str(workspace), "directory": str(directory),
             "budgetFile": str(Path(directory) / "private/requests.json"),

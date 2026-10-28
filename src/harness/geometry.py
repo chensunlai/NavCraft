@@ -17,13 +17,14 @@ def _records(path, key):
     return {row[key]: row for row in map(json.loads, path.read_text().splitlines()) if row}
 
 
-def _pixel(pixel, width, height):
+def validate_pixel(pixel, width, height, image_id):
     if (not isinstance(pixel, (list, tuple)) or len(pixel) != 2
             or any(type(value) not in (int, float) or not math.isfinite(value) for value in pixel)):
         raise ValueError("pixel must be a finite [x, y] pair")
     x, y = pixel
     if not 0 <= x < width or not 0 <= y < height:
-        raise ValueError("pixel_out_of_bounds")
+        raise ValueError(f"pixel_out_of_bounds: image={image_id}; size={width}x{height}; "
+                         f"valid x:[0,{width}), y:[0,{height})")
     return x, y
 
 
@@ -78,7 +79,7 @@ class Geometry:
     def resolve_frame_point(self, frame, pixel):
         """Return an unrounded world point for internal motion and memory operations."""
         depth, camera = self.load_frame(frame)
-        x, y = _pixel(pixel, camera["width"], camera["height"])
+        x, y = validate_pixel(pixel, camera["width"], camera["height"], frame)
         ix, iy = min(round(x), camera["width"] - 1), min(round(y), camera["height"] - 1)
         value = depth[iy, ix]
         if not self._depth_valid(value, camera):
@@ -115,10 +116,11 @@ class Geometry:
         if view_id not in views:
             raise ValueError(f"Unknown map view: {view_id}")
         view = views[view_id]
-        x, y = _pixel(pixel, view["width"], view["height"])
+        x, y = validate_pixel(pixel, view["width"], view["height"], view_id)
         left, top, right, bottom = view["plot_bounds"]
         if not left <= x <= right or not top <= y <= bottom:
-            raise ValueError("pixel_outside_map_plot")
+            raise ValueError(f"pixel_outside_map_plot: image={view_id}; "
+                             f"valid plot x:[{left},{right}], y:[{top},{bottom}]")
         uv = np.asarray(apply_affine(view["pixel_to_uv"], [x, y]))
         if not np.isfinite(uv).all() or np.any(uv < -1e-10) or np.any(uv > 1 + 1e-10):
             raise ValueError("outside_canvas")

@@ -149,7 +149,8 @@ class SpatialTools:
             if reference.startswith("m_"):
                 return {**self.geometry.resolve_map(reference, pixel), "height": 0, "observed": False}
             if not self.enabled:
-                raise ValueError("RGB projection requires super tools")
+                raise ValueError("Basic tools cannot project RGB pixels. Use a map image (m_) and pixel, "
+                                 "or global UV; omit an uncertain location rather than using the camera position.")
             value = self.geometry.resolve_frame(reference, pixel)
             if not value["valid"]:
                 raise ValueError(value["reason"])

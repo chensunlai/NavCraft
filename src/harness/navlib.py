@@ -30,6 +30,7 @@ def bearing_distance(pose, uv):
 
 
 def project(pose, bearing_deg, distance_m):
+    """Estimate UV from a right-positive bearing and assumed distance; no RGB/depth lookup."""
     return project_uv(pose, bearing_deg, distance_m, _map())
 
 

@@ -50,6 +50,16 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(original, self.store.path.read_bytes())
         self.assertNotIn("error", self.store.edit([self.create("R01", "room")]))
 
+    def test_invalid_id_reports_type_prefix_and_does_not_reserve_batch(self):
+        for kind, prefix in (("room", "R"), ("door", "D"), ("object", "O")):
+            result = self.store.edit([
+                self.create("O99", "object"), self.create(prefix.lower() + "01", kind),
+            ])
+            self.assertIn(f"{kind} ID must use uppercase {prefix}", result["error"])
+            self.assertIn(f"2-4 digits, e.g. {prefix}01", result["error"])
+            self.assertEqual(self.store.entities, [])
+        self.assertNotIn("error", self.store.edit([self.create("O99", "object")]))
+
     def test_deleted_id_cannot_be_reused_after_reopen(self):
         self.store.edit([self.create("R01", "room")])
         self.store.edit([{"op": "delete", "id": "R01"}])
@@ -112,11 +122,19 @@ class MemoryTests(unittest.TestCase):
         self.assertIn("error", self.store.edit([{"op": "update", "id": "R01", "fields": {"type": "object"}}]))
         self.assertIn("error", self.store.read(ids=["R01"], filter={"type": "room"}))
 
+    def test_unknown_evidence_identifies_only_invalid_references(self):
+        result = self.store.edit([self.create("O01", "object", evidence=["f_0001", "f_9999", "f_9998"])])
+        self.assertIn("unknown frame IDs: f_9999, f_9998", result["error"])
+        self.assertIn("observed scene frames only", result["error"])
+        self.assertNotIn("f_0001", result["error"])
+        self.assertEqual(self.store.entities, [])
+
     def test_target_image_is_not_proof_of_an_observed_entity(self):
         with (self.root / "observations/index.jsonl").open("a") as stream:
             stream.write(json.dumps({"frame": "f_0003", "kind": "target", "pose": None}) + "\n")
         result = self.store.edit([self.create("O01", "object", evidence=["f_0003"])])
         self.assertIn("observed scene frames", result["error"])
+        self.assertIn("f_0003", result["error"])
         self.assertEqual(self.store.entities, [])
         self.assertNotIn("error", self.store.edit([self.create("O01", "object", evidence=["f_0000"])]))
 

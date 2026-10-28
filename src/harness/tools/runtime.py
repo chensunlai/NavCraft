@@ -4,6 +4,7 @@ import uuid
 
 from src.common.actions import ACTIONS
 from src.common.coordinates import world_to_uv
+from ..memory_feedback import memory_feedback
 
 
 class NavigationTools:
@@ -23,6 +24,7 @@ class NavigationTools:
             s.current = s._capture(s.environment.observe())
             views = [s.current]
             value = {key: s.current[key] for key in ("frame", "step", "pose")}
+            value["size"] = s.observations.image(s.current["frame"])["size"]
             refs, labels = [s.current["path"]], [f"[CURRENT {s.current['frame']}]"]
         else:
             pose = s.environment.pose()
@@ -31,8 +33,9 @@ class NavigationTools:
                      for i, obs in enumerate(s.environment.panorama())]
             s.current = views[0]
             image = s.observations.grid([v["frame"] for v in views])
-            value = {"image": image["image"], "group": group,
-                     "views": [{"frame": v["frame"], "yaw": v["yaw"]} for v in views],
+            value = {"image": image["image"], "size": image["size"], "group": group,
+                     "views": [{"frame": v["frame"], "yaw": v["yaw"],
+                                "size": s.observations.image(v["frame"])["size"]} for v in views],
                      "step": s.environment.steps, "pose": s.current["pose"]}
             refs, labels = [image["path"]], [f"[CURRENT {image['image']} | six views already attached]"]
         s._publish_state()
@@ -88,6 +91,7 @@ class NavigationTools:
                                    max_actions=40 if max_actions is None else max_actions)
         else:
             raise ValueError("mode must be steps, face or approach")
+        value["size"] = s.observations.image(s.current["frame"])["size"]
         refs = [s.current["path"]] if value["done"] else []
         labels = [f"[CURRENT {s.current['frame']}]"] if refs else []
         if after == "panorama":
@@ -182,22 +186,42 @@ class NavigationTools:
                         frames.append(evidence[i]["frame"])
         selected = frames[:2]
         result["attached_evidence"] = selected
-        return s._reply(result, [s.observations.get(fid)["path"] for fid in selected],
-                        [f"[HISTORY {fid} | recorded evidence, not verified]" for fid in selected])
+        images = [s.observations.image(fid) for fid in selected]
+        return s._reply(result, [row["path"] for row in images],
+                        [f"[HISTORY {row['image']} | {row['size'][0]}x{row['size'][1]} | recorded evidence, not verified]"
+                         for row in images])
 
     def edit_memory(self, operations):
         s = self.session
-        before = s.trace.store(s.memory.entities)
-        operations, sources = s.spatial.prepare_edits(operations)
+        requested = operations
+        before_entities = s.memory.entities
+        before = s.trace.store(before_entities)
+        try:
+            operations, sources = s.spatial.prepare_edits(operations)
+        except (ValueError, TypeError, KeyError) as error:
+            return s._reply({"error": f"{error}. No memory changes applied."}, error=True)
         result = s.memory.edit(operations)
-        if "error" not in result:
-            s.spatial.remember_sources(operations, sources)
-            s._revision += 1
-            s.trace.emit("memory_changed", {"before": before, "after": s.trace.store(s.memory.entities)})
-            identifiers = {change["id"] for change in result["changes"]}
-            result["entities"] = [{k: e[k] for k in ("id", "point", "anchor", "room", "connects", "passage", "evidence") if k in e}
-                                  for e in s.memory.entities if e["id"] in identifiers]
-        return s._reply(result, error="error" in result)
+        if "error" in result:
+            result["error"] += ". No memory changes applied."
+            return s._reply(result, error=True)
+        s.spatial.remember_sources(operations, sources)
+        s._revision += 1
+        s.trace.emit("memory_changed", {"before": before, "after": s.trace.store(s.memory.entities)})
+        identifiers = {change["id"] for change in result["changes"]}
+        result["entities"] = [{k: e[k] for k in ("id", "point", "anchor", "room", "connects", "passage", "evidence") if k in e}
+                              for e in s.memory.entities if e["id"] in identifiers]
+        try:
+            preview = memory_feedback(s, requested, before_entities)
+        except Exception as error:
+            # The edit is committed. A failed preview must not invite a duplicate write.
+            result["preview_error"] = f"Memory saved; visual feedback unavailable ({type(error).__name__}). Read the existing record; do not repeat create."
+            s.trace.emit("memory_preview_error", {"error": str(error)})
+            return s._reply(result)
+        if preview is None:
+            return s._reply(result)
+        result["preview"] = {k: v for k, v in preview.items() if k != "path"}
+        return s._reply(result, [preview["path"]],
+                        [f"[MEMORY EDIT {preview['image']} | selected pixels and saved locations; not verified]"])
 
     def execute(self, name, args):
         s = self.session

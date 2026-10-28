@@ -125,6 +125,8 @@ def test_target_has_no_private_pose_and_panorama_restores_current(session):
     reply = session._tool("pano", "observe", {"mode": "panorama"})
     metadata = json.loads(reply["result"]["content"][0]["text"])
     assert len(metadata["views"]) == 6
+    assert metadata["size"] == [1920, 1012]
+    assert all(view["size"] == [640, 480] for view in metadata["views"])
     assert session.current["frame"] == metadata["views"][0]["frame"]
     assert session.environment.steps == 0
 
@@ -198,6 +200,8 @@ def test_move_with_panorama_returns_one_reusable_image_and_keeps_motion_receipt(
     assert value["after"]["executed"] and len(value["after"]["views"]) == 6
     assert value["after"]["pose"] == session.current["pose"]
     assert value["frame"] == value["after"]["views"][0]["frame"]
+    assert value["size"] == [640, 480]
+    assert value["after"]["size"] == [1920, 1012]
     assert len(receipt["result"]["images"]) == 1
     assert session.observations.image(value["after"]["image"])["path"] == receipt["result"]["images"][0]
     assert session.observations.resolve_pixel(value["after"]["image"], [320, 260]) == (
@@ -293,6 +297,7 @@ def test_failed_memory_edit_preserves_revision_and_change_history(session):
         {"op": "create", "id": "O01", "type": "object", "fields": {"name": "chair", "room": "R99"}},
     ]})
     assert invalid["result"]["isError"]
+    assert "No memory changes applied" in invalid["result"]["content"][0]["text"]
     assert session.memory.entities == []
     assert session.checkpoint()["revision"] == revision
     trace = session.private / "trace.jsonl"
@@ -306,6 +311,69 @@ def test_failed_memory_edit_preserves_revision_and_change_history(session):
     changes = [event["data"] for event in read_trace(trace) if event["type"] == "memory_changed"]
     assert len(changes) == 1
     assert changes[0]["before"] != changes[0]["after"]
+
+
+def test_memory_location_validation_reports_unchanged_batch(session):
+    revision = session.checkpoint()["revision"]
+    operations = [
+        {"op": "create", "id": "R01", "type": "room", "fields": {"name": "room"}},
+        {"op": "create", "id": "O01", "type": "object", "fields": {
+            "name": "chair", "point": [.5, .5], "location": {"uv": [.6, .6]}}},
+    ]
+    invalid = session._tool("location-conflict", "memory_edit", {"operations": operations})
+    text = invalid["result"]["content"][0]["text"]
+    assert invalid["result"]["isError"]
+    assert "location cannot be combined" in text and "No memory changes applied" in text
+    assert session.memory.entities == [] and session.checkpoint()["revision"] == revision
+    del operations[1]["fields"]["location"]
+    valid = session._tool("location-fixed", "memory_edit", {"operations": operations})
+    assert not valid["result"]["isError"]
+    assert {entity["id"] for entity in session.memory.entities} == {"R01", "O01"}
+
+
+def test_basic_memory_location_recovery_uses_map_without_rgb_projection(session):
+    operation = {"op": "create", "id": "O01", "type": "object", "fields": {
+        "name": "chair", "evidence": [session.current["frame"]],
+        "location": {"image": session.current["frame"], "pixel": [320, 240]}}}
+    reply = session._tool("rgb-point", "memory_edit", {"operations": [operation]})
+    error = json.loads(reply["result"]["content"][0]["text"])["error"]
+    assert reply["result"]["isError"] and "map image (m_)" in error
+    assert "No memory changes applied" in error and session.memory.entities == []
+    mapped = session._tool("map-point", "map_view", {"view": {"ego": 2}})
+    view = json.loads(mapped["result"]["content"][0]["text"])["view_id"]
+    record = json.loads((session.workspace / "observations/maps/index.jsonl").read_text().splitlines()[-1])
+    left, top, right, bottom = record["plot_bounds"]
+    operation["fields"]["location"] = {"image": view, "pixel": [(left + right) / 2, (top + bottom) / 2]}
+    fixed = session._tool("map-location-fixed", "memory_edit", {"operations": [operation]})
+    assert not fixed["result"]["isError"]
+    assert session.memory.entities[0]["point"] == pytest.approx(session.current["pose"]["pos"])
+    assert session.memory.entities[0]["evidence"] == [session.current["frame"]]
+    assert session.environment.steps == 0 and not session.spatial.enabled
+
+
+@pytest.mark.parametrize("stage", ["write", "provenance"])
+def test_memory_error_after_write_does_not_claim_unchanged(session, monkeypatch, stage):
+    if stage == "write":
+        from src.harness import memory
+        original = memory.atomic_json
+
+        def fail_after_write(path, value):
+            original(path, value)
+            if path == session.memory.path:
+                raise ValueError("Failure after memory write")
+
+        monkeypatch.setattr(memory, "atomic_json", fail_after_write)
+    else:
+        def fail_provenance(operations, sources):
+            raise ValueError("Failure after memory write")
+
+        monkeypatch.setattr(session.spatial, "remember_sources", fail_provenance)
+    reply = session._tool("post-write-error", "memory_edit", {"operations": [
+        {"op": "create", "id": "R01", "type": "room", "fields": {"name": "room"}},
+    ]})
+    assert reply["result"]["isError"]
+    assert "No memory changes applied" not in reply["result"]["content"][0]["text"]
+    assert [entity["id"] for entity in session.memory.entities] == ["R01"]
 
 
 def test_imported_observation_cannot_point_to_private_file(session):

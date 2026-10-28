@@ -176,12 +176,13 @@ class MemoryStore:
             for identifier, entity in state.items():
                 context = touched.get(identifier, f"Entity {identifier}: ")
                 self._validate(entity, state, frames)
-            # Reserve IDs first: even an interrupted public replace cannot reuse an issued ID.
-            atomic_json(self.used_path, sorted(used))
-            atomic_json(self.path, list(state.values()))
-            return {"changes": changes}
         except (ValueError, KeyError, TypeError, StopIteration) as exc:
             return {"error": context + str(exc)}
+        # Write failures must not be reported as validation failures with no changes.
+        # Reserve IDs first: even an interrupted public replace cannot reuse an issued ID.
+        atomic_json(self.used_path, sorted(used))
+        atomic_json(self.path, list(state.values()))
+        return {"changes": changes}
 
     @staticmethod
     def _keys(value, allowed):
@@ -190,8 +191,11 @@ class MemoryStore:
 
     @staticmethod
     def _id(identifier, kind):
-        if kind not in PREFIXES or not isinstance(identifier, str) or not re.fullmatch(PREFIXES[kind] + r"\d{2,4}", identifier):
-            raise ValueError("ID must use the type's prefix followed by 2-4 digits")
+        if kind not in PREFIXES:
+            raise ValueError("type must be room, door or object")
+        prefix = PREFIXES[kind]
+        if not isinstance(identifier, str) or not re.fullmatch(prefix + r"\d{2,4}", identifier):
+            raise ValueError(f"{kind} ID must use uppercase {prefix} followed by 2-4 digits, e.g. {prefix}01")
 
     def _fields(self, fields, kind):
         if not isinstance(fields, dict):
@@ -251,10 +255,14 @@ class MemoryStore:
         evidence = entity.get("evidence")
         if not isinstance(evidence, list) or len(evidence) > 10 or any(not isinstance(i, str) for i in evidence):
             raise ValueError("evidence must be an array of at most 10 frame IDs")
-        if any(i not in frames for i in evidence):
-            raise ValueError("evidence contains unknown frame IDs")
-        if any(frames[i].get("kind") != "observation" for i in evidence):
-            raise ValueError("evidence requires observed scene frames, not target or question images")
+        unknown = [i for i in evidence if i not in frames]
+        if unknown:
+            raise ValueError("evidence contains unknown frame IDs: " + ", ".join(unknown)
+                             + "; use observed scene frames only")
+        unobserved = [i for i in evidence if frames[i].get("kind") != "observation"]
+        if unobserved:
+            raise ValueError("evidence requires observed scene frames, not target or question images: "
+                             + ", ".join(unobserved))
         for key in ("point", "anchor"):
             if entity.get(key) is not None:
                 self._point(entity[key])

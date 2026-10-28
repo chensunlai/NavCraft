@@ -52,18 +52,20 @@ pose = {"pos":[u,v], "heading":角度}
 
 `f_` 是原始观察或目标图，`m_` 是地图视图，`i_` 是裁剪或拼图。派生图记录来源及像素变换，选点可递归回到原帧或原地图；拼图标题和留白不能选点。地图图像可以直接回到 UV；RGB 需要 super 档的私有深度。目标参考图没有深度，不能用于 RGB 反投影。
 
+观察、移动及重开图片的回执包含实际图片的 `size:[width,height]`；初始与压缩后的当前图尺寸在事实头的 `frame_size` 中。`pixel:[x,y]` 必须对应所选 ID 的图片，不能把整张全景的像素传给其中的原帧。越界错误给出图片 ID、尺寸和合法范围，不自动截断坐标；例如 `pixel_out_of_bounds: image=f_0001; size=640x480; valid x:[0,640), y:[0,480)`。
+
 ## 七个工具与固定搭配
 
 回执以 JSON 为主，图片前标注 `CURRENT / HISTORY / MAP / TARGET / QUESTION`，重新打开的派生图标为 `VIEW`。下表输入均为实际可调用参数；示例中的 ID 须已经存在。
 
 | 工具与设计目的 | 输入例子 | 输出与自动附带内容 |
 |---|---|---|
-| `observe`：取得新的视觉证据 | `{"mode":"panorama","project":true}` | 全景 `image/group/views[{frame,yaw}]/step/pose` 和一张六视图拼图；`project:true` 在 super 档再附局部 RGB 投影地图。默认 `mode:current` 返回 `frame/step/pose` 和当前单图。 |
-| `move`：执行运动并看结果 | `{"mode":"steps","actions":["turn_right","move_forward"],"after":"panorama"}` | `done/stop/frame/step/pose`，有碰撞或受阻时加 `events`；默认附动作终点 RGB，`after:panorama` 附终点全景并报告观察是否执行。 |
+| `observe`：取得新的视觉证据 | `{"mode":"panorama","project":true}` | 全景 `image/size/group/views[{frame,yaw,size}]/step/pose` 和一张六视图拼图；`project:true` 在 super 档再附局部 RGB 投影地图。默认 `mode:current` 返回 `frame/size/step/pose` 和当前单图。 |
+| `move`：执行运动并看结果 | `{"mode":"steps","actions":["turn_right","move_forward"],"after":"panorama"}` | `done/stop/frame/size/step/pose`，有碰撞或受阻时加 `events`；默认附动作终点 RGB，`after:panorama` 附终点全景并报告观察是否执行。 |
 | `map_view`：将空间判断放到同一张图上 | `{"view":{"ego":6},"highlight":["D01"],"project":{"source":"f_0012","points":[[320,240]]}}` | `view_id/map/bounds/image_size/warnings/records` 加地图；`records` 最多 12 条，优先对应显式高亮，否则取图内实体。投影点加 `source/points`，紫色 `P1…` 仅为临时标记。 |
 | `view_images`：查已有证据，保留选点依据 | `{"images":[{"image":"f_0012","crop":[0.2,0.1,0.8,0.9]}],"layout":"separate"}` | `images` 列返回图 ID、可用的帧/位姿信息或派生图尺寸，附图片；裁剪/拼图得到新 `i_`，原图保留。无新观察、无移动。 |
 | `memory_read`：从地图简表展开具体记录 | `{"ids":["D01","O01"]}` | 完整实体，证据转为 `{frame,step,pose,...}`；默认附最多两张不同帧的证据图，列 `attached_evidence`。查询匹配总数不超过 5 也返回详情，否则分页简表。 |
-| `memory_edit`：一次完成记录修改与位置解析 | `{"operations":[{"op":"update","id":"O01","fields":{"location":{"image":"f_0012","pixel":[320,240]}}}]}` | `changes` 与改后实体的坐标、关系、证据字段；删除项只在 `changes` 中出现。默认不附地图。像素来源证据自动加入，更新位置时保留未显式替换的旧证据。 |
+| `memory_edit`：一次完成记录修改与位置解析 | `{"operations":[{"op":"update","id":"O01","fields":{"location":{"image":"f_0012","pixel":[320,240]}}}]}` | `changes` 与改后实体的坐标、关系、证据字段；删除项只在 `changes` 中出现。写入位置时附一张源图选点＋保存后地图点的合图。像素来源证据自动加入，更新位置时保留未显式替换的旧证据。 |
 | `submit`：明确交还当前请求 | `{}` 或 `{"answer":"O01"}` | 仅 `{"submitted":true}`；后续同批调用不再执行。没有成功/失败判定。 |
 
 补充参数保持在各工具内：
@@ -72,6 +74,7 @@ pose = {"pos":[u,v], "heading":角度}
 - `map_view.view` 还支持 `explored`、`full`、`{"around":[ID]}`、`{"around_self":米}`；`labels` 为 `id/name/both/none`。super 的 `overlay:[f_...]` 把最多六张已有观察投影到地图，不修改正式记忆。公开回执省略仿射矩阵，原变换保存在视图索引。
 - `view_images.images` 最多六项，`crop` 是该来源图的归一化 `[left,top,right,bottom]`；`layout:grid` 拼成一张图。
 - `memory_read` 用 `ids` 或 `filter:{type,room,category,located}`，`limit` 默认 30、最大 300，`offset` 默认 0；super 支持 `near:{self:米}` 或 `{entity:ID,radius:米}`，附相对当前身体的方位和距离。未附的证据图仍可按帧号打开。
+- `memory_edit` 的合图最多包含两张源图和一张局部地图，尺寸最多 960×520；直接写 UV 或合并继承位置时可只有地图。合图有独立 `i_`，可重新打开或选点；其标记表示模型选择与已保存位置，不表示识别正确。只改文字、删除或清空位置不附图；绘图失败时明确返回“记忆已保存”，避免误重试写入。
 
 ### 运动边界
 
@@ -83,7 +86,7 @@ super 另提供 `mode:face/approach`，共用 `target` 引用和 `max_actions:1�
 
 ```json
 {"done":[["turn_right",1],["move_forward",2]],"stop":"blocked",
- "frame":"f_0042","step":36,"pose":{"pos":[0.4123,0.5871],"heading":96.0},
+ "frame":"f_0042","size":[640,480],"step":36,"pose":{"pos":[0.4123,0.5871],"heading":96.0},
  "events":[{"i":3,"collision":true,"blocked":true,"auto_yaw":6.0}]}
 ```
 

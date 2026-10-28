@@ -85,7 +85,9 @@ def test_locate_returns_numbered_map_without_motion_or_memory_edits(session):
                                              "points": [[280, 240], [-1, 0], [360, 240]]}})
     assert not receipt["result"]["isError"]
     assert [point["label"] for point in value["points"]] == ["P1", "P2", "P3"]
-    assert value["points"][1] == {"label": "P2", "error": "pixel_out_of_bounds"}
+    assert value["points"][1]["label"] == "P2"
+    assert value["points"][1]["error"] == (f"pixel_out_of_bounds: image={session.current['frame']}; size=640x480; "
+                                            "valid x:[0,640), y:[0,480)")
     assert len(receipt["result"]["images"]) == 1
     assert (session.workspace / receipt["result"]["images"][0]).is_file()
     assert {"points", "view_id", "records"} <= value.keys()
@@ -102,7 +104,9 @@ def test_locate_returns_numbered_map_without_motion_or_memory_edits(session):
 def test_map_projection_keeps_per_point_errors_without_changing_memory(session):
     receipt, value = call(session, "map_view", {"project": {"source": session.current["frame"], "points": [[-1, 0]]}})
     assert not receipt["result"]["isError"]
-    assert value["points"] == [{"label": "P1", "error": "pixel_out_of_bounds"}]
+    assert value["points"] == [{"label": "P1", "error": (
+        f"pixel_out_of_bounds: image={session.current['frame']}; size=640x480; "
+        "valid x:[0,640), y:[0,480)")}]
     assert len(receipt["result"]["images"]) == 1 and "view_id" in value
     assert session.memory.entities == []
 

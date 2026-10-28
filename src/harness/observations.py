@@ -10,6 +10,7 @@ from PIL import Image, ImageDraw
 
 
 from src.common.coordinates import map_pose
+from .geometry import validate_pixel
 
 
 class Observations:
@@ -61,8 +62,8 @@ class Observations:
     def image(self, reference):
         """Resolve only registered public images, including crops and map views."""
         if reference in self.items:
-            return {"image": reference, **self.items[reference]}
-        if reference in self.views:
+            row = {"image": reference, **self.items[reference]}
+        elif reference in self.views:
             row = self.views[reference]
         else:
             path = self.directory / "maps/index.jsonl"
@@ -73,17 +74,13 @@ class Observations:
         path = (self.workspace / row["path"]).resolve()
         if not path.is_relative_to(self.directory.resolve()) or not path.is_file():
             raise ValueError("Image is outside the public image directory")
-        return row
+        with Image.open(path) as image:
+            return {**row, "size": list(image.size)}
 
     def resolve_pixel(self, reference, pixel):
         """Map a displayed pixel to its original frame or map view."""
         row = self.image(reference)
-        with Image.open(self.workspace / row["path"]) as image:
-            width, height = image.size
-        if (not isinstance(pixel, (list, tuple)) or len(pixel) != 2
-                or any(type(v) not in (int, float) or not math.isfinite(v) for v in pixel)
-                or not 0 <= pixel[0] < width or not 0 <= pixel[1] < height):
-            raise ValueError("pixel_out_of_bounds")
+        validate_pixel(pixel, *row["size"], reference)
         if reference not in self.views:
             return reference, list(pixel)
         for tile in row["sources"]:
@@ -91,7 +88,8 @@ class Observations:
             if left <= pixel[0] < right and top <= pixel[1] < bottom:
                 mapped = [a * pixel[0] + b * pixel[1] + c for a, b, c in tile["pixel_to_source"]]
                 return self.resolve_pixel(tile["image"], mapped)
-        raise ValueError("pixel_is_in_label_or_padding")
+        raise ValueError(f"pixel_is_in_label_or_padding: image={reference}; select inside an image tile, "
+                         "or reopen its original frame ID")
 
     def _save_view(self, image, sources):
         number = max((int(key[2:]) for key in self.views), default=0) + 1
@@ -138,6 +136,6 @@ class Observations:
             sx, sy = original[0] / image.width, original[1] / image.height
             sources.append({"image": reference, "bounds": [x, y, x + image.width, y + image.height],
                             "pixel_to_source": [[sx, 0, -sx * x], [0, sy, -sy * y]]})
-            caption = reference + (f" | right {row['yaw']} deg" if "yaw" in row else "")
+            caption = f"{reference} | {original[0]}x{original[1]}" + (f" | right {row['yaw']} deg" if "yaw" in row else "")
             draw.text((x + 5, y - 20), caption, fill="black")
         return self._save_view(result, sources)

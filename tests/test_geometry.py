@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 from PIL import Image
 
-from src.harness.geometry import Geometry
+from src.harness.geometry import Geometry, validate_pixel
 from src.harness.maps import MapRenderer
 
 
@@ -79,6 +79,27 @@ class GeometryTests(unittest.TestCase):
         self._frame(camera)
         self.assertEqual(self.geometry.resolve_frame("f_0001", [2, 2])["reason"], "outside_canvas")
 
+    def test_pixel_bounds_feedback_identifies_image_and_public_dimensions(self):
+        expected = "pixel_out_of_bounds: image=f_0001; size=5x5; valid x:[0,5), y:[0,5)"
+        for pixel in ([-1, 2], [5, 2], [2, 5]):
+            with self.subTest(pixel=pixel):
+                self.assertEqual(self.geometry.resolve_frame("f_0001", pixel),
+                                 {"valid": False, "reason": expected})
+                with self.assertRaises(ValueError) as failure:
+                    self.geometry.resolve_frame_point("f_0001", pixel)
+                self.assertEqual(str(failure.exception), expected)
+        # Image-space boundaries stay half-open; valid fractional pixels retain
+        # the existing nearest-depth-pixel behavior rather than being rejected.
+        self.assertEqual(validate_pixel([0, 4.9], 5, 5, "f_0001"), (0, 4.9))
+        self.assertEqual(self.geometry.resolve_frame("f_0001", [0, 4.9]),
+                         self.geometry.resolve_frame("f_0001", [0, 4]))
+
+    def test_pixel_type_errors_do_not_attempt_projection(self):
+        for pixel in ([math.nan, 2], [math.inf, 2], [True, 2], ["1", 2], [2], None):
+            with self.subTest(pixel=pixel):
+                self.assertEqual(self.geometry.resolve_frame("f_0001", pixel),
+                                 {"valid": False, "reason": "pixel must be a finite [x, y] pair"})
+
     def test_rotated_map_affine_round_trip_and_margin_rejection(self):
         matrix = np.array([[0, -.001, .6], [.001, 0, .4]])
         view = {"view_id": "m_0001", "width": 200, "height": 200,
@@ -92,6 +113,14 @@ class GeometryTests(unittest.TestCase):
         for pixel in ([10, 100], [100, 190], [200, 100]):
             with self.assertRaises(ValueError):
                 self.geometry.resolve_map("m_0001", pixel)
+        with self.assertRaises(ValueError) as failure:
+            self.geometry.resolve_map("m_0001", [200, 100])
+        self.assertEqual(str(failure.exception),
+                         "pixel_out_of_bounds: image=m_0001; size=200x200; valid x:[0,200), y:[0,200)")
+        with self.assertRaises(ValueError) as failure:
+            self.geometry.resolve_map("m_0001", [10, 100])
+        self.assertEqual(str(failure.exception),
+                         "pixel_outside_map_plot: image=m_0001; valid plot x:[20,180], y:[20,180]")
 
     def test_invalid_source_and_pixel_references_are_rejected(self):
         with self.assertRaises(ValueError):
