@@ -90,20 +90,14 @@ class CoreClient:
         return response.get("data")
 
     def run_prompt(self, text, images, tool_handler, seconds, on_event=None,
-                   cancel_event=None, prompt_id=None, mode="prompt", max_turns=None):
+                   cancel_event=None, prompt_id=None, max_turns=None):
         """Pump callbacks while Pi runs; never wait for settled before handling tools."""
         prompt_id = prompt_id or uuid.uuid4().hex
         wait_before = wait_seconds(self.directory)
-        if mode not in {"prompt", "continue"}:
-            raise ValueError("mode must be prompt or continue")
-        args = {"seconds": seconds}
-        if mode == "prompt":
-            args.update(text=text, images=images)
-        elif text or images:
-            raise ValueError("Continuation cannot append text or images")
+        args = {"seconds": seconds, "text": text, "images": images}
         if max_turns is not None:
             args["maxTurns"] = max_turns
-        self.request(mode, args, request_id=prompt_id)
+        self.request("prompt", args, request_id=prompt_id)
         deadline = time.monotonic() + seconds + 5
         abort_sent = False
         while True:
@@ -133,7 +127,8 @@ class CoreClient:
                     reply = tool_handler(message["call_id"], message["name"], message["args"])
                 except Exception as error:
                     reply = {"result": {"content": [{"type": "text", "text":
-                             f"{type(error).__name__}: {error}"}], "isError": True}}
+                             f"{type(error).__name__}: {error}"}], "isError": True},
+                             "control": {"stop_remaining_tools": True, "end_run": True}}
                 self.request("tool_reply", {"call_id": message["call_id"], **reply})
             elif message["type"] == "settled":
                 if message.get("prompt_id") == prompt_id:

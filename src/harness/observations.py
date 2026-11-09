@@ -1,5 +1,7 @@
 """Publish only RGB and map-relative pose; simulator annotations stay private."""
 
+from .errors import ToolInputError
+
 from copy import deepcopy
 import hashlib
 import json
@@ -57,7 +59,7 @@ class Observations:
 
     def get(self, fid):
         if fid not in self.items:
-            raise ValueError(f"Unknown frame: {fid}")
+            raise ToolInputError(f"Unknown frame: {fid}")
         return self.items[fid]
 
     @staticmethod
@@ -70,21 +72,21 @@ class Observations:
     def panorama(self, group):
         """Return one complete, immutable scene panorama at its capture pose."""
         if not isinstance(group, str) or not group.startswith("p_"):
-            raise ValueError("Expected a panorama group ID (p_)")
+            raise ToolInputError("Expected a panorama group ID (p_)")
         frames = [row for row in self.items.values() if row.get("group") == group]
         if (len(frames) != 6 or any(row.get("kind") != "observation" for row in frames)
                 or any(type(row.get("yaw")) not in (int, float) for row in frames)
                 or sorted(row["yaw"] for row in frames) != list(range(0, 360, 60))):
-            raise ValueError(f"Panorama {group} must contain six scene observations at yaw 0,60,120,180,240,300")
+            raise ToolInputError(f"Panorama {group} must contain six scene observations at yaw 0,60,120,180,240,300")
         frames.sort(key=lambda row: row["yaw"])
         pose, step = frames[0].get("pose"), frames[0].get("step")
         if not self._valid_pose(pose):
-            raise ValueError(f"Panorama {group} requires a valid capture pose")
+            raise ToolInputError(f"Panorama {group} requires a valid capture pose")
         for row in frames:
             current = row.get("pose")
             if (not self._valid_pose(current)
                     or current["pos"] != pose["pos"] or row.get("step") != step):
-                raise ValueError(f"Panorama {group} requires valid poses at one position and step")
+                raise ToolInputError(f"Panorama {group} requires valid poses at one position and step")
         return deepcopy({"group": group, "frames": frames, "pose": pose, "step": step})
 
     def current_panorama(self, current):
@@ -98,7 +100,7 @@ class Observations:
         for group in groups:
             try:
                 panorama = self.panorama(group)
-            except ValueError:
+            except ToolInputError:
                 continue
             if panorama["step"] == current.get("step") and panorama["pose"] == current.get("pose"):
                 return group
@@ -107,7 +109,7 @@ class Observations:
     def history(self, limit=10, offset=0):
         """List scene captures chronologically, grouping complete panoramas."""
         if type(limit) is not int or not 1 <= limit <= 300 or type(offset) is not int or offset < 0:
-            raise ValueError("limit must be 1-300; offset must be a nonnegative integer")
+            raise ToolInputError("limit must be 1-300; offset must be a nonnegative integer")
         events, seen = [], set()
         for row in self.items.values():
             if row.get("kind") != "observation":
@@ -118,7 +120,7 @@ class Observations:
             if group:
                 try:
                     panorama = self.panorama(group)
-                except ValueError:
+                except ToolInputError:
                     panorama = None
                 if panorama is not None:
                     seen.add(group)
@@ -150,11 +152,11 @@ class Observations:
             path = self.directory / "maps/index.jsonl"
             maps = {r["view_id"]: r for r in map(json.loads, path.read_text().splitlines())} if path.exists() else {}
             if reference not in maps:
-                raise ValueError(f"Unknown image: {reference}")
+                raise ToolInputError(f"Unknown image: {reference}")
             row = {"image": reference, "path": maps[reference]["map"], "kind": "map"}
         path = (self.workspace / row["path"]).resolve()
         if not path.is_relative_to(self.directory.resolve()) or not path.is_file():
-            raise ValueError("Image is outside the public image directory")
+            raise ToolInputError("Image is outside the public image directory")
         with Image.open(path) as image:
             return {**row, "size": list(image.size)}
 
@@ -169,7 +171,7 @@ class Observations:
             if left <= pixel[0] < right and top <= pixel[1] < bottom:
                 mapped = [a * pixel[0] + b * pixel[1] + c for a, b, c in tile["pixel_to_source"]]
                 return self.resolve_pixel(tile["image"], mapped)
-        raise ValueError(f"pixel_is_in_label_or_padding: image={reference}; select inside an image tile, "
+        raise ToolInputError(f"pixel_is_in_label_or_padding: image={reference}; select inside an image tile, "
                          "or reopen its original frame ID")
 
     def _save_view(self, image, sources):
@@ -190,7 +192,7 @@ class Observations:
         if (not isinstance(bounds, list) or len(bounds) != 4
                 or any(type(v) not in (int, float) or not math.isfinite(v) or not 0 <= v <= 1 for v in bounds)
                 or bounds[0] >= bounds[2] or bounds[1] >= bounds[3]):
-            raise ValueError("crop must be normalized [left,top,right,bottom]")
+            raise ToolInputError("crop must be normalized [left,top,right,bottom]")
         with Image.open(self.workspace / row["path"]) as source:
             w, h = source.size
             left, top = int(bounds[0] * w), int(bounds[1] * h)
@@ -201,7 +203,7 @@ class Observations:
 
     def grid(self, references):
         if not references:
-            raise ValueError("A grid requires images")
+            raise ToolInputError("A grid requires images")
         width, height = 640, 480
         columns = min(3, len(references))
         result = Image.new("RGB", (columns * width, math.ceil(len(references) / columns) * (height + 26)), "white")

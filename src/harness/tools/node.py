@@ -1,13 +1,15 @@
-"""Node operations; the session validates schemas and dispatcher enforces permissions."""
+"""Node operations; the executor validates schemas and enforces request boundaries."""
+
+from ..errors import ToolInputError
 
 
 class NodeMemoryTools:
-    def __init__(self, session, navigation_tools):
-        self.session = session
+    def __init__(self, executor, navigation_tools):
+        self.executor = executor
         self.navigation = navigation_tools
 
     def read(self, mode="text", **args):
-        s = self.session
+        s = self.executor
         if mode == "text":
             source = args.pop("source", "nodes")
             if source == "nodes":
@@ -22,7 +24,7 @@ class NodeMemoryTools:
                         associations.setdefault(group, []).append(node["id"])
                 result = {**result, "events": [{**event, "nodes": associations.get(
                     event.get("group", event["image"]), [])} for event in result["events"]]}
-            return s._reply(result, error="error" in result)
+            return s.reply(result, error="error" in result)
         if mode == "image":
             nodes = [s.memory.get(reference) if reference.startswith("N") else None
                      for reference in args["refs"]]
@@ -38,7 +40,7 @@ class NodeMemoryTools:
         if "room" in args:
             rooms = s.memory.read_rooms(room=args["room"])
             if "error" in rooms:
-                return s._reply(rooms, error=True)
+                return s.reply(rooms, error=True)
             room = rooms["rooms"][0]
             highlight = list(dict.fromkeys([*(highlight or []), *room["nodes"]]))
         view = args.get("view", "explored" if room is not None else "local")
@@ -47,19 +49,19 @@ class NodeMemoryTools:
         value = self.navigation.map_value(view=mapped, highlight=highlight)
         if room is not None:
             value = {**value, "room": room}
-        return s._reply(value, [value["map"]], [f"[MAP {value['view_id']} | model-written nodes]"])
+        return s.reply(value, [value["map"]], [f"[MAP {value['view_id']} | model-written nodes]"])
 
     def edit(self, operations):
-        s = self.session
+        s = self.executor
         needs_panorama = [op for op in operations
                           if op["op"] == "create" or op["op"] == "update" and op.get("refresh")]
         if len(needs_panorama) > 1:
-            raise ValueError("A batch permits at most one create or refresh")
+            raise ToolInputError("A batch permits at most one create or refresh")
         panorama = s.observations.current_panorama(s.current) if needs_panorama else None
         before = s.trace.store(s.memory.state)
         result = s.memory.edit(operations, current_panorama=panorama)
         if "error" in result:
-            return s._reply({**result, "committed": False}, error=True)
+            return s.reply({**result, "committed": False}, error=True)
         s.trace.emit("memory_changed", {"before": before, "after": s.trace.store(s.memory.state)})
         changes = []
         for change, operation in zip(result["changes"], operations):
@@ -72,4 +74,4 @@ class NodeMemoryTools:
                     if operation["op"] in {"create", "merge"} or operation.get("refresh"):
                         row["panorama"] = node["panorama"]
             changes.append(row)
-        return s._reply({"changes": changes, "committed": True})
+        return s.reply({"changes": changes, "committed": True})

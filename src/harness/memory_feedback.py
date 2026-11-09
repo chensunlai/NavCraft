@@ -6,7 +6,7 @@ from .maps import _font
 from .memory import location
 
 
-def memory_feedback(session, operations, before):
+def memory_feedback(executor, operations, before):
     selected = {}
     for op in operations:
         identifier = op.get("id", op.get("keep"))
@@ -17,7 +17,7 @@ def memory_feedback(session, operations, before):
             selected.pop(removed, None)
         if op["op"] == "delete":
             selected.pop(identifier, None)
-    entities = {e["id"]: e for e in session.memory.entities}
+    entities = {e["id"]: e for e in executor.memory.entities}
     previous = {e["id"]: location(e) for e in before}
     # Merge can inherit a location without an explicit point/anchor field.
     for identifier, entity in entities.items():
@@ -33,12 +33,12 @@ def memory_feedback(session, operations, before):
     grouped, selections = {}, []
     for identifier, ref in selected.items():
         if isinstance(ref, dict) and "image" in ref:
-            image, pixel = session.observations.resolve_pixel(ref["image"], ref["pixel"])
+            image, pixel = executor.observations.resolve_pixel(ref["image"], ref["pixel"])
             mark = {"id": identifier, "image": image, "pixel": pixel}
             selections.append(mark)
             grouped.setdefault(image, []).append(mark)
     sources = list(grouped)[:2]
-    mapped = session.renderer.render(session.current["pose"], [],
+    mapped = executor.renderer.render(executor.current["pose"], [],
                                      view={"around": list(selected)}, highlight=list(selected))
     canvas = Image.new("RGB", (960 if sources else 480, 520), "white")
     draw, transforms = ImageDraw.Draw(canvas), []
@@ -46,8 +46,8 @@ def memory_feedback(session, operations, before):
     draw.text((8, 5), "Saved positions | model selections, not verified", fill="#333333", font=font)
 
     def panel(reference, x, y, width, height, title, marks=()):
-        row = session.observations.image(reference)
-        with Image.open(session.workspace / row["path"]) as original:
+        row = executor.observations.image(reference)
+        with Image.open(executor.workspace / row["path"]) as original:
             image = original.convert("RGB")
         original_width, original_height = image.size
         image.thumbnail((width - 16, height - 30))
@@ -65,13 +65,13 @@ def memory_feedback(session, operations, before):
                       fill="#dc2626", stroke_width=1, stroke_fill="white", font=font)
 
     for i, source in enumerate(sources):
-        size = session.observations.image(source)["size"]
+        size = executor.observations.image(source)["size"]
         height = 480 // len(sources)
         panel(source, 0, 28 + i * height, 480, height,
               f"Selected: {source} ({size[0]}x{size[1]})", grouped[source])
     panel(mapped["view_id"], 480 if sources else 0, 28, 480, 480,
           f"Map: {mapped['view_id']} | saved IDs circled")
-    saved = session.observations._save_view(canvas, transforms)
+    saved = executor.observations._save_view(canvas, transforms)
     result = {"image": saved["image"], "path": saved["path"], "size": saved["size"],
               "map": mapped["view_id"], "ids": list(selected),
               "selected": [mark for mark in selections if mark["image"] in sources]}

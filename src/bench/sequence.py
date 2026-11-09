@@ -105,14 +105,14 @@ def score_route(specification, trajectory, rooms):
 
 
 def _memory_report(session, before, call_start, trace_start):
-    after = {entity["id"]: entity for entity in session.memory.entities}
+    after = {entity["id"]: entity for entity in session.navigation.memory.entities}
     evidence = [(entity["id"], frame) for entity in after.values() for frame in entity.get("evidence", [])]
     invalid = [(identifier, frame) for identifier, frame in evidence
-               if frame not in session.observations.items or not
-               (session.workspace / session.observations.items[frame]["path"]).is_file()]
-    calls = session.trace.calls[call_start:]
+               if frame not in session.navigation.observations.items or not
+               (session.navigation.workspace / session.navigation.observations.items[frame]["path"]).is_file()]
+    calls = session.navigation.trace.calls[call_start:]
     operations = Counter({name: 0 for name in ("create", "update", "delete", "merge")})
-    trace_path = session.private / "trace.jsonl"
+    trace_path = session.navigation.private / "trace.jsonl"
     if trace_path.exists():
         with trace_path.open("rb") as stream:
             stream.seek(trace_start)
@@ -233,13 +233,13 @@ def run_sequence(repo, model_config, scenario_path, scene_map, directory, enviro
             save()
             if specification.get("teleport"):
                 environment.relocate(specification["teleport"])
-                session.refresh_observation()
+                session.navigation.refresh_observation()
             start = environment.position()
             start_steps, start_length = environment.steps, environment.path_length
             motion_start = len(environment.motion_trajectory)
-            before = {entity["id"]: deepcopy(entity) for entity in session.memory.entities}
-            call_start = len(session.trace.calls)
-            trace_path = session.private / "trace.jsonl"
+            before = {entity["id"]: deepcopy(entity) for entity in session.navigation.memory.entities}
+            call_start = len(session.navigation.trace.calls)
+            trace_path = session.navigation.private / "trace.jsonl"
             trace_start = trace_path.stat().st_size if trace_path.exists() else 0
             shortest = environment.distance(specification["positions"]) if specification["kind"] == "navigation" else None
             instruction = specification["instruction"]

@@ -1,5 +1,7 @@
 """Geometry for selected RGB pixels and saved map views; no semantic inference."""
 
+from .errors import ToolInputError
+
 import json
 import math
 from pathlib import Path
@@ -20,10 +22,10 @@ def _records(path, key):
 def validate_pixel(pixel, width, height, image_id):
     if (not isinstance(pixel, (list, tuple)) or len(pixel) != 2
             or any(type(value) not in (int, float) or not math.isfinite(value) for value in pixel)):
-        raise ValueError("pixel must be a finite [x, y] pair")
+        raise ToolInputError("pixel must be a finite [x, y] pair")
     x, y = pixel
     if not 0 <= x < width or not 0 <= y < height:
-        raise ValueError(f"pixel_out_of_bounds: image={image_id}; size={width}x{height}; "
+        raise ToolInputError(f"pixel_out_of_bounds: image={image_id}; size={width}x{height}; "
                          f"valid x:[0,{width}), y:[0,{height})")
     return x, y
 
@@ -37,12 +39,12 @@ class Geometry:
     def load_frame(self, frame):
         """Return metric optical-Z depth and its private camera/body metadata."""
         if not isinstance(frame, str):
-            raise ValueError("frame must be an original frame ID")
+            raise ToolInputError("frame must be an original frame ID")
         if frame not in observation_index(self.workspace):
-            raise ValueError(f"Unknown frame: {frame}")
+            raise ToolInputError(f"Unknown frame: {frame}")
         cameras = _records(self.private / "depth/index.jsonl", "frame")
         if frame not in cameras:
-            raise ValueError("depth_unavailable")
+            raise ToolInputError("depth_unavailable")
         camera = cameras[frame]
         directory = (self.private / "depth").resolve()
         path = (directory / camera["depth"]).resolve()
@@ -84,24 +86,24 @@ class Geometry:
         ix, iy = min(round(x), camera["width"] - 1), min(round(y), camera["height"] - 1)
         value = depth[iy, ix]
         if not self._depth_valid(value, camera):
-            raise ValueError("invalid_depth_or_range")
+            raise ToolInputError("invalid_depth_or_range")
         point = self._project(camera, np.array([[ix, iy]]), np.array([value]))[0]
         if not np.isfinite(point).all():
-            raise ValueError("invalid_projection")
+            raise ToolInputError("invalid_projection")
         uv = self._uv(point[None])[0]
         if not np.isfinite(uv).all():
-            raise ValueError("invalid_projection")
+            raise ToolInputError("invalid_projection")
         if self.bounded and (np.any(uv < -1e-10) or np.any(uv > 1 + 1e-10)):
-            raise ValueError("outside_canvas")
+            raise ToolInputError("outside_canvas")
         floor_limits = camera.get("floor_y_range")
         if floor_limits and not floor_limits[0] <= point[1] <= floor_limits[1]:
-            raise ValueError("outside_floor")
+            raise ToolInputError("outside_floor")
         return point.tolist(), camera
 
     def resolve_frame(self, frame, pixel):
         try:
             values, camera = self.resolve_frame_point(frame, pixel)
-        except ValueError as error:
+        except ToolInputError as error:
             return {"valid": False, "reason": str(error)}
         point = np.asarray(values)
         displacement = point[[0, 2]] - np.asarray(camera["body_position"])[[0, 2]]
@@ -115,26 +117,26 @@ class Geometry:
 
     def resolve_map(self, view_id, pixel):
         if not isinstance(view_id, str):
-            raise ValueError("view_id must be a saved map view ID")
+            raise ToolInputError("view_id must be a saved map view ID")
         views = _records(self.workspace / "observations/maps/index.jsonl", "view_id")
         if view_id not in views:
-            raise ValueError(f"Unknown map view: {view_id}")
+            raise ToolInputError(f"Unknown map view: {view_id}")
         view = views[view_id]
         x, y = validate_pixel(pixel, view["width"], view["height"], view_id)
         left, top, right, bottom = view["plot_bounds"]
         if not left <= x <= right or not top <= y <= bottom:
-            raise ValueError(f"pixel_outside_map_plot: image={view_id}; "
+            raise ToolInputError(f"pixel_outside_map_plot: image={view_id}; "
                              f"valid plot x:[{left},{right}], y:[{top},{bottom}]")
         uv = np.asarray(apply_affine(view["pixel_to_uv"], [x, y]))
         if (not np.isfinite(uv).all()
                 or self.bounded and (np.any(uv < -1e-10) or np.any(uv > 1 + 1e-10))):
-            raise ValueError("outside_canvas")
+            raise ToolInputError("outside_canvas")
         return {"uv": (np.clip(uv, 0, 1) if self.bounded else uv).round(4).tolist()}
 
     def overlay(self, frames, max_range=6, minheight=.1, maxheight=1.8):
         """Return at most 50k [u,v,r,g,b] rows from actual RGB-D observations."""
         if not isinstance(frames, list) or not 1 <= len(frames) <= 6:
-            raise ValueError("overlay must contain 1–6 original frame IDs")
+            raise ToolInputError("overlay must contain 1–6 original frame IDs")
         rows = []
         public = observation_index(self.workspace)
         for frame in frames:

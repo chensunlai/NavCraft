@@ -1,5 +1,7 @@
 """Validated, atomic batches over the single public spatial-memory document."""
 
+from .errors import ToolInputError
+
 from copy import deepcopy
 import json
 import math
@@ -86,13 +88,13 @@ class MemoryStore:
     def read(self, ids=None, filter=None, limit=30, offset=0):
         try:
             if ids is not None and filter is not None:
-                raise ValueError("ids and filter cannot be used together")
+                raise ToolInputError("ids and filter cannot be used together")
             if type(limit) is not int or not 1 <= limit <= 300 or type(offset) is not int or offset < 0:
-                raise ValueError("limit must be 1-300; offset must be a nonnegative integer")
+                raise ToolInputError("limit must be 1-300; offset must be a nonnegative integer")
             entities = self.entities
             if ids is not None:
                 if not isinstance(ids, list) or any(not isinstance(i, str) for i in ids):
-                    raise ValueError("ids must be an array of IDs")
+                    raise ToolInputError("ids must be an array of IDs")
                 indexed = {e["id"]: e for e in entities}
                 frames = observation_index(self.workspace)
                 found = []
@@ -108,9 +110,9 @@ class MemoryStore:
                 return {"entities": found, "missing": [i for i in ids if i not in indexed]}
             if filter is not None:
                 if not isinstance(filter, dict) or set(filter) - {"type", "room", "category", "located"}:
-                    raise ValueError("filter supports only type, room, category and located")
+                    raise ToolInputError("filter supports only type, room, category and located")
                 if "located" in filter and type(filter["located"]) is not bool:
-                    raise ValueError("located must be a boolean")
+                    raise ToolInputError("located must be a boolean")
                 entities = [e for e in entities if all(
                     (location(e) is not None) == value if key == "located"
                     else (e.get(key) == value and (key != "room" or e["type"] == "object"))
@@ -123,14 +125,14 @@ class MemoryStore:
                 "total": len(entities),
                 "next_offset": offset + limit if offset + limit < len(entities) else None,
             }
-        except (ValueError, KeyError, TypeError) as exc:
+        except ToolInputError as exc:
             return {"error": str(exc)}
 
     def edit(self, operations):
         context = ""
         try:
             if not isinstance(operations, list) or not 1 <= len(operations) <= 20:
-                raise ValueError("operations must contain 1-20 items")
+                raise ToolInputError("operations must contain 1-20 items")
             current = self.entities
             state = {e["id"]: deepcopy(e) for e in current}
             used = set(json.loads(self.used_path.read_text())) if self.used_path.exists() else set()
@@ -138,7 +140,7 @@ class MemoryStore:
             changes, touched = [], {}
             for index, operation in enumerate(operations, 1):
                 if not isinstance(operation, dict):
-                    raise ValueError(f"Operation {index} must be an object")
+                    raise ToolInputError(f"Operation {index} must be an object")
                 op = operation.get("op")
                 identifier = operation.get("id", operation.get("keep"))
                 context = f"Operation {index} {op} {identifier}: "
@@ -147,7 +149,9 @@ class MemoryStore:
                     kind = operation.get("type")
                     self._id(identifier, kind)
                     if identifier in used:
-                        number = next(i for i in range(1, 10000) if f"{PREFIXES[kind]}{i:02d}" not in used)
+                        number = next((i for i in range(1, 10000) if f"{PREFIXES[kind]}{i:02d}" not in used), None)
+                        if number is None:
+                            raise ToolInputError("No unused IDs remain for this entity type")
                         return {"error": context + "ID has already been used", "hint": f"Available ID: {PREFIXES[kind]}{number:02d}"}
                     fields = self._fields(operation.get("fields", {}), kind)
                     state[identifier] = {"id": identifier, "type": kind, **deepcopy(DEFAULTS[kind]),
@@ -156,27 +160,27 @@ class MemoryStore:
                 elif op == "update":
                     self._keys(operation, {"op", "id", "fields"})
                     if identifier not in state:
-                        raise ValueError("Entity does not exist")
+                        raise ToolInputError("Entity does not exist")
                     state[identifier].update(self._fields(operation.get("fields", {}), state[identifier]["type"]))
                 elif op == "delete":
                     self._keys(operation, {"op", "id"})
                     if identifier not in state:
-                        raise ValueError("Entity does not exist")
+                        raise ToolInputError("Entity does not exist")
                     del state[identifier]
                 elif op == "merge":
                     self._keys(operation, {"op", "keep", "remove", "fields"})
                     self._merge(state, operation)
                 else:
-                    raise ValueError("op must be create, update, delete or merge")
+                    raise ToolInputError("op must be create, update, delete or merge")
                 touched[identifier] = context
                 changes.append({"op": op, "id": identifier, **({"remove": operation["remove"]} if op == "merge" else {})})
             if len(state) > 300:
-                raise ValueError("Memory cannot contain more than 300 entities")
+                raise ToolInputError("Memory cannot contain more than 300 entities")
             frames = observation_index(self.workspace)
             for identifier, entity in state.items():
                 context = touched.get(identifier, f"Entity {identifier}: ")
                 self._validate(entity, state, frames)
-        except (ValueError, KeyError, TypeError, StopIteration) as exc:
+        except ToolInputError as exc:
             return {"error": context + str(exc)}
         # Write failures must not be reported as validation failures with no changes.
         # Reserve IDs first: even an interrupted public replace cannot reuse an issued ID.
@@ -187,19 +191,19 @@ class MemoryStore:
     @staticmethod
     def _keys(value, allowed):
         if set(value) - allowed:
-            raise ValueError("Unknown fields: " + ", ".join(sorted(set(value) - allowed)))
+            raise ToolInputError("Unknown fields: " + ", ".join(sorted(set(value) - allowed)))
 
     @staticmethod
     def _id(identifier, kind):
         if kind not in PREFIXES:
-            raise ValueError("type must be room, door or object")
+            raise ToolInputError("type must be room, door or object")
         prefix = PREFIXES[kind]
         if not isinstance(identifier, str) or not re.fullmatch(prefix + r"\d{2,4}", identifier):
-            raise ValueError(f"{kind} ID must use uppercase {prefix} followed by 2-4 digits, e.g. {prefix}01")
+            raise ToolInputError(f"{kind} ID must use uppercase {prefix} followed by 2-4 digits, e.g. {prefix}01")
 
     def _fields(self, fields, kind):
         if not isinstance(fields, dict):
-            raise ValueError("fields must be an object")
+            raise ToolInputError("fields must be an object")
         self._keys(fields, FIELDS[kind])
         fields = deepcopy(fields)
         for key, default in (("description", ""), ("evidence", []), ("connects", [None, None]), ("passage", "unknown")):
@@ -210,12 +214,12 @@ class MemoryStore:
     def _merge(self, state, operation):
         keep, remove = operation.get("keep"), operation.get("remove")
         if keep not in state or not isinstance(remove, list) or not remove or any(not isinstance(i, str) for i in remove):
-            raise ValueError("merge requires an existing keep ID and a nonempty remove ID array")
+            raise ToolInputError("merge requires an existing keep ID and a nonempty remove ID array")
         if keep in remove or len(set(remove)) != len(remove) or any(i not in state for i in remove):
-            raise ValueError("remove IDs must be distinct, exist and exclude keep")
+            raise ToolInputError("remove IDs must be distinct, exist and exclude keep")
         kind = state[keep]["type"]
         if any(state[i]["type"] != kind for i in remove):
-            raise ValueError("Only entities of the same type can be merged")
+            raise ToolInputError("Only entities of the same type can be merged")
         fields = self._fields(operation.get("fields", {}), kind)
         sources = [state[keep]] + [state[i] for i in remove]
         result = deepcopy(state[keep])
@@ -226,7 +230,7 @@ class MemoryStore:
                 if value is not None and value not in values:
                     values.append(value)
             if len(values) > 1 and key not in fields:
-                raise ValueError(f"Conflicting {key}; specify the final value in fields")
+                raise ToolInputError(f"Conflicting {key}; specify the final value in fields")
             if values and result.get(key) is None:
                 result[key] = values[0]
         result.update(fields)
@@ -249,41 +253,41 @@ class MemoryStore:
         self._id(entity.get("id"), entity.get("type"))
         self._keys(entity, FIELDS[entity["type"]] | {"id", "type"})
         if not isinstance(entity.get("name"), str) or not entity["name"].strip() or len(entity["name"]) > 40:
-            raise ValueError("name must be a nonempty string of 1-40 characters")
+            raise ToolInputError("name must be a nonempty string of 1-40 characters")
         if not isinstance(entity.get("description"), str) or len(entity["description"]) > 300:
-            raise ValueError("description must be a string of at most 300 characters")
+            raise ToolInputError("description must be a string of at most 300 characters")
         evidence = entity.get("evidence")
         if not isinstance(evidence, list) or len(evidence) > 10 or any(not isinstance(i, str) for i in evidence):
-            raise ValueError("evidence must be an array of at most 10 frame IDs")
+            raise ToolInputError("evidence must be an array of at most 10 frame IDs")
         unknown = [i for i in evidence if i not in frames]
         if unknown:
-            raise ValueError("evidence contains unknown frame IDs: " + ", ".join(unknown)
+            raise ToolInputError("evidence contains unknown frame IDs: " + ", ".join(unknown)
                              + "; use observed scene frames only")
         unobserved = [i for i in evidence if frames[i].get("kind") != "observation"]
         if unobserved:
-            raise ValueError("evidence requires observed scene frames, not target or question images: "
+            raise ToolInputError("evidence requires observed scene frames, not target or question images: "
                              + ", ".join(unobserved))
         for key in ("point", "anchor"):
             if entity.get(key) is not None:
                 self._point(entity[key])
         if entity["type"] == "door":
             if entity.get("passage") not in {"unknown", "seen", "passed", "blocked"}:
-                raise ValueError("passage must be unknown, seen, passed or blocked")
+                raise ToolInputError("passage must be unknown, seen, passed or blocked")
             refs = entity.get("connects")
             if not isinstance(refs, list) or len(refs) != 2:
-                raise ValueError("connects must contain exactly two room IDs or null, e.g. [\"R01\", null]")
+                raise ToolInputError("connects must contain exactly two room IDs or null, e.g. [\"R01\", null]")
         else:
             refs = [entity.get("room")] if entity["type"] == "object" else []
         for reference in refs:
             if reference is not None and (not isinstance(reference, str) or reference not in state or state[reference]["type"] != "room"):
-                raise ValueError(f"Room {reference} does not exist; room/connects must reference existing room IDs such as R01, not names")
+                raise ToolInputError(f"Room {reference} does not exist; room/connects must reference existing room IDs such as R01, not names")
         if entity["type"] == "object":
             if entity.get("category") is not None and (not isinstance(entity["category"], str) or not entity["category"].strip()):
-                raise ValueError("category must be a nonempty string or null")
+                raise ToolInputError("category must be a nonempty string or null")
             if entity.get("size") not in {None, "small", "medium", "large"}:
-                raise ValueError("size must be small, medium, large or null")
+                raise ToolInputError("size must be small, medium, large or null")
 
     @staticmethod
     def _point(value):
         if not isinstance(value, list) or len(value) != 2 or any(type(v) not in (float, int) or not math.isfinite(v) or not 0 <= v <= 1 for v in value):
-            raise ValueError("Coordinates must be two finite numbers in [0, 1]")
+            raise ToolInputError("Coordinates must be two finite numbers in [0, 1]")

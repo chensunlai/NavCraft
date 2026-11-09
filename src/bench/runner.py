@@ -69,7 +69,7 @@ def execute_goals(environment, session, episode, limits, directory):
         if goal["modality"] == "image":
             target = directory / "private" / f"target_{index:03d}.png"
             environment.target_image(goal["image_goal"], target)
-            images = (session.register_target(target),)
+            images = (session.navigation.register_target(target),)
         result = session.prompt(task_message(goal), images=images, limits=limits)
         finish_reason = result.reason
         row = score_goal(episode.benchmark, submitted=result.submitted,

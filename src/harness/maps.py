@@ -1,5 +1,7 @@
 """Public wall/memory views with reversible image-to-map coordinates."""
 
+from .errors import ToolInputError
+
 import hashlib
 import json
 import math
@@ -48,14 +50,14 @@ class MapRenderer:
                trajectory_breaks=(), located_points=()):
         node_mode = self.memory_type == "node"
         if node_mode and (overlay_points is not None or located_points):
-            raise ValueError("Node maps show only visited nodes and trajectory")
+            raise ToolInputError("Node maps show only visited nodes and trajectory")
         if labels not in {"id", "name", "both", "none"}:
-            raise ValueError("labels must be id, name, both, or none")
+            raise ToolInputError("labels must be id, name, both, or none")
         for point in located_points:
             if (not isinstance(point, dict) or not isinstance(point.get("label"), str) or not point["label"]
                     or not isinstance(point.get("uv"), (list, tuple)) or len(point["uv"]) != 2
                     or any(type(v) not in (int, float) or not math.isfinite(v) or not 0 <= v <= 1 for v in point["uv"])):
-                raise ValueError("located_points require a label and finite uv in [0,1]")
+                raise ToolInputError("located_points require a label and finite uv in [0,1]")
         data = json.loads((self.workspace / "scene/map.json").read_text())
         size = float(data["size_m"])
         if not math.isfinite(size) or size <= 0:
@@ -76,7 +78,7 @@ class MapRenderer:
         if ego:
             radius = view["ego"]
             if type(radius) not in (int, float) or not math.isfinite(radius) or radius <= 0:
-                raise ValueError("ego must be a positive radius in metres")
+                raise ToolInputError("ego must be a positive radius in metres")
             angle = math.radians(pose["heading"])
             cosine, sine = math.cos(angle), math.sin(angle)
             scale = 692 / (2 * radius / size)
@@ -108,28 +110,28 @@ class MapRenderer:
             elif isinstance(view, dict) and set(view) == {"around"}:
                 ids = view["around"]
                 if not isinstance(ids, list) or not ids:
-                    raise ValueError("around must be a nonempty ID list")
+                    raise ToolInputError("around must be a nonempty ID list")
                 for identifier in ids:
                     if identifier not in indexed:
                         warnings.append(f"{identifier} does not exist")
                     elif record_location(indexed[identifier]) is not None:
                         points.append(record_location(indexed[identifier]))
                 if not points:
-                    raise ValueError("around contains no located entities")
+                    raise ToolInputError("around contains no located entities")
             elif isinstance(view, dict) and set(view) == {"around_self"}:
                 radius = view["around_self"]
                 if type(radius) not in (int, float) or not math.isfinite(radius) or radius <= 0:
-                    raise ValueError("around_self must be a positive radius in metres")
+                    raise ToolInputError("around_self must be a positive radius in metres")
                 points, padding = [pose["pos"]], radius / size
             else:
-                raise ValueError("invalid map view")
+                raise ToolInputError("invalid map view")
             bounds = [min(p[0] for p in points) - padding, min(p[1] for p in points) - padding,
                       max(p[0] for p in points) + padding, max(p[1] for p in points) + padding]
             if not node_mode:
                 bounds = [max(0., bounds[0]), max(0., bounds[1]), min(1., bounds[2]), min(1., bounds[3])]
         if not ego:
             if bounds[0] >= bounds[2] or bounds[1] >= bounds[3]:
-                raise ValueError("requested view is outside the map canvas")
+                raise ToolInputError("requested view is outside the map canvas")
             span_u, span_v = bounds[2] - bounds[0], bounds[3] - bounds[1]
             scale = 692 / max(span_u, span_v)
             width, height = round(span_u * scale) + 76, round(span_v * scale) + 76

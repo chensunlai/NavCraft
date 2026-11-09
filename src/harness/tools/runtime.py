@@ -1,5 +1,7 @@
 """Navigation operations and bounded, related material in each tool receipt."""
 
+from ..errors import ToolInputError
+
 import uuid
 
 from src.common.actions import ACTIONS
@@ -8,24 +10,24 @@ from ..memory_feedback import memory_feedback
 
 
 class NavigationTools:
-    def __init__(self, session):
-        self.session = session
+    def __init__(self, executor):
+        self.executor = executor
         self.node_tools = None
-        if session.memory_type == "node":
+        if executor.memory_type == "node":
             from .node import NodeMemoryTools
-            self.node_tools = NodeMemoryTools(session, self)
+            self.node_tools = NodeMemoryTools(executor, self)
 
     def observe(self, mode="current", project=False):
-        s = self.session
+        s = self.executor
         if mode not in {"current", "panorama"} or type(project) is not bool:
-            raise ValueError("Expected current/panorama and boolean project")
+            raise ToolInputError("Expected current/panorama and boolean project")
         if project and not s.spatial.enabled:
-            raise ValueError("Observation projection requires super tools")
-        if s._observation_end is not None and s._observations >= s._observation_end:
-            raise ValueError("Observation limit reached; use existing evidence")
-        s._observations += 1
+            raise ToolInputError("Observation projection requires super tools")
+        if s.request.observation_end is not None and s.observation_count >= s.request.observation_end:
+            raise ToolInputError("Observation limit reached; use existing evidence")
+        s.observation_count += 1
         if mode == "current":
-            s.current = s._capture(s.environment.observe())
+            s.current = s.capture(s.environment.observe())
             views = [s.current]
             value = {key: s.current[key] for key in ("frame", "step", "pose")}
             value["size"] = s.observations.image(s.current["frame"])["size"]
@@ -33,7 +35,7 @@ class NavigationTools:
         else:
             pose = s.environment.pose()
             group = "p_" + uuid.uuid4().hex[:8]
-            views = [s._capture(obs, body_pose=pose, group=group, yaw=i * 60)
+            views = [s.capture(obs, body_pose=pose, group=group, yaw=i * 60)
                      for i, obs in enumerate(s.environment.panorama())]
             s.current = views[0]
             image = s.observations.grid([v["frame"] for v in views])
@@ -42,7 +44,7 @@ class NavigationTools:
                                 "size": s.observations.image(v["frame"])["size"]} for v in views],
                      "step": s.environment.steps, "pose": s.current["pose"]}
             refs, labels = [image["path"]], [f"[CURRENT {image['image']} | {image['size'][0]}x{image['size'][1]} | select pixels on this whole image; f_ IDs reopen detail]"]
-        s._publish_state()
+        s.publish_state()
         if project:
             mapped = self.map_value(view={"ego": 6}, overlay=[v["frame"] for v in views])
             value["projection"] = mapped
@@ -51,13 +53,13 @@ class NavigationTools:
         return value, refs, labels
 
     def steps(self, actions):
-        s = self.session
+        s = self.executor
         if (not isinstance(actions, list) or not 1 <= len(actions) <= 6
                 or any(not isinstance(a, str) or a not in ACTIONS for a in actions)):
-            raise ValueError("actions must contain 1–6 valid atomic actions")
+            raise ToolInputError("actions must contain 1–6 valid atomic actions")
         done, events, stop = [], [], "completed"
         for i, action in enumerate(actions, 1):
-            motion = s._perform_motion(action)
+            motion = s.perform_motion(action)
             if motion is None:
                 stop = "interrupted"
                 break
@@ -71,7 +73,7 @@ class NavigationTools:
             if motion.blocked:
                 stop = "blocked"
                 break
-        s._publish_state()
+        s.publish_state()
         value = {"done": done, "stop": stop, "frame": s.current["frame"],
                  "step": s.environment.steps, "pose": s.current["pose"]}
         if events:
@@ -79,43 +81,43 @@ class NavigationTools:
         return value
 
     def move(self, mode, actions=None, target=None, after="current", stop_distance=None, max_actions=None):
-        s = self.session
+        s = self.executor
         if after not in {"current", "panorama"}:
-            raise ValueError("after must be current or panorama")
+            raise ToolInputError("after must be current or panorama")
         if mode == "steps":
             if target is not None or stop_distance is not None or max_actions is not None:
-                raise ValueError("steps accepts only actions and after")
+                raise ToolInputError("steps accepts only actions and after")
             value = self.steps(actions)
         elif mode in {"face", "approach"}:
             if not s.spatial.enabled:
-                raise ValueError("face and approach require super tools")
+                raise ToolInputError("face and approach require super tools")
             if actions is not None or mode == "face" and stop_distance is not None:
-                raise ValueError("Target motion does not accept actions; face has no stop_distance")
+                raise ToolInputError("Target motion does not accept actions; face has no stop_distance")
             value = s.spatial.move(target, face=mode == "face", stop_distance=stop_distance,
                                    max_actions=40 if max_actions is None else max_actions)
         else:
-            raise ValueError("mode must be steps, face or approach")
+            raise ToolInputError("mode must be steps, face or approach")
         value["size"] = s.observations.image(s.current["frame"])["size"]
         refs = [s.current["path"]] if value["done"] else []
         labels = [f"[CURRENT {s.current['frame']}]"] if refs else []
         if after == "panorama":
-            if s._stop_reason or s._movement_exhausted:
+            if s.request.stop_reason:
                 value["after"] = {"executed": False, "reason": "execution_window_ended"}
             else:
                 try:
                     observation, refs, labels = self.observe("panorama")
                     value["after"] = {"executed": True, **observation}
                     value["frame"] = s.current["frame"]
-                except ValueError as error:
+                except ToolInputError as error:
                     value["after"] = {"executed": False, "reason": str(error)}
                 except Exception as error:
                     # Motion has already happened: retain the receipt and never ask to replay it.
                     value["after"] = {"executed": False, "reason": f"Observation failed: {type(error).__name__}"}
-                    s._broken, s._stop_reason = True, "environment_error"
-        return s._reply(value, refs, labels, end=bool(s._stop_reason))
+                    s.broken, s.request.stop_reason = True, "environment_error"
+        return s.reply(value, refs, labels, end=bool(s.request.stop_reason))
 
     def images(self, images, layout="separate"):
-        s = self.session
+        s = self.executor
         # Resolve every reference before creating derived images.
         for item in images:
             s.observations.image(item["image"])
@@ -136,15 +138,12 @@ class NavigationTools:
                 detail.update(node=node["id"], anchor_pose=node["pose"])
             identity = f"{node['id']} | " if node else ""
             labels.append(f"[{kinds[row['kind']]} {identity}image={row['image']} | {row['size'][0]}x{row['size'][1]}]")
-        return self.session._reply({"images": metadata}, [row["path"] for row in rows], labels)
+        return self.executor.reply({"images": metadata}, [row["path"] for row in rows], labels)
 
     def task_read(self):
-        s = self.session
-        value = {"request": s._current_request}
-        groups = [("target", s._target_frames)]
-        if s._qa:
-            value["question"] = s._current_question
-            groups.append(("question", s._question_frames))
+        s = self.executor
+        value = {"request": s.request.text}
+        groups = [("target", s.request.target_frames)]
         images, refs, labels = [], [], []
         for kind, frames in groups:
             for frame in dict.fromkeys(frames):
@@ -154,12 +153,12 @@ class NavigationTools:
                 labels.append(f"[{kind.upper()} {frame} | {row['size'][0]}x{row['size'][1]}]")
         if images:
             value["images"] = images
-        return s._reply(value, refs, labels)
+        return s.reply(value, refs, labels)
 
     def map_value(self, overlay=None, project=None, **args):
-        s = self.session
+        s = self.executor
         if overlay is not None and not s.spatial.enabled:
-            raise ValueError("RGB overlay requires super tools")
+            raise ToolInputError("RGB overlay requires super tools")
         points = s.spatial.geometry.overlay(overlay) if overlay else None
         node_mode = s.memory_type == "node"
         path = s.environment.motion_trajectory if node_mode else s.environment.trajectory
@@ -169,7 +168,7 @@ class NavigationTools:
         if project is not None:
             if (not isinstance(project, dict) or set(project) != {"source", "points"}
                     or not isinstance(project["points"], list) or not 1 <= len(project["points"]) <= 10):
-                raise ValueError("project requires source and 1–10 pixel pairs")
+                raise ToolInputError("project requires source and 1–10 pixel pairs")
             for i, pixel in enumerate(project["points"], 1):
                 label = f"P{i}"
                 try:
@@ -177,7 +176,7 @@ class NavigationTools:
                     marker = {"label": label, "uv": resolved["uv"]}
                     projected.append(marker)
                     markers.append(marker)
-                except ValueError as error:
+                except ToolInputError as error:
                     projected.append({"label": label, "error": str(error)})
         value = s.renderer.render(s.current["pose"], trajectory, overlay_points=points, located_points=markers,
                                   trajectory_breaks=breaks, **args)
@@ -199,10 +198,10 @@ class NavigationTools:
         return {k: v for k, v in value.items() if k not in {"pixel_to_uv", "plot_bounds"}}
 
     def read_memory(self, **args):
-        s = self.session
+        s = self.executor
         result = s.spatial.near(**args) if "near" in args else s.memory.read(**args)
         if "error" in result:
-            return s._reply(result, error=True)
+            return s.reply(result, error=True)
         detailed = args.get("ids") is not None or result.get("total", 0) <= 5
         if detailed and args.get("ids") is None:
             details = s.memory.read(ids=[e["id"] for e in result["entities"]])["entities"]
@@ -221,23 +220,23 @@ class NavigationTools:
         selected = frames[:2]
         result["attached_evidence"] = selected
         images = [s.observations.image(fid) for fid in selected]
-        return s._reply(result, [row["path"] for row in images],
+        return s.reply(result, [row["path"] for row in images],
                         [f"[HISTORY {row['image']} | {row['size'][0]}x{row['size'][1]} | recorded evidence, not verified]"
                          for row in images])
 
     def edit_memory(self, operations):
-        s = self.session
+        s = self.executor
         requested = operations
         before_entities = s.memory.entities
         before = s.trace.store(before_entities)
         try:
             operations, sources = s.spatial.prepare_edits(operations)
-        except (ValueError, TypeError, KeyError) as error:
-            return s._reply({"error": f"{error}. No memory changes applied."}, error=True)
+        except ToolInputError as error:
+            return s.reply({"error": f"{error}. No memory changes applied."}, error=True)
         result = s.memory.edit(operations)
         if "error" in result:
             result["error"] += ". No memory changes applied."
-            return s._reply(result, error=True)
+            return s.reply(result, error=True)
         s.spatial.remember_sources(operations, sources)
         s.trace.emit("memory_changed", {"before": before, "after": s.trace.store(s.memory.entities)})
         identifiers = {change["id"] for change in result["changes"]}
@@ -249,21 +248,17 @@ class NavigationTools:
             # The edit is committed. A failed preview must not invite a duplicate write.
             result["preview_error"] = f"Memory saved; visual feedback unavailable ({type(error).__name__}). Read the existing record; do not repeat create."
             s.trace.emit("memory_preview_error", {"error": str(error)})
-            return s._reply(result)
+            return s.reply(result)
         if preview is None:
-            return s._reply(result)
+            return s.reply(result)
         result["preview"] = {k: v for k, v in preview.items() if k != "path"}
-        return s._reply(result, [preview["path"]],
+        return s.reply(result, [preview["path"]],
                         [f"[MEMORY EDIT {preview['image']} | selected pixels and saved locations; not verified]"])
 
     def execute(self, name, args):
-        s = self.session
-        if s._qa and name not in {"view_images", "memory_read", "map_view", "task_read", "submit"}:
-            raise ValueError("This question permits only existing-evidence queries and submission")
-        if s._movement_exhausted and name in {"move", "observe"}:
-            raise ValueError("Movement window ended; finish using existing evidence")
+        s = self.executor
         if name == "observe":
-            return s._reply(*self.observe(**args))
+            return s.reply(*self.observe(**args))
         if name == "move":
             return self.move(**args)
         if name == "view_images":
@@ -280,8 +275,8 @@ class NavigationTools:
             return self.edit_memory(**args)
         if name == "map_view":
             value = self.map_value(**args)
-            return s._reply(value, [value["map"]], [f"[MAP {value['view_id']} | model-written records]"])
+            return s.reply(value, [value["map"]], [f"[MAP {value['view_id']} | model-written records]"])
         if name == "submit":
-            s._submitted, s._answer = True, args.get("answer", "")
-            return s._reply({"submitted": True}, end=True)
-        raise ValueError(f"Unknown tool: {name}")
+            s.request.submitted, s.request.answer = True, args.get("answer", "")
+            return s.reply({"submitted": True}, end=True)
+        raise ToolInputError(f"Unknown tool: {name}")

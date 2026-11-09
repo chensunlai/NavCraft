@@ -1,5 +1,7 @@
 """Geometric assistance for model-selected points; never reads task goals or scores."""
 
+from .errors import ToolInputError
+
 from copy import deepcopy
 import json
 import math
@@ -13,13 +15,13 @@ from .memory import location
 
 
 class SpatialTools:
-    def __init__(self, session):
-        self.session = session
-        self.geometry = Geometry(session.workspace, session.private, session.transform,
-                                 bounded=session.memory_type != "node")
-        self.sources_path = session.private / "location_sources.json"
-        self.enabled = session.tool_tier == "super"
-        self.planner = session.config.get("goto_planner", "local")
+    def __init__(self, executor):
+        self.executor = executor
+        self.geometry = Geometry(executor.workspace, executor.private, executor.transform,
+                                 bounded=executor.memory_type != "node")
+        self.sources_path = executor.private / "location_sources.json"
+        self.enabled = executor.tool_tier == "super"
+        self.planner = executor.goto_planner
         if self.planner not in {"local", "straight"}:
             raise ValueError("goto_planner must be local or straight")
 
@@ -27,7 +29,7 @@ class SpatialTools:
         if observation.depth is None:
             raise ValueError("super tools require private RGB-D captures")
         camera, pose = observation.camera, observation.pose
-        directory = self.session.private / "depth"
+        directory = self.executor.private / "depth"
         directory.mkdir(exist_ok=True)
         depth = directory / (row["frame"] + ".png")
         shutil.copyfile(observation.depth, depth)
@@ -37,7 +39,7 @@ class SpatialTools:
                   "world_from_optical": pose["world_from_optical"],
                   "body_position": body_pose["position"],
                   "body_forward": body_forward(body_pose["rotation_xyzw"]),
-                  "floor_height": self.session.transform["floor_height"],
+                  "floor_height": self.executor.transform["floor_height"],
                   "width": camera["width"], "height": camera["height"],
                   "depth_min": camera["depth_min"], "depth_max": camera["depth_max"]}
         with (directory / "index.jsonl").open("a") as stream:
@@ -45,7 +47,7 @@ class SpatialTools:
 
     def prepare_edits(self, operations):
         prepared, sources = deepcopy(operations), {}
-        entities = self.session.memory.entities
+        entities = self.executor.memory.entities
         kinds = {e["id"]: e["type"] for e in entities}
         evidence_by_id = {e["id"]: list(e.get("evidence", [])) for e in entities}
         for op in prepared:
@@ -57,10 +59,10 @@ class SpatialTools:
             reference = fields.pop("location", None)
             if reference is not None:
                 if any(k in fields for k in ("point", "anchor")):
-                    raise ValueError("location cannot be combined with point or anchor")
+                    raise ToolInputError("location cannot be combined with point or anchor")
                 kind = kinds.get(identifier)
                 if kind not in {"room", "door", "object"}:
-                    raise ValueError("location requires an existing or newly created entity type")
+                    raise ToolInputError("location requires an existing or newly created entity type")
                 value = self.target(reference)
                 fields["anchor" if kind == "room" else "point"] = value["uv"]
                 if value.get("frame"):
@@ -91,7 +93,7 @@ class SpatialTools:
 
     def remember_sources(self, operations, additions):
         sources = json.loads(self.sources_path.read_text()) if self.sources_path.exists() else {}
-        entities = {e["id"]: e for e in self.session.memory.entities}
+        entities = {e["id"]: e for e in self.executor.memory.entities}
         for op in operations:
             identifier = op.get("id", op.get("keep"))
             if any(key in op.get("fields", {}) for key in ("point", "anchor")):
@@ -105,28 +107,28 @@ class SpatialTools:
 
     def near(self, near, ids=None, filter=None, limit=30, offset=0):
         if ids is not None or not isinstance(near, dict):
-            raise ValueError("near must be an object and cannot be combined with ids")
-        session = self.session
+            raise ToolInputError("near must be an object and cannot be combined with ids")
+        executor = self.executor
         if set(near) == {"self"}:
-            centre, radius = session.current["pose"]["pos"], near["self"]
+            centre, radius = executor.current["pose"]["pos"], near["self"]
         elif "entity" in near and not set(near) - {"entity", "radius"}:
             centre, radius = self.target({"entity": near["entity"]})["uv"], near.get("radius", 3)
         else:
-            raise ValueError("near requires self:radius or entity:id with optional radius")
+            raise ToolInputError("near requires self:radius or entity:id with optional radius")
         if type(radius) not in (int, float) or not math.isfinite(radius) or radius <= 0:
-            raise ValueError("near radius must be positive")
+            raise ToolInputError("near radius must be positive")
         # Let the base memory reader enforce filtering and pagination types.
-        validation = session.memory.read(filter=filter, limit=limit, offset=offset)
+        validation = executor.memory.read(filter=filter, limit=limit, offset=offset)
         if "error" in validation:
             return validation
-        candidates = session.memory.read(filter=filter, limit=300)["entities"]
-        entities = {e["id"]: e for e in session.memory.entities}
+        candidates = executor.memory.read(filter=filter, limit=300)["entities"]
+        entities = {e["id"]: e for e in executor.memory.entities}
         found = []
         for summary in candidates:
             uv = location(entities[summary["id"]])
             if uv is None:
                 continue
-            distance = math.dist(centre, uv) * session.transform["size_m"]
+            distance = math.dist(centre, uv) * executor.transform["size_m"]
             if distance <= radius:
                 bearing, current_distance = self.relative(uv)
                 found.append((distance, {**summary, "bearing": round(bearing, 2), "distance": round(current_distance, 3)}))
@@ -136,27 +138,27 @@ class SpatialTools:
 
     def target(self, target):
         if not isinstance(target, dict):
-            raise ValueError("target must be an image/pixel, uv or entity reference")
+            raise ToolInputError("target must be an image/pixel, uv or entity reference")
         if set(target) == {"node"}:
-            if self.session.memory_type != "node":
-                raise ValueError("Node references require node memory")
-            node = self.session.memory.get(target["node"])
+            if self.executor.memory_type != "node":
+                raise ToolInputError("Node references require node memory")
+            node = self.executor.memory.get(target["node"])
             return {"uv": node["pose"]["pos"], "height": 0, "observed": False}
         if set(target) == {"image", "pixel"}:
-            reference, pixel = self.session.observations.resolve_pixel(target["image"], target["pixel"])
+            reference, pixel = self.executor.observations.resolve_pixel(target["image"], target["pixel"])
             if reference.startswith("m_"):
                 return {**self.geometry.resolve_map(reference, pixel), "height": 0, "observed": False}
             if not self.enabled:
-                raise ValueError("Basic tools cannot project RGB pixels. Use a map image (m_) and pixel, "
+                raise ToolInputError("Basic tools cannot project RGB pixels. Use a map image (m_) and pixel, "
                                  "or global UV; omit an uncertain location rather than using the camera position.")
             value = self.geometry.resolve_frame(reference, pixel)
             if not value["valid"]:
-                raise ValueError(value["reason"])
+                raise ToolInputError(value["reason"])
             return {"uv": value["uv"], "height": value["height"], "observed": True, "frame": reference}
         if set(target) == {"entity"}:
-            entity = next((e for e in self.session.memory.entities if e["id"] == target["entity"]), None)
+            entity = next((e for e in self.executor.memory.entities if e["id"] == target["entity"]), None)
             if entity is None or location(entity) is None:
-                raise ValueError("Entity is missing or has no location")
+                raise ToolInputError("Entity is missing or has no location")
             sources = json.loads(self.sources_path.read_text()) if self.sources_path.exists() else {}
             source = sources.get(entity["id"], {})
             observed = source.get("uv") == location(entity)
@@ -166,23 +168,23 @@ class SpatialTools:
             uv = target["uv"]
             if (not isinstance(uv, list) or len(uv) != 2 or
                     any(type(v) not in (int, float) or not math.isfinite(v)
-                        or (self.session.memory_type != "node" and not 0 <= v <= 1) for v in uv)):
-                raise ValueError("uv must contain two finite numbers within the map coordinate domain")
+                        or (self.executor.memory_type != "node" and not 0 <= v <= 1) for v in uv)):
+                raise ToolInputError("uv must contain two finite numbers within the map coordinate domain")
             return {"uv": uv, "height": 0, "observed": False}
-        raise ValueError("target must specify exactly image/pixel, uv or entity")
+        raise ToolInputError("target must specify exactly image/pixel, uv or entity")
 
     def relative(self, uv):
-        value = bearing_distance(self.session.current["pose"], uv, self.session.transform)
+        value = bearing_distance(self.executor.current["pose"], uv, self.executor.transform)
         return value["bearing_degrees"], value["distance_m"]
 
     def move(self, target, *, face=False, stop_distance=None, max_actions=40):
         value = self.target(target)
         if type(max_actions) is not int or not 1 <= max_actions <= 40:
-            raise ValueError("max_actions must be an integer in [1,40]")
+            raise ToolInputError("max_actions must be an integer in [1,40]")
         stop_distance = (.2 if value["height"] <= .15 else .6) if stop_distance is None else stop_distance
         if type(stop_distance) not in (int, float) or not math.isfinite(stop_distance) or stop_distance <= 0:
-            raise ValueError("stop_distance must be positive")
-        session, goal = self.session, value["uv"]
+            raise ToolInputError("stop_distance must be positive")
+        executor, goal = self.executor, value["uv"]
         route, planner = None, "straight"
         bearing, remaining = self.relative(goal)
         stop = "completed"
@@ -191,25 +193,25 @@ class SpatialTools:
             if remaining > 8:
                 stop = "outside_local_scope"
             else:
-                point = uv_to_world(goal, session.transform)
-                endpoint = session.environment.near_point(point, stop_distance)
-                route = session.environment.shortest_path([endpoint]) if endpoint is not None else []
-                start = session.environment.position()
+                point = uv_to_world(goal, executor.transform)
+                endpoint = executor.environment.near_point(point, stop_distance)
+                route = executor.environment.shortest_path([endpoint]) if endpoint is not None else []
+                start = executor.environment.position()
                 length = sum(math.dist(a, b) for a, b in zip(route, route[1:]))
                 if not route:
                     stop = "unreachable"
                 elif length > 8 or any(abs(p[1] - start[1]) > .5 or math.dist(p, start) > 8 for p in route):
                     stop = "outside_local_scope"
         done, events, turn_degrees = [], [], 0.
-        start_steps = session.environment.steps
+        start_steps = executor.environment.steps
         deadline = time.monotonic() + 90
-        while stop == "completed" and session.environment.steps - start_steps < max_actions:
+        while stop == "completed" and executor.environment.steps - start_steps < max_actions:
             if time.monotonic() >= deadline:
                 stop = "time_limit"
                 break
             bearing, remaining = self.relative(goal)
-            if planner == "local" and (remaining > 8 or math.dist(session.environment.position(), start) > 8
-                                       or abs(session.environment.position()[1] - start[1]) > .5):
+            if planner == "local" and (remaining > 8 or math.dist(executor.environment.position(), start) > 8
+                                       or abs(executor.environment.position()[1] - start[1]) > .5):
                 stop = "outside_local_scope"
                 break
             if face and abs(bearing) <= 1 or not face and remaining <= stop_distance:
@@ -217,14 +219,14 @@ class SpatialTools:
                 break
             waypoint = goal
             if route:
-                current = session.environment.position()
+                current = executor.environment.position()
                 while len(route) > 1 and math.dist(current, route[0]) < .26:
                     route.pop(0)
-                waypoint = world_to_uv(route[0], session.transform)
+                waypoint = world_to_uv(route[0], executor.transform)
             turn, _ = self.relative(waypoint)
             degrees = max(-30., min(30., turn)) if abs(turn) > 1 else None
             action = ("turn_right" if degrees > 0 else "turn_left") if degrees is not None else "move_forward"
-            receipt = session._perform_motion(action, degrees)
+            receipt = executor.perform_motion(action, degrees)
             if receipt is None:
                 stop = "interrupted"
                 break
@@ -235,7 +237,7 @@ class SpatialTools:
                 done.append([action, 1])
             turn_degrees += degrees or 0
             if motion.collision or motion.blocked:
-                events.append({"i": session.environment.steps - start_steps, "collision": bool(motion.collision),
+                events.append({"i": executor.environment.steps - start_steps, "collision": bool(motion.collision),
                                "auto_yaw": round(-motion.auto_yaw_delta_degrees, 2)})
             if motion.blocked:
                 stop = "blocked"
@@ -244,9 +246,9 @@ class SpatialTools:
         reached = abs(bearing) <= 1 if face else remaining <= stop_distance
         if stop == "completed":
             stop = ("aligned" if face else "reached") if reached else "max_actions"
-        session._publish_state()
-        result = {"done": done, "stop": stop, "frame": session.current["frame"],
-                  "step": session.environment.steps, "pose": session.current["pose"], "turn_degrees": round(turn_degrees, 2)}
+        executor.publish_state()
+        result = {"done": done, "stop": stop, "frame": executor.current["frame"],
+                  "step": executor.environment.steps, "pose": executor.current["pose"], "turn_degrees": round(turn_degrees, 2)}
         if events:
             result["events"] = events
         if face:
