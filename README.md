@@ -1,6 +1,6 @@
 # NavCraft Lite
 
-Python navigation tools, spatial memory, Habitat execution and private benchmark scoring, driven by a local Pi Agent Core. A model receives RGB, continuous map pose, architectural walls, and its own initially empty entity memory.
+Python navigation tools, spatial memory, Habitat execution and private benchmark scoring, driven by a local Pi Agent Core. A model receives RGB, continuous map pose, and its own spatial memory. Entity toolsets use architectural walls; node toolsets index visited panoramas on a blank map.
 
 ## Setup
 
@@ -34,7 +34,7 @@ python -m src.bench report --output runs/<run-name>
 
 Only physical GPUs 0 and 1 are permitted for simulation. The fixed pilot uses DeepSeek xhigh / Qwen27 medium / Sol high, with per-model concurrency 1 / 4 / 2. GOAT uses the same persistent session across subgoals, but is not part of this pilot.
 
-Programmatic callers use `src.harness.open_session(...)` and successive `session.prompt(...)` calls. Tool definitions and execution live in Python; the TS Core is task independent. `submit` ends one request and never returns an evaluation outcome. Native Coding tools can read scene, observations and memory; only scratch is writable. Spatial entities change through `memory_edit`; the model maintains notes and scripts freely under `scratch/`. The [Harness guide](src/harness/README.md) documents the seven tools and their shared references.
+Select a complete toolset with `--model-config config/harness/node_geometry.yaml` or another `config/harness/` file. Programmatic callers use `src.harness.open_session(...)` and successive `session.prompt(...)` calls. Tool definitions and execution live in Python; the TS Core is task independent. `submit` ends one request and never returns an evaluation outcome. Native Coding tools can read scene, observations and memory; only scratch is writable. Spatial entities change through `memory_edit`; the model maintains notes and scripts freely under `scratch/`. The [Harness guide](src/harness/README.md) documents the entity/node toolsets and their shared references.
 
 For a continuous development check, load a frozen local task chain:
 
@@ -51,7 +51,7 @@ This preserves one environment, Pi session and memory across all requests. Expli
 
 - `src/dataset`: official episode readers; no map construction during evaluation.
 - `src/environment`: fresh observations, panorama, adaptive atomic motion, private pose and microstep path.
-- `src/harness`: seven tools, entity memory and free workspace notes, map rendering, public state and session lifecycle.
+- `src/harness`: independent navigation executor, entity/node memory, map/image tools, free workspace notes, and a Pi-backed Agent session.
 - `src/agent-core`: Pi session, model transport, Coding sandbox, compaction and request ledger.
 - `src/bench`: natural requests, scheduling, limits, submission and private SR/SPL/NE.
 
@@ -78,3 +78,5 @@ Both tiers expose `observe`, `move`, `map_view`, `view_images`, `memory_read`, `
 All point-consuming operations share entity, displayed-image-pixel or global-UV references. `move(after="panorama")` returns the panorama directly; map views attach at most 12 related record summaries, and detailed memory reads at most two evidence images. Further detail remains available on request. Formal memory still validates structure and references, not semantic truth.
 
 Only an observed point with preserved provenance can use the bounded local NavMesh planner. An arbitrary map point uses straight motion. Geometric arrival refers to the model-selected point, never task success. Depth stays private; tool projections do not certify object identity, glass or mirrors.
+
+Scripted capture and replay use `src.harness.NavigationExecutor` without a model or Pi. Bench freezes each EpisodeSpec and merged model configuration before dispatch; worker processes load their frozen job files. Official episodes, continuous scenarios and short tasks retain separate task loops and scoring.

@@ -8,8 +8,7 @@
   "scripts": {
     "build:pi": "npm run build --workspace @earendil-works/pi-coding-agent",
     "build": "npm run build:pi && tsc -p src/agent-core/tsconfig.json",
-    "check": "tsc -p src/agent-core/tsconfig.json --noEmit",
-    "harness": "python -m src.harness"
+    "check": "tsc -p src/agent-core/tsconfig.json --noEmit"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.2.0",

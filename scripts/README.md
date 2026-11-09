@@ -32,8 +32,7 @@
 | 环境 | `config/environments/habitat.yaml` | 场景根目录、GPU 池、随机种子 |
 | 任务 | `config/tasks/` | 冻结 episode 列表、连续任务与地图路径、场景构建队列 |
 | 预算 | `config/budgets/navigation.yaml` | 完整导航的动作、请求、时间限制 |
-| 工具 | `config/tools/{basic,super}.yaml` | 工具集合及局部规划方式 |
-| 记忆 | `config/memory/{entity,node}.yaml` | 默认实体记忆或新增到访节点记忆；通过 `--model-config` 组合 |
+| Harness | `config/harness/{entity,entity_geometry,node,node_geometry}.yaml` | 完整 toolsets 列表；一种记忆，可选 geometry；通过 `--model-config` 组合 |
 | 上下文 | `config/runtime/navigation.yaml` | 上下文容量与压缩阈值 |
 | 构图 | `config/build_maps/{runtime,walls,full}.yaml` | 运行限制、GPU 池、构建阶段和工作空间模式 |
 
@@ -41,7 +40,7 @@
 
 合并规则：后面的文件覆盖前面的同名字段；字典递归合并，列表整体替换，最后显式传入的模块参数优先。`extends` 相对当前 YAML 解析，其余路径相对仓库根目录。`config/pilot.yaml` 仅作为原有模块命令的默认组合入口，不再重复维护样本。
 
-切换模型或工具通常只需更换顶部 `MODEL_CONFIG`、`TOOLS_CONFIG`。批量 pilot 通过命令中的 `--model` 选择模型注册表中的名称；选 Astra 时将 `MODELS_CONFIG` 改成 `config/models/all.yaml`。221 当前从 `.env.harness-test` 读取，切换服务修改 provider 配置即可。子进程和工具里的 Python 跟随启动脚本的当前解释器。
+切换模型或工具通常只需更换顶部 `MODEL_CONFIG`、`HARNESS_CONFIG`。批量 pilot 通过命令中的 `--model` 选择模型注册表中的名称；选 Astra 时将 `MODELS_CONFIG` 改成 `config/models/all.yaml`。221 当前从 `.env.harness-test` 读取，切换服务修改 provider 配置即可。子进程和工具里的 Python 跟随启动脚本的当前解释器。
 
 ## 构图新建、预览与恢复
 
@@ -64,3 +63,5 @@
 读取时由 Dataset 统一选择楼层并换算公开坐标，公开几何保存在当次运行 `private/map.json`，源文件哈希记录于 `private/map_source.json`；随后仅允许的几何进入模型工作空间。原始标注不被改写，既有运行的输入不随场景更新改变。构图过程日志和 Codex Home 放在 `cache/build-maps/`。
 
 新增非 HSSD 100 景清单冻结后，可运行 `bash scripts/build_maps_nonhssd100.sh`；复用 provider/model/runtime/stage 配置，只换 `config/tasks/scene_maps_nonhssd100.yaml`。启动前确认同批次没有其他进程正在写入。
+
+任务来源与冻结子集边界在 `config/tasks/sources.yaml`，具体任务配置通过 `extends` 引用。单条运行也需要对应任务配置。Prepare 只解析实际选定的模型；worker 使用 plan/job 内冻结的 EpisodeSpec 和合并模型配置，不再重读原始任务分片或模型 YAML。

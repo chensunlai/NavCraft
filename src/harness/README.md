@@ -4,7 +4,7 @@ Python 持有环境、公开观察和空间记忆，Pi Core 持有唯一的模�
 
 ## 记忆模式
 
-会话创建时通过 `memory_type: entity / node` 选择，默认 `entity`。配置片段位于 `config/memory/`，与模型、basic/super、预算配置组合。实体模式保留原墙图、八工具和 `memory/entities.json`；下文既有实体接口描述仍适用于该模式。
+工具选择统一由 `toolsets` 指定，完整组合放在 `config/harness/{entity,entity_geometry,node,node_geometry}.yaml`。例如 `[navigation, node_memory, geometry]`：共同执行工具＋节点记忆＋几何辅助。每次选择一种记忆；`geometry` 可选。列表整体替换，与服务、模型、上下文和预算配置组合。默认模型配置使用实体工具集。
 
 节点模式使用空白底图与 `memory/nodes.json`，只暴露 `observe / move / memory_read / memory_edit / task_read / submit`。它与实体模式共用观察、运动、读图、地图渲染、Pi 会话及压缩，未创建第二套 Harness。模式写入运行结果和快照，跨模式恢复会报错；节点模式无需已构建墙图。
 
@@ -49,7 +49,8 @@ flowchart LR
     P[普通请求与可选目标图] --> S[HarnessSession]
     S <-->|JSONL：请求、工具回调、事件| C[Pi Core：模型循环与会话]
     C --> F[read / write / edit / bash]
-    S --> T[Python 导航工具]
+    S --> X[NavigationExecutor：执行与请求状态]
+    X --> T[Python 导航工具]
     T <--> E[环境：观察与运动]
     T <--> M[空间记忆与地图]
     T --> O[有身份标签的图片与紧凑回执]
@@ -58,14 +59,18 @@ flowchart LR
     M <--> W
 ```
 
-1. `open_session(...)` 接收已经初始化的环境、公开墙图和可选状态快照，准备工作空间与初始 RGB。工具定义在会话创建时固定。
+1. `open_session(...)` 创建独立的 `NavigationExecutor` 并连接 Pi。执行器持有已初始化环境、观察索引、空间记忆与工具绑定；实体工具集需要墙图，节点工具集不需要。
 2. `prompt(text, images, limits)` 追加用户请求、当前画面与地图位姿。可选目标图保留到下一条新请求替换它；同一会话保留环境位置、历史、记忆和文件。
-3. Pi 串行执行工具。Python 工具返回 JSON、带身份标签的图片以及内部公开状态快照；原生 Coding 工具直接在受限工作空间执行。回执追加到同一历史。
+3. Pi 串行执行工具。Python 工具返回 JSON、带身份标签的图片及结束控制信号；原生 Coding 工具直接在受限工作空间执行。回执追加到同一历史。
 4. `submit` 结束当前请求，返回确认而不返回评分；普通文字结束只交还控制权。两者都不关闭会话。`close()` 才释放 Core，环境生命周期由创建它的调用方管理。
 
-`ask(...)` 保留导航请求与目标图，只允许查询已有证据和提交答案；Coding 工具仍可在 `scratch/` 计算。`continue_run(...)` 从已有历史继续，不插入新的用户消息。`snapshot(path)` 在空闲边界保存环境状态、工作空间、观察索引、私有投影资料与 Pi 会话，恢复时不重新拍摄当前帧。
+`snapshot(path)` 在空闲边界保存环境、工作空间、观察索引、私有投影资料与 Pi 会话；恢复直接使用旧当前帧，不重新拍图。Python 没有另一套模型历史，也不保留无调用方的 `ask/continue_run` 和决策窗口分支。
 
-执行结果是 `PromptResult`：`submitted / answer / reason / requests / actions / elapsed_seconds / record`。预算限制和故障归档属于运行控制，不进入工具的公开评分反馈。工具参数定义只有一份：[specs.py](tools/specs.py)；执行在 [runtime.py](tools/runtime.py)，会话管理在 [session.py](session.py)。
+脚本采样直接创建 `NavigationExecutor(directory, environment, scene_map, toolsets=...)`，调用 `execute(call_id, name, args)` 和 `snapshot(path)`；不需要模型配置或 Pi。模型回调经过同一个执行入口，具有相同的参数校验、去重、预算、回执和审计记录。环境由创建它的调用方关闭。
+
+`PromptResult` 返回 `submitted / answer / reason / requests / actions / elapsed_seconds / record`。未提交的普通回答也保存在 `answer`，不因此获得任务成功。`time_budget` 是预算耗尽，`tool_timeout` 等是执行异常。仅显式 `ToolInputError` 可由模型修正；程序异常终止本次执行并标记不确定状态。
+
+[tools/__init__.py](tools/__init__.py) 将每项 schema 与执行函数绑定为一个 `Tool`。共同 schema 在 [navigation_specs.py](tools/navigation_specs.py)，实体与节点 schema 分别在 [entity_specs.py](tools/entity_specs.py)、[node_specs.py](tools/node_specs.py)。[session.py](session.py) 管理 Agent 会话，[executor.py](executor.py) 管理导航执行，[request.py](request.py) 集中保存每次请求的状态和限制。
 
 ## 共享坐标与引用
 
