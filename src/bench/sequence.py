@@ -289,7 +289,8 @@ def run_sequence(repo, model_config, scenario_path, scene_map, directory, enviro
                 try:
                     resource.close()
                 except Exception as error:
-                    result.update(status="infrastructure_error", cleanup_error=redact(str(error)))
+                    result.update(status="infrastructure_error")
+                    result.setdefault("cleanup_errors", []).append(redact(str(error)))
         result["finished_at"] = datetime.now(timezone.utc).isoformat()
         save()
     return result

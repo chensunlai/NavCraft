@@ -346,7 +346,7 @@ export function serve(input: Readable = process.stdin, output: Writable = proces
         const checkDeadline = () => {
           const remaining = seconds * 1000 - (Date.now() - started) + current.budget.serviceWaitMs - waitBefore;
           if (remaining > 0) { timer = setTimeout(checkDeadline, remaining); return; }
-          endRun = true; stopRemainingTools = true; failureReason = "timeout";
+          endRun = true; stopRemainingTools = true; failureReason = "time_budget";
           void current.session.abort();
         };
         timer = setTimeout(checkDeadline, seconds * 1000);

@@ -394,31 +394,32 @@ class HarnessSession:
                 self._target_frames = target_frames
             self._busy = True
         started, prompt_id = time.monotonic(), uuid.uuid4().hex
-        before, action_start = charged_requests(self.private), self.environment.steps
-        wait_before = wait_seconds(self.private)
-        self._submitted, self._answer, self._stop_reason = False, "", None
-        self._cancel.clear()
-        self._qa = mode == "ask"
-        self._current_question = text if self._qa else None
-        self._question_frames = target_frames if self._qa else []
-        self._decision_window = mode == "continue" and limits.max_turns is not None
-        self._movement_exhausted = False
-        self._run_turns = 0
-        self._closing_scheduled = False
-        self._turn_limit = limits.max_turns
-        if mode == "prompt":
-            self._current_request = text
-        self._observation_end = self._observations + limits.max_observations if limits.max_observations is not None else None
-        self._action_end = action_start + limits.max_actions
-        self._path_end = self.environment.path_length + limits.max_path_length if limits.max_path_length is not None else None
-        model_text = (text or "") + "\nCurrent map pose: " + json.dumps(self.current["pose"]) + "\n" + "\n".join(captions)
-        if mode == "ask":
-            model_text = ("Question about the current state. Keep the active navigation request unchanged. "
-                          "Use only existing evidence and call submit with your answer.\n" + model_text)
+        before = wait_before = None
+        action_start = self.environment.steps
         settled = {"reason": "runtime_error"}
-        reason = "runtime_error"
-        error_text = None
+        reason, error_text = "runtime_error", None
         try:
+            self._submitted, self._answer, self._stop_reason = False, "", None
+            before, action_start = charged_requests(self.private), self.environment.steps
+            wait_before = wait_seconds(self.private)
+            self._cancel.clear()
+            self._qa = mode == "ask"
+            self._current_question = text if self._qa else None
+            self._question_frames = target_frames if self._qa else []
+            self._decision_window = mode == "continue" and limits.max_turns is not None
+            self._movement_exhausted = False
+            self._run_turns = 0
+            self._closing_scheduled = False
+            self._turn_limit = limits.max_turns
+            if mode == "prompt":
+                self._current_request = text
+            self._observation_end = self._observations + limits.max_observations if limits.max_observations is not None else None
+            self._action_end = action_start + limits.max_actions
+            self._path_end = self.environment.path_length + limits.max_path_length if limits.max_path_length is not None else None
+            model_text = (text or "") + "\nCurrent map pose: " + json.dumps(self.current["pose"]) + "\n" + "\n".join(captions)
+            if mode == "ask":
+                model_text = ("Question about the current state. Keep the active navigation request unchanged. "
+                              "Use only existing evidence and call submit with your answer.\n" + model_text)
             self._start_core()
             self.trace.emit("prompt_start", {"prompt_id": prompt_id, "text": text, "mode": mode,
                             "images": refs, "limits": asdict(limits)})
@@ -459,14 +460,23 @@ class HarnessSession:
             self._movement_exhausted = False
             if self._submitted and mode != "ask":
                 self._prompts.append(self._current_request)
-            elapsed = time.monotonic() - started - (wait_seconds(self.private) - wait_before)
-            result = PromptResult(prompt_id, self._submitted, self._answer, reason,
-                                  charged_requests(self.private) - before, self.environment.steps - action_start,
-                                  f"private/prompts/{prompt_id}.json", max(0, elapsed), self.trace.sanitize(error_text))
-            self.trace.emit("prompt_end", result.to_dict())
-            write_json(self.directory / result.record, result.to_dict())
-            with self._lock:
-                self._busy = False
+            try:
+                elapsed = time.monotonic() - started
+                if wait_before is not None:
+                    elapsed -= wait_seconds(self.private) - wait_before
+                used = charged_requests(self.private) - before if before is not None else 0
+                answer = self._answer if self._submitted else settled.get("answer", "")
+                result = PromptResult(prompt_id, self._submitted, answer, reason,
+                                      used, self.environment.steps - action_start,
+                                      f"private/prompts/{prompt_id}.json", max(0, elapsed), self.trace.sanitize(error_text))
+                self.trace.emit("prompt_end", result.to_dict())
+                write_json(self.directory / result.record, result.to_dict())
+            except BaseException:
+                self._broken = True
+                raise
+            finally:
+                with self._lock:
+                    self._busy = False
         return result
 
     def abort(self):

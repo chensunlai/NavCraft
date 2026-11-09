@@ -12,7 +12,7 @@ from src.dataset.maps import prepare_map
 from .metrics import score_episode, score_goal
 
 INFRASTRUCTURE_REASONS = {
-    "model_error", "service_error", "core_error", "environment_error", "timeout", "aborted", "error",
+    "model_error", "service_error", "core_error", "environment_error", "aborted", "error",
     "runtime_error", "execution_uncertain", "tool_timeout", "tool_result_invalid",
 }
 
