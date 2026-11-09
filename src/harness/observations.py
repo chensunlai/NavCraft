@@ -81,12 +81,12 @@ class Observations:
         frames.sort(key=lambda row: row["yaw"])
         pose, step = frames[0].get("pose"), frames[0].get("step")
         if not self._valid_pose(pose):
-            raise ToolInputError(f"Panorama {group} requires a valid capture pose")
+            raise ValueError(f"Panorama {group} requires a valid capture pose")
         for row in frames:
             current = row.get("pose")
             if (not self._valid_pose(current)
                     or current["pos"] != pose["pos"] or row.get("step") != step):
-                raise ToolInputError(f"Panorama {group} requires valid poses at one position and step")
+                raise ValueError(f"Panorama {group} requires valid poses at one position and step")
         return deepcopy({"group": group, "frames": frames, "pose": pose, "step": step})
 
     def current_panorama(self, current):
@@ -156,7 +156,7 @@ class Observations:
             row = {"image": reference, "path": maps[reference]["map"], "kind": "map"}
         path = (self.workspace / row["path"]).resolve()
         if not path.is_relative_to(self.directory.resolve()) or not path.is_file():
-            raise ToolInputError("Image is outside the public image directory")
+            raise ValueError("Registered image is missing or outside the public image directory")
         with Image.open(path) as image:
             return {**row, "size": list(image.size)}
 
