@@ -13,32 +13,16 @@ from src.harness.session import HarnessSession
 from src.harness.tools.specs import specifications
 
 
-class NoModelClient:
-    def __init__(self, *args):
-        pass
-
-    def request(self, op, *args, **kwargs):
-        return {"session_id": "fixture"} if op == "init" else {}
-
-    def close(self):
-        pass
-
-    def drain_events(self, callback):
-        pass
-
-
 @pytest.fixture
 def session(tmp_path):
     scene = tmp_path / "map.json"
     scene.write_text(json.dumps({"origin": [-10, -10], "size_m": 20,
                                 "floor_height": 0, "walls": [[[-2, -2], [-2, 2]]]}))
-    credentials = tmp_path / "credentials.env"
-    credentials.write_text("NAVCRAFT_TEST_BASE_URL=http://fixture.invalid\nNAVCRAFT_TEST_API_KEY=fixture\n")
     episode = EpisodeSpec("fixture", "0", "objnav", "unused", [0, 0, 0], [0, 0, 0, 1], [], "unused")
     env = Environment(episode, {"gpu": 0, "tool_tier": "super"}, tmp_path / "private-env", FakeSimulator)
     with HarnessSession(Path(__file__).resolve().parents[1],
-                        {"model": "fixture", "tool_tier": "super", "credentials": str(credentials)},
-                        tmp_path / "session", env, scene, client_factory=NoModelClient) as result:
+                        {"model": "fixture", "tool_tier": "super"},
+                        tmp_path / "session", env, scene, start_core=False) as result:
         yield result
     env.close()
 

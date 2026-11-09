@@ -58,7 +58,6 @@ export class RequestBudget {
     state.attempts.push(attempt); this.save(state);
     } finally { closeSync(fd); unlinkSync(lock); }
     const attempt = state.attempts.at(-1)!;
-    const url = attempt.url;
     this.trace.emit('http_request', { ...attempt,
       body_bytes: typeof init?.body === 'string' ? Buffer.byteLength(init.body) : undefined,
       body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined });

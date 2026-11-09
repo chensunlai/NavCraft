@@ -16,6 +16,7 @@ class FakeEnvironment:
         Image.new("RGB", (640, 480), "gray").save(self.image)
         self.steps, self.path_length = 0, 0
         self.trajectory = [[5., 0., 5.]]
+        self.trajectory_breaks = []
 
     def pose(self):
         return {"position": self.trajectory[-1], "rotation_xyzw": [0., 0., 0., 1.]}

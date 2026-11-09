@@ -44,22 +44,16 @@ class SpatialTools:
             stream.write(json.dumps(record) + "\n")
 
     def prepare_edits(self, operations):
-        if not isinstance(operations, list) or not 1 <= len(operations) <= 20:
-            raise ValueError("operations must contain 1-20 items")
         prepared, sources = deepcopy(operations), {}
         entities = self.session.memory.entities
         kinds = {e["id"]: e["type"] for e in entities}
         evidence_by_id = {e["id"]: list(e.get("evidence", [])) for e in entities}
         for op in prepared:
-            if not isinstance(op, dict):
-                raise ValueError("Each operation must be an object")
             identifier = op.get("id", op.get("keep"))
             if op.get("op") == "create":
                 kinds[identifier] = op.get("type")
                 evidence_by_id[identifier] = []
             fields = op.get("fields", {})
-            if not isinstance(fields, dict):
-                raise ValueError("fields must be an object")
             reference = fields.pop("location", None)
             if reference is not None:
                 if any(k in fields for k in ("point", "anchor")):
@@ -74,8 +68,6 @@ class SpatialTools:
                     evidence = fields.get("evidence", previous)
                     if evidence is None:
                         evidence = []
-                    if not isinstance(evidence, list):
-                        raise ValueError("evidence must be an array")
                     fields["evidence"] = list(dict.fromkeys([*evidence, value["frame"]]))
                 if value["observed"]:
                     sources[identifier] = {key: value[key] for key in ("frame", "uv", "height")}

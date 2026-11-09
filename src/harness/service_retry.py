@@ -15,9 +15,9 @@ def wait_seconds(private):
             (max(0, time.time() * 1000 - active) if active is not None else 0)) / 1000
 
 
-def charged_requests(private, fallback=0):
+def charged_requests(private):
     path = Path(private) / "requests.json"
     if not path.exists():
-        return fallback
+        return 0
     return sum(not attempt.get("service_error", False)
                for attempt in json.loads(path.read_text())["attempts"])

@@ -11,21 +11,6 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[3]
 os.environ.setdefault("__EGL_VENDOR_LIBRARY_FILENAMES", "/usr/share/glvnd/egl_vendor.d/10_nvidia.json")
 
-class OfflineClient:
-    """Keep the actual application and tools; replace only model transport."""
-    def __init__(self, *args):
-        pass
-
-    def request(self, op, *args, **kwargs):
-        return {"session_id": "offline-tools"} if op == "init" else {}
-
-    def close(self):
-        pass
-
-    def drain_events(self, callback):
-        pass
-
-
 def main():
     from src.bench.samples import load_episodes, map_directory
     from src.common.io import write_json
@@ -39,8 +24,6 @@ def main():
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    credentials = output / "offline.env"
-    credentials.write_text("NAVCRAFT_TEST_BASE_URL=http://offline.invalid\nNAVCRAFT_TEST_API_KEY=offline\n")
     episode = load_episodes(REPO, [args.episode])[0]
     scene_map = prepare_map(map_directory(REPO, episode), episode.start_position, output / "private")
     env = Environment(episode, {"gpu": args.gpu, "tool_tier": "super", "scenes": str(REPO / "data/nas/scene_datasets")},
@@ -48,8 +31,8 @@ def main():
     records = []
     progress = Progress("Super tools", ["observe", "projection", "memory_edit", "memory_read", "map_view", "face", "approach", "validate"])
     try:
-        with open_session(REPO, {"model": "offline", "tool_tier": "super", "credentials": str(credentials)},
-                          output, env, scene_map, client_factory=OfflineClient) as session:
+        with open_session(REPO, {"model": "offline", "tool_tier": "super"},
+                          output, env, scene_map, start_core=False) as session:
             def call(name, arguments, stage=None):
                 stage = stage or name
                 progress.set(stage, "running")

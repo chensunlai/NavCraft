@@ -116,13 +116,9 @@ class NavigationTools:
 
     def images(self, images, layout="separate"):
         s = self.session
-        if not isinstance(images, list) or not 1 <= len(images) <= 6 or layout not in {"separate", "grid"}:
-            raise ValueError("Expected 1–6 images and separate/grid layout")
         # Resolve every reference before creating derived images.
         for item in images:
-            if not isinstance(item, dict) or set(item) - {"image", "crop"}:
-                raise ValueError("Expected image and optional crop")
-            s.observations.image(item.get("image"))
+            s.observations.image(item["image"])
         rows = [s.observations.crop(item["image"], item["crop"]) if item.get("crop") is not None
                 else s.observations.image(item["image"]) for item in images]
         if layout == "grid":
@@ -144,7 +140,7 @@ class NavigationTools:
 
     def task_read(self):
         s = self.session
-        value = {"request": getattr(s, "_current_request", "")}
+        value = {"request": s._current_request}
         groups = [("target", s._target_frames)]
         if s._qa:
             value["question"] = s._current_question
@@ -166,10 +162,9 @@ class NavigationTools:
             raise ValueError("RGB overlay requires super tools")
         points = s.spatial.geometry.overlay(overlay) if overlay else None
         node_mode = s.memory_type == "node"
-        path = (getattr(s.environment, "motion_trajectory", s.environment.trajectory)
-                if node_mode else s.environment.trajectory)
+        path = s.environment.motion_trajectory if node_mode else s.environment.trajectory
         trajectory = [world_to_uv(p, s.transform) for p in path]
-        breaks = getattr(s.environment, "motion_trajectory_breaks" if node_mode else "trajectory_breaks", ())
+        breaks = s.environment.motion_trajectory_breaks if node_mode else s.environment.trajectory_breaks
         projected, markers = [], []
         if project is not None:
             if (not isinstance(project, dict) or set(project) != {"source", "points"}

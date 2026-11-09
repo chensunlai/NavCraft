@@ -108,7 +108,6 @@ class HarnessSession:
         self._answer = ""
         self._stop_reason = None
         self._action_end = None
-        self._requests = 0
         self._prompts = []
         self._target_frames = []
         for name in ("scene", "observations", "memory", "scratch"):
@@ -246,20 +245,15 @@ class HarnessSession:
             state = {"memory_type": self.memory_type,
                      "pose": self.environment.pose(), "current_frame": self.current["frame"],
                      "workspace": "workspace", "private_dir": "private", "history": history,
-                     "current_request": getattr(self, "_current_request", ""),
+                     "current_request": self._current_request,
                      "target_frames": self._target_frames, "submitted_requests": self._prompts,
                      "observations_count": self._observations,
                      "tool_receipts": deepcopy(self._calls),
-                     "environment": self.environment.state() if hasattr(self.environment, "state") else None}
+                     "environment": self.environment.state()}
             if session_file:
                 state["session_file"] = "private/pi-session.jsonl"
             write_json(destination / "state.json", state)
             return state
-
-    @property
-    def requests(self):
-        path = self.private / "requests.json"
-        return len(json.loads(path.read_text())["attempts"]) if path.exists() else self._requests
 
     def _publish_state(self):
         write_json(self.workspace / "scene/state.json", {"memory_type": self.memory_type, "pose": self.current["pose"],
@@ -441,7 +435,6 @@ class HarnessSession:
                             max(.01, limits.seconds - active_seconds),
                             on_event=lambda value: self._event(value, on_event),
                             cancel_event=self._cancel, prompt_id=prompt_id if not attempt else prompt_id + "-continue", **extra)
-                self._requests = settled.get("requests", self._requests)
                 if (settled.get("reason") != "no_action_output" or self._submitted or self._broken or attempt
                         or self._stop_reason or charged_requests(self.private) - before >= limits.max_requests):
                     break
@@ -465,7 +458,7 @@ class HarnessSession:
             self._qa = self._decision_window = False
             self._movement_exhausted = False
             if self._submitted and mode != "ask":
-                self._prompts.append(getattr(self, "_current_request", ""))
+                self._prompts.append(self._current_request)
             elapsed = time.monotonic() - started - (wait_seconds(self.private) - wait_before)
             result = PromptResult(prompt_id, self._submitted, self._answer, reason,
                                   charged_requests(self.private) - before, self.environment.steps - action_start,

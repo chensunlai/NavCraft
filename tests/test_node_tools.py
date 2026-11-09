@@ -336,29 +336,8 @@ def test_room_map_rejects_unknown_group_and_keeps_described_empty_room(node_tool
     node_tools.navigation.map_value.assert_called_once_with(view="explored", highlight=[])
 
 
-def test_room_edit_respects_qa_readonly_boundary(node_tools):
-    create_node(node_tools)
-    session = node_tools.session
-    session._qa = True
-    before = session.memory.path.read_bytes()
-    with pytest.raises(ValueError, match="existing-evidence"):
-        node_tools.edit([{"op": "update", "room": "living_room_1", "description": "Changed layout"}])
-    assert session.memory.path.read_bytes() == before
-    assert not node_tools.read(source="rooms")["error"]
-
-
-def test_qa_and_multiple_captures_are_rejected_before_writes(node_tools):
-    node_tools.session._qa = True
-    with pytest.raises(ValueError, match="existing-evidence"):
-        node_tools.edit([{"op": "create", "description": "Entrance"}])
-    node_tools.session._qa = False
+def test_multiple_captures_are_rejected_before_writes(node_tools):
     with pytest.raises(ValueError, match="at most one"):
         node_tools.edit([{"op": "create", "description": "Entrance"},
                          {"op": "create", "description": "Same entrance"}])
     assert node_tools.session.memory.nodes == [] and node_tools.session.trace.events == []
-
-
-def test_direct_reader_validates_modes_before_dispatch(node_tools):
-    with pytest.raises(ValueError, match="Invalid memory_read"):
-        node_tools.read(mode="image", refs=["p_first"], room="living_room_1")
-    node_tools.navigation.images.assert_not_called()

@@ -137,6 +137,19 @@ def test_node_approach_reports_partial_progress_without_new_route_planning(facto
     assert "waypoint" in result["hint"] if blocked else "Action limit" in result["hint"]
 
 
+@pytest.mark.parametrize("name,arguments", [
+    ("memory_read", {"mode": "image", "refs": ["p_missing"], "room": "living_room_1"}),
+    ("memory_read", {"mode": "map", "view": "explored", "radius_m": 6}),
+    ("memory_edit", {"operations": [{"op": "create", "description": "Entrance", "unknown": True}]}),
+])
+def test_session_rejects_invalid_node_arguments_before_dispatch(factory, monkeypatch, name, arguments):
+    session = factory()
+    monkeypatch.setattr(session.tools, "execute", lambda *_: pytest.fail("Invalid arguments reached tool execution"))
+    reply, result = call(session, name, arguments)
+    assert reply["result"]["isError"] and "error" in result
+    assert session.memory.nodes == []
+
+
 def test_readonly_question_cannot_write_or_capture(factory):
     session = factory()
     identifier, _ = node(session)

@@ -1,25 +1,12 @@
-"""Node memory tools reuse the navigation image and map readers."""
-
-from jsonschema import Draft7Validator
-
-from .node_specs import memory_specifications
+"""Node operations; the session validates schemas and dispatcher enforces permissions."""
 
 
 class NodeMemoryTools:
     def __init__(self, session, navigation_tools):
         self.session = session
         self.navigation = navigation_tools
-        self.validators = {spec["name"]: Draft7Validator(spec["parameters"])
-                           for spec in memory_specifications()}
-
-    def _validate(self, name, arguments):
-        error = next(self.validators[name].iter_errors(arguments), None)
-        if error is not None:
-            field = ".".join(map(str, error.absolute_path)) or "arguments"
-            raise ValueError(f"Invalid {name} {field}: {error.message}")
 
     def read(self, mode="text", **args):
-        self._validate("memory_read", {"mode": mode, **args})
         s = self.session
         if mode == "text":
             source = args.pop("source", "nodes")
@@ -64,9 +51,6 @@ class NodeMemoryTools:
 
     def edit(self, operations):
         s = self.session
-        if s._qa:
-            raise ValueError("This question permits only existing-evidence queries and submission")
-        self._validate("memory_edit", {"operations": operations})
         needs_panorama = [op for op in operations
                           if op["op"] == "create" or op["op"] == "update" and op.get("refresh")]
         if len(needs_panorama) > 1:
