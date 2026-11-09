@@ -8,6 +8,7 @@ import traceback
 from src.common.io import redact, write_json
 from src.common.progress import Progress
 from src.environment import Environment
+from src.harness.tools import Toolsets
 from src.dataset.maps import prepare_map
 from .metrics import score_episode, score_goal
 
@@ -91,12 +92,13 @@ def execute_goals(environment, session, episode, limits, directory):
 def run_episode(repo, model_config, episode, environment_config, scene_map, directory, limits, *, map_layer="walls"):
     from src.harness.session import PromptLimits, open_session
 
+    selection = Toolsets.resolve(model_config["toolsets"])
     repo, directory = Path(repo), Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     result = {"episode_id": episode.id, "benchmark": episode.benchmark,
               "model": model_config["model"], "reasoning_effort": model_config["reasoning_effort"],
-              "memory_type": model_config.get("memory_type", "entity"),
-              "tool_tier": model_config.get("tool_tier", "basic"),
+              "memory_type": selection.memory_type,
+              "toolsets": selection.names,
               "status": "running", "started_at": datetime.now(timezone.utc).isoformat(),
               "planned_goals": len(episode.goals), "gpu": environment_config["gpu"]}
     write_json(directory / "result.json", result)
@@ -104,9 +106,9 @@ def run_episode(repo, model_config, episode, environment_config, scene_map, dire
     environment = session = None
     rows = []
     try:
-        if model_config.get("memory_type", "entity") != "node":
+        if selection.memory_type != "node":
             scene_map = prepare_map(scene_map, episode.start_position, directory / "private", map_layer)
-        environment = Environment(episode, {**environment_config, "tool_tier": model_config.get("tool_tier", "basic")},
+        environment = Environment(episode, {**environment_config, "depth": selection.geometry},
                                   directory / "private/environment")
         preflight = validate_single_floor(environment, episode)
         write_json(directory / "private/preflight.json", preflight)

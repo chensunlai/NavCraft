@@ -12,11 +12,6 @@ from ..memory_feedback import memory_feedback
 class NavigationTools:
     def __init__(self, executor):
         self.executor = executor
-        self.node_tools = None
-        if executor.memory_type == "node":
-            from .node import NodeMemoryTools
-            self.node_tools = NodeMemoryTools(executor, self)
-
     def observe(self, mode="current", project=False):
         s = self.executor
         if mode not in {"current", "panorama"} or type(project) is not bool:
@@ -255,28 +250,14 @@ class NavigationTools:
         return s.reply(result, [preview["path"]],
                         [f"[MEMORY EDIT {preview['image']} | selected pixels and saved locations; not verified]"])
 
-    def execute(self, name, args):
-        s = self.executor
-        if name == "observe":
-            return s.reply(*self.observe(**args))
-        if name == "move":
-            return self.move(**args)
-        if name == "view_images":
-            return self.images(**args)
-        if name == "task_read":
-            return self.task_read(**args)
-        if name == "memory_read":
-            if self.node_tools:
-                return self.node_tools.read(**args)
-            return self.read_memory(**args)
-        if name == "memory_edit":
-            if self.node_tools:
-                return self.node_tools.edit(**args)
-            return self.edit_memory(**args)
-        if name == "map_view":
-            value = self.map_value(**args)
-            return s.reply(value, [value["map"]], [f"[MAP {value['view_id']} | model-written records]"])
-        if name == "submit":
-            s.request.submitted, s.request.answer = True, args.get("answer", "")
-            return s.reply({"submitted": True}, end=True)
-        raise ToolInputError(f"Unknown tool: {name}")
+    def observe_reply(self, **args):
+        return self.executor.reply(*self.observe(**args))
+
+    def map_reply(self, **args):
+        value = self.map_value(**args)
+        return self.executor.reply(value, [value["map"]], [f"[MAP {value['view_id']} | model-written records]"])
+
+    def submit(self, answer=""):
+        self.executor.request.submitted = True
+        self.executor.request.answer = answer
+        return self.executor.reply({"submitted": True}, end=True)

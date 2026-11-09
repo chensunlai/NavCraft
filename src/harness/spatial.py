@@ -20,7 +20,7 @@ class SpatialTools:
         self.geometry = Geometry(executor.workspace, executor.private, executor.transform,
                                  bounded=executor.memory_type != "node")
         self.sources_path = executor.private / "location_sources.json"
-        self.enabled = executor.tool_tier == "super"
+        self.enabled = executor.selection.geometry
         self.planner = executor.goto_planner
         if self.planner not in {"local", "straight"}:
             raise ValueError("goto_planner must be local or straight")

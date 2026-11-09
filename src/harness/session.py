@@ -30,11 +30,11 @@ class HarnessSession:
         self._lock = threading.Lock()
         self.navigation = NavigationExecutor(
             directory, environment, scene_map, initial_state=initial_state,
-            memory_type=config.get("memory_type", "entity"), tool_tier=config.get("tool_tier", "basic"),
+            toolsets=config["toolsets"],
             goto_planner=config.get("goto_planner", "local"))
         nav = self.navigation
         try:
-            options = core_options(config, self.repo, self.directory, nav.workspace, nav.tool_specs)
+            options = core_options(config, self.repo, self.directory, nav.workspace, nav.tool_specs, nav.selection)
             state = initial_state or {}
             if state.get("session_file"):
                 session_file = nav.private / "restored-session.jsonl"
@@ -183,4 +183,3 @@ class HarnessSession:
 
 def open_session(repo, config, directory, environment, scene_map=None, initial_state=None, **kwargs):
     return HarnessSession(repo, config, directory, environment, scene_map, initial_state, **kwargs)
-

@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 import threading
 
-from jsonschema import Draft7Validator
 from src.common.io import write_json
 from .errors import ToolInputError
 from .memory import MemoryStore
@@ -15,19 +14,19 @@ from .maps import MapRenderer
 from .observations import Observations
 from .request import RequestState
 from .spatial import SpatialTools
-from .tools.runtime import NavigationTools
-from .tools.specs import specifications
+from .tools import Toolsets, bind_tools
 from .trace import TraceWriter
 from .workspace import prepare_workspace, copy_snapshot_assets
 
 
 class NavigationExecutor:
-    def __init__(self, directory, environment, scene_map=None, *, memory_type="entity",
-                 tool_tier="basic", goto_planner="local", initial_state=None):
+    def __init__(self, directory, environment, scene_map=None, *,
+                 toolsets=("navigation", "entity_memory"), goto_planner="local", initial_state=None):
         self.directory = Path(directory).resolve()
         self.workspace, self.private = self.directory / "workspace", self.directory / "private"
         self.environment = environment
-        self.memory_type, self.tool_tier = memory_type, tool_tier
+        self.selection = toolsets if isinstance(toolsets, Toolsets) else Toolsets.resolve(toolsets)
+        self.memory_type = memory_type = self.selection.memory_type
         self.goto_planner = goto_planner
         self.broken = False
         self.cancel = threading.Event()
@@ -55,13 +54,12 @@ class NavigationExecutor:
             self.observation_count = state.get("observations_count", 0)
             self.publish_state()
             self.trace = TraceWriter(self.private)
-            self.tools = NavigationTools(self)
-            self.tool_specs = specifications(tool_tier, memory_type)
-            self._validators = {tool["name"]: Draft7Validator(tool["parameters"]) for tool in self.tool_specs}
+            self.tools = bind_tools(self, self.selection)
+            self.tool_specs = [tool.schema for tool in self.tools.values()]
             self.trace.emit("navigation_started", {
                 "map_sha256": hashlib.sha256((self.workspace / "scene/map.json").read_bytes()).hexdigest(),
                 "memory_source": state.get("memory_source", "empty"), "memory_type": memory_type,
-                "tool_tier": tool_tier, "goto_planner": goto_planner if self.spatial.enabled else None})
+                "toolsets": self.selection.names, "goto_planner": goto_planner if self.spatial.enabled else None})
         except BaseException:
             self.close()
             raise
@@ -149,14 +147,10 @@ class NavigationExecutor:
         return reply
 
     def _execute(self, name, args):
-        validator = self._validators.get(name)
-        if validator is None:
+        tool = self.tools.get(name)
+        if tool is None:
             raise ToolInputError(f"Unknown tool: {name}")
-        error = next(validator.iter_errors(args), None)
-        if error:
-            field = ".".join(map(str, error.absolute_path)) or "arguments"
-            raise ToolInputError(f"{field}: {error.message}")
-        return self.tools.execute(name, args)
+        return tool.call(args)
 
     def execute(self, call_id, name, args):
         serialized = json.dumps([name, args], sort_keys=True)

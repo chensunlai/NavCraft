@@ -13,6 +13,7 @@ import traceback
 from src.common.io import redact, write_json
 from src.dataset.episodes import EpisodeSpec
 from src.environment import Environment
+from src.harness.tools import Toolsets
 from src.harness.session import PromptLimits, open_session
 
 from .metrics import spl
@@ -175,7 +176,8 @@ def _relocation_preflight(environment, rounds):
 
 
 def run_sequence(repo, model_config, scenario_path, scene_map, directory, environment_config):
-    if model_config.get("memory_type", "entity") != "entity":
+    selection = Toolsets.resolve(model_config["toolsets"])
+    if selection.memory_type != "entity":
         raise ValueError("This custom sequence evaluates entity memory; use bench run/pilot for node navigation")
     repo, scenario_path, directory = Path(repo).resolve(), Path(scenario_path).resolve(), Path(directory).resolve()
     scenario = json.loads(scenario_path.read_text())
@@ -188,7 +190,7 @@ def run_sequence(repo, model_config, scenario_path, scene_map, directory, enviro
     result = {"episode_id": "sequence:" + Path(scenario["scene_id"]).name.split(".")[0],
               "benchmark": "sequence", "protocol": scenario.get("protocol"),
               "model": model_config["model"], "reasoning_effort": model_config["reasoning_effort"],
-              "tool_tier": model_config.get("tool_tier", "basic"), "gpu": environment_config["gpu"],
+              "toolsets": selection.names, "gpu": environment_config["gpu"],
               "scenario_sha256": hashlib.sha256(scenario_path.read_bytes()).hexdigest(),
               "status": "running", "started_at": datetime.now(timezone.utc).isoformat(),
               "planned_rounds": len(scenario["rounds"]), "planned_navigation": planned, "rounds": []}
@@ -216,7 +218,7 @@ def run_sequence(repo, model_config, scenario_path, scene_map, directory, enviro
         episode = EpisodeSpec(result["episode_id"], result["episode_id"], "sequence", scenario["scene_id"],
                               scenario["start_position"], scenario["start_rotation"], goals, str(scenario_path),
                               provenance="custom_continuous_campaign")
-        environment = Environment(episode, {**environment_config, "tool_tier": result["tool_tier"]},
+        environment = Environment(episode, {**environment_config, "depth": selection.geometry},
                                   directory / "private/environment")
         preflight = validate_single_floor(environment, episode)
         preflight["relocations"] = _relocation_preflight(environment, scenario["rounds"])

@@ -1,4 +1,5 @@
 extends:
+  - ../harness/entity.yaml
   - ../providers/221.yaml
   - ../runtime/navigation.yaml
 model: deepseek-v4.1-flash-1017

@@ -1,0 +1,2 @@
+toolsets: [navigation, node_memory, geometry]
+goto_planner: local

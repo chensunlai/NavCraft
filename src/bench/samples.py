@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from src.common.scenes import resolve_scene
+from src.harness.tools import Toolsets
 from src.common.config import merge_config, read_config
 
 from src.dataset.episodes import create_source
@@ -51,7 +52,7 @@ def plan(repo, config):
               for family in {e.benchmark for e in episodes}}
     jobs = []
     maps = config.get("maps", {})
-    modes = {merge_config(read_config(repo / path), config.get("model_overrides", {})).get("memory_type", "entity")
+    modes = {Toolsets.resolve(merge_config(read_config(repo / path), config.get("model_overrides", {}))["toolsets"]).memory_type
              for path in config.get("models", {}).values()}
     node_only = modes == {"node"}
     for i, episode in enumerate(episodes):

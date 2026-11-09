@@ -18,11 +18,8 @@ class Environment:
     def __init__(self, episode, config: dict, directory: Path, simulator_factory=None):
         if type(config.get("gpu")) is not int or config["gpu"] not in (0, 1):
             raise ValueError("Lite simulation requires an explicit gpu of 0 or 1")
-        tool_tier = config.get("tool_tier", "basic")
-        if tool_tier not in ("basic", "super"):
-            raise ValueError("tool_tier must be basic or super")
         self.episode = episode
-        self.config = {**config, **SENSORS, "depth": tool_tier == "super"}
+        self.config = {**config, **SENSORS, "depth": config.get("depth", False)}
         self.directory = Path(directory).resolve()
         self.directory.mkdir(parents=True, exist_ok=True)
         if simulator_factory is None:

@@ -3,7 +3,7 @@
 TASK_CONFIG="config/tasks/qa_sequence.yaml"
 MODEL_CONFIGS=("config/models/deepseek.yaml" "config/models/qwen27.yaml" "config/models/sol.yaml" "config/models/astra.yaml")
 PROVIDER_CONFIG="config/providers/221.yaml"
-TOOLS_CONFIG="config/tools/super.yaml"
+HARNESS_CONFIG="config/harness/entity_geometry.yaml"
 RUNTIME_CONFIG="config/runtime/navigation.yaml"
 RUN_ID="$(date -u +%Y%m%dT%H%M%S%NZ)"
 OUTPUT="runs/${RUN_ID}-sequence-models"
@@ -18,7 +18,7 @@ for MODEL_CONFIG in "${MODEL_CONFIGS[@]}"; do
   NAME="$(basename "$MODEL_CONFIG" .yaml)"
   python -m src.bench.sequence --config "$TASK_CONFIG" \
     --model-config "$MODEL_CONFIG" --model-config "$PROVIDER_CONFIG" \
-    --model-config "$TOOLS_CONFIG" --model-config "$RUNTIME_CONFIG" \
+    --model-config "$HARNESS_CONFIG" --model-config "$RUNTIME_CONFIG" \
     --gpu 0 --output "$OUTPUT/$NAME" || STATUS=1
 done
 exit "$STATUS"
