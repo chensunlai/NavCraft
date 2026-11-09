@@ -1,3 +1,4 @@
+extends: sources.yaml
 # Frozen complete GOAT sequences; see data/samples/goat20/single_floor/audit.json
 episodes:
 - goat:val_unseen:5cdEh9F2hJL:3

@@ -1,0 +1,15 @@
+# Frozen selection boundaries and their official dataset sources.
+sources:
+  objnav:
+    root: data/datasets/objectnav/hm3d/v2
+    split: val
+    selection_file: data/samples/objnav100/selected/objnav100.json
+  r2r:
+    root: data/datasets/r2r
+    split: val_unseen
+    selection_file: data/samples/vlnce100/selected/r2r100.json
+  goat:
+    root: data/datasets/goat_bench/hm3d/v1
+    split: val_unseen
+    selection_file: data/samples/goat20/selected/goat20.json
+    goat_max_description_words: 55

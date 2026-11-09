@@ -1,3 +1,4 @@
+extends: sources.yaml
 # Frozen official samples; alternate ObjectNav and R2R.
 episodes:
 - objnav:val:6s7QHgap2fW:chair:1

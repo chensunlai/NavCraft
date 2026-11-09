@@ -9,11 +9,9 @@ import subprocess
 import sys
 import threading
 
-from src.common.config import merge_config
 
 from src.common.io import redact, write_json
 from src.common.progress import Progress
-from src.common.config import read_config
 
 
 def summarize(results, selected):
@@ -50,8 +48,7 @@ def run_batch(repo, pilot, prepared_plan, directory, model_names):
             name: summarize(rows, len(prepared_plan["jobs"])) for name, rows in results.items()})
 
     def run_model(name, model_index):
-        config_path = repo / pilot["models"][name]
-        config = merge_config(read_config(config_path), pilot.get("model_overrides", {}))
+        config = prepared_plan["models"][name]
 
         def execute(job):
             progress.set((name, job["index"]), "running")
@@ -59,8 +56,7 @@ def run_batch(repo, pilot, prepared_plan, directory, model_names):
             try:
                 output.mkdir(parents=True)
                 specification = {**job, "directory": str(output), "limits": pilot["limits"],
-                                 "model_config": str(config_path),
-                                 "model_overrides": pilot.get("model_overrides", {}),
+                                 "model_config": config,
                                  "environment": {"scenes": str((repo / pilot["environment"]["scenes"]).resolve()),
                                                  "gpu": (job["index"] + model_index) % 2,
                                                  "seed": pilot["environment"].get("seed", 0)}}
