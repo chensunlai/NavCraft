@@ -62,9 +62,3 @@ python <skill-dir>/scripts/refresh_manifest.py <scene-dir> --write
 复用工具的流程为：读取最新归档并备份改动文件 → 取证并编辑施工源线／楼梯 → 生成双图层 → 人工读图并修正 → 重跑门口、同层与楼梯路径检查 → 复制本次产物及证据入归档 → 同步说明、版本、计数与复查记录 → 刷新校验和 → 阶段校验。
 
 几何解读、取景位置、缺损补全、楼梯高度与真实连接必须结合场景决定。RGB-D 采集和 NavMesh 查询仍使用已验证的场景工具，先检查坐标与资产接口；不要直接把某场景缓存脚本当通用工具复制到 Skill。自动脚本也不替代逐场景验收。
-
-修改工具后，可运行不依赖 GPU 的回归测试：
-
-```bash
-python -m unittest discover -s <skill-dir>/scripts/tests -v
-```

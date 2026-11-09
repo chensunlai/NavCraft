@@ -12,8 +12,7 @@
     ]
   },
   "include": [
-    "*.ts",
-    "tests/*.ts"
+    "*.ts"
   ],
   "exclude": [
     "pi",

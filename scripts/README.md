@@ -12,9 +12,6 @@
 | `run_pilot.sh` | 三模型共用 10 条 ObjectNav/R2R 交替任务，各自并发 1/4/2 |
 | `run_sequence.sh` | Astra + Super 工具执行 Qa 连续任务，保持同一会话和记忆 |
 | `compare_sequences.sh` | DeepSeek、27B、Sol、Astra 依次执行相同连续任务，产物和会话独立 |
-| `check_harness.sh` | `local` 模式 检查真实动作与全景；`probe` 检查模型与工具；`compaction` 检查压缩续接 |
-| `check_geometry.sh` | 重放 pilot 几何与动作可达性检查，不请求模型 |
-| `check_super_tools.sh` | 真实环境中的 Super 工具检查，不请求模型 |
 | `build_maps.sh` | 默认 Sol high、16 并发，按队列构建 wall/wall_real 与楼梯，使用场景内 `raw/` 作为工作空间，结果平铺在场景根目录 |
 | `build_maps_nonhssd100_full.sh` | 续接新增100个非HSSD场景的原会话，从现有墙图补齐完整地图；Sol high、16并发、GPU0/1 |
 | `compare_map_builds.sh` | Sol/Astra high 同场景完整构图，各占 GPU 0/1，独立 Home、工作空间和场景产物 |

@@ -7,7 +7,6 @@ From the repository root:
 ```bash
 npm ci --ignore-scripts
 npm run build
-npm run test:pi
 node src/agent-core/dist/server.js
 ```
 

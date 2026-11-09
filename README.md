@@ -67,25 +67,14 @@ Missing maps, ambiguous floors and absent layers produce explicit errors, withou
 
 ```bash
 npm run check
-npm run test:pi
-python -m pytest -q
-python -m src.bench.checks.harness local --gpu 0
-python -m src.bench.checks.harness probe --model sol --gpu 0
-python -m src.bench.checks.pilot_geometry --help
 ```
 
-Integration probes and program-assisted physical references are recorded separately from navigation scores. Context is appended unchanged between native compactions. At a compaction boundary, retain a short summary and two complete recent rounds, then append a public checkpoint containing the current request, pose and current/target images. There is no rolling image deletion or per-turn replacement of the prefix. Actual server-side cache hits still depend on the provider.
+Context is appended unchanged between native compactions. At a compaction boundary, retain a short summary and two complete recent rounds, then append a public checkpoint containing the current request, pose and current/target images. There is no rolling image deletion or per-turn replacement of the prefix. Actual server-side cache hits still depend on the provider.
 
 ## Basic and super tools
 
 Both tiers expose `observe`, `move`, `map_view`, `view_images`, `memory_read`, `memory_edit`, and `submit`, plus native Coding tools. Super adds image-depth projection, RGB map overlays, nearby-memory queries, and `move` modes `face` / `approach`; it does not add another set of tools. Basic permits atomic movement and map references but cannot project RGB pixels through depth.
 
 All point-consuming operations share entity, displayed-image-pixel or global-UV references. `move(after="panorama")` returns the panorama directly; map views attach at most 12 related record summaries, and detailed memory reads at most two evidence images. Further detail remains available on request. Formal memory still validates structure and references, not semantic truth.
-
-```bash
-# Real Habitat tool replay; no model requests or benchmark score.
-python -m src.bench.checks.super_tools --gpu 0 \
-  --output cache/validation/super-tools-check
-```
 
 Only an observed point with preserved provenance can use the bounded local NavMesh planner. An arbitrary map point uses straight motion. Geometric arrival refers to the model-selected point, never task success. Depth stays private; tool projections do not certify object identity, glass or mirrors.

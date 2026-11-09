@@ -64,9 +64,6 @@ class NodeMemory:
                 return self._detail(node)
         raise ValueError(f"Unknown node: {identifier}")
 
-    def summary(self, limit=10):
-        return self.read(limit=min(limit, 10))
-
     @staticmethod
     def _room_records(state):
         members = {}

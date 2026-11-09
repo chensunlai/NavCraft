@@ -85,10 +85,6 @@ GPU 环境与提示限制使用 0/1；这是进程配置和执行约束，不是
 
 2026-10-25 验证：本机 Codex 0.164.0，221 的 `gpt-6-astra / high` 短探针成功。`.env.harness-test` 中的旧别名 `gpt6.1sol` 被服务返回 404；不会自动换名。144 场景墙体批次已启动；实际进度以批次日志和场景状态为准，不以本说明作为完成证明。
 
-```bash
-python -m pytest -q tests/test_build_maps.py
-```
-
 协议参考：[Codex App Server](https://developers.openai.com/codex/app-server)。实现按本机 `codex app-server generate-json-schema` 核对，不内置复制一份协议框架。
 
 每个场景的 JSON、图层和证据直接保存在 `output_dir`；调度器的 `events.jsonl`、`result.json`、`stderr.log`、`prompt.md` 位于批次目录 `<output>/<顺序>-<数据集>-<场景>/`。`scene_directory()` 返回后者，模型工作目录为场景内 `raw/`，保留脚本、中间产物和备份。最终结果直接放场景根目录，缺失结果保持缺失，不补空文件。

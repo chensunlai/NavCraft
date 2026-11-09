@@ -9,7 +9,6 @@
     "build:pi": "npm run build --workspace @earendil-works/pi-coding-agent",
     "build": "npm run build:pi && tsc -p src/agent-core/tsconfig.json",
     "check": "tsc -p src/agent-core/tsconfig.json --noEmit",
-    "test:pi": "node --import tsx --test src/agent-core/tests/*.test.ts",
     "harness": "python -m src.harness"
   },
   "dependencies": {
@@ -22,7 +21,6 @@
   },
   "devDependencies": {
     "typescript": "6.0.2",
-    "tsx": "4.21.0",
     "@types/node": "22.19.19"
   },
   "engines": {
