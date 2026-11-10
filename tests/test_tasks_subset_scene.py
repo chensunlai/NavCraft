@@ -1,0 +1,74 @@
+import tempfile
+import unittest
+from pathlib import Path
+
+import numpy as np
+
+from src.dataset.tasks_subset.bundle import freeze_case
+from src.dataset.tasks_subset.sampling.geometry import crossed_segment, project, unproject, visible_point
+from src.dataset.tasks_subset.sampling.scene import room_at
+
+
+class SceneTests(unittest.TestCase):
+    def test_camera_rotation_and_occlusion(self):
+        matrix = [[0, 0, 1, 3], [0, -1, 0, 2], [1, 0, 0, 0], [0, 0, 0, 1]]
+        camera = {"K": [[3, 0, 2], [0, 3, 2], [0, 0, 1]], "width": 5, "height": 5}
+        world = [5, 2, 0]
+        self.assertEqual(project(world, camera, matrix), (2, 2, 2))
+        self.assertEqual(unproject([2, 2], 2, camera, matrix), world)
+        self.assertEqual(visible_point(world, np.full((5, 5), 2.), camera, matrix), [2, 2])
+        self.assertIsNone(visible_point(world, np.full((5, 5), 1.), camera, matrix))
+        self.assertIsNone(project([1, 2, 0], camera, matrix))
+
+    def test_room_boundary_overlap_and_floor(self):
+        square = [[0, 0], [3, 0], [3, 3], [0, 3]]
+        levels = [{"id": "a", "floor_height": 0}, {"id": "b", "floor_height": 2}]
+        rooms = [{"id": "R1", "level": "a", "polygon_xz": square},
+                 {"id": "R2", "level": "b", "polygon_xz": square}]
+        scene = {"levels": levels, "rooms": rooms}
+        self.assertEqual(room_at(scene, [1, 0, 1]), "R1")
+        self.assertEqual(room_at(scene, [1, 2, 1]), "R2")
+        self.assertIsNone(room_at(scene, [0.06, 0, 1]))
+        self.assertIsNone(room_at(scene, [1, 1, 1]))
+        rooms.append({"id": "R3", "level": "a", "polygon_xz": square})
+        self.assertIsNone(room_at(scene, [1, 0, 1]))
+
+    def test_finite_opening_crossing(self):
+        segment = [[0, -1], [0, 1]]
+        self.assertTrue(crossed_segment([-1, 0, 0], [1, 0, 0], segment))
+        self.assertFalse(crossed_segment([-1, 0, 1.2], [1, 0, 1.2], segment))
+        self.assertFalse(crossed_segment([0, 0, -.8], [0, 0, .8], segment))
+
+    def test_freeze_rejects_escaped_snapshot(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with self.assertRaisesRegex(ValueError, "outside"):
+                freeze_case(root, {"id": "case", "snapshot": "../../../outside"}, {}, {}, [])
+            self.assertFalse((root / "cases/case").exists())
+
+    def test_cut_resolves_restored_frames_from_public_index(self):
+        from types import SimpleNamespace
+        from src.dataset.tasks_subset.sampling.collection import _cut, _frame_index
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pose = {"position": [0, 0, 0]}
+            prior = {f"walk/f_{i:04}": {"frame": f"f_{i:04}", "step": 0,
+                     "group": "old", "pose": pose} for i in range(1, 7)}
+            future = {"future/f_0007": {"frame": "f_0007", "step": 1, "group": None, "pose": pose}}
+            appended = {"branch/f_0007": {"frame": "f_0007", "step": 1, "group": None, "pose": pose}}
+            bundle = {"frames": {**prior, **future, **appended}, "states": [],
+                      "scene": {"rooms": [], "levels": [], "openings": []}}
+            restored = _frame_index(bundle, list(prior))
+            restored["f_0007"] = "branch/f_0007"
+            ex = SimpleNamespace(
+                bundle=bundle, output=root, snapshot=lambda directory: directory.mkdir(parents=True),
+                environment=SimpleNamespace(steps=1, position=lambda: [0, 0, 0], trajectory=[[0, 0, 0]], motions=[]),
+                observations=SimpleNamespace(items={fid: None for fid in restored}),
+                frame_keys=restored, current={"frame": "f_0007"},
+                memory=SimpleNamespace(nodes=[{"id": "N001", "panorama": "old"}]),
+                transform={"origin": [-10, -10], "size_m": 20, "floor_height": 0, "walls": []})
+            cut = _cut(ex, "blocked")
+            self.assertEqual(cut["node_frames"]["N001"], list(prior))
+            self.assertEqual(cut["current_frame"], "branch/f_0007")
+            self.assertNotIn("future/f_0007", cut["frame_keys"])
