@@ -54,9 +54,9 @@ class SceneTests(unittest.TestCase):
             root = Path(temporary)
             pose = {"position": [0, 0, 0]}
             prior = {f"walk/f_{i:04}": {"frame": f"f_{i:04}", "step": 0,
-                     "group": "old", "pose": pose} for i in range(1, 7)}
-            future = {"future/f_0007": {"frame": "f_0007", "step": 1, "group": None, "pose": pose}}
-            appended = {"branch/f_0007": {"frame": "f_0007", "step": 1, "group": None, "pose": pose}}
+                     "group": "old", "pose": pose, "room": None} for i in range(1, 7)}
+            future = {"future/f_0007": {"frame": "f_0007", "step": 1, "group": None, "pose": pose, "room": None}}
+            appended = {"branch/f_0007": {"frame": "f_0007", "step": 1, "group": None, "pose": pose, "room": None}}
             bundle = {"frames": {**prior, **future, **appended}, "states": [],
                       "scene": {"rooms": [], "levels": [], "openings": []}}
             restored = _frame_index(bundle, list(prior))
@@ -72,3 +72,30 @@ class SceneTests(unittest.TestCase):
             self.assertEqual(cut["node_frames"]["N001"], list(prior))
             self.assertEqual(cut["current_frame"], "branch/f_0007")
             self.assertNotIn("future/f_0007", cut["frame_keys"])
+
+    def test_snapshot_digest_binds_trial_to_memory_content(self):
+        import shutil
+        from src.dataset.tasks_subset.bundle import require_trial_snapshot, snapshot_digest
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original"
+            memory = Path("workspace/memory/nodes.json")
+            (original / memory).parent.mkdir(parents=True)
+            (original / "state.json").write_text("{}")
+            (original / memory).write_text('{"description":"old"}')
+            copy = root / "copy"
+            shutil.copytree(original, copy)
+            digest = snapshot_digest(original)
+            self.assertEqual(digest, snapshot_digest(copy))
+            state = {"snapshot": "copy"}
+            trial = {"start_snapshot_sha256": digest}
+            require_trial_snapshot(root, state, trial)
+            (copy / memory).write_text('{"description":"new"}')
+            with self.assertRaisesRegex(ValueError, "changed"):
+                require_trial_snapshot(root, state, trial)
+            with self.assertRaisesRegex(ValueError, "binding"):
+                require_trial_snapshot(root, state, {})
+            (copy / "link").symlink_to(original / "state.json")
+            with self.assertRaisesRegex(ValueError, "Symlink"):
+                snapshot_digest(copy)

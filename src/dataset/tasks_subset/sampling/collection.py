@@ -17,7 +17,7 @@ from src.environment.habitat import Environment
 from src.harness.runtime.executor import NavigationExecutor
 from src.harness.runtime.workspace import read_snapshot
 
-from ..bundle import reject, write_json
+from ..bundle import reject, snapshot_digest, write_json
 from .geometry import crossed_segment, project, read_depth, unproject, visible_point
 from .scene import load_scene, room_at
 
@@ -191,26 +191,24 @@ def _panorama(executor, record_node):
     return keys
 
 
-def _traversals(scene, motions):
+def _traversals(scene, motions, start):
+    samples = [(0, start), *((m["step"], p["position"]) for m in motions for p in m["samples"])]
+    rooms = [room_at(scene, p) for _, p in samples]
     events = []
-    for i in range(len(motions)-1):
-        first = motions[i]["samples"][-1]["position"] if motions[i]["samples"] else None
-        if first is None:
-            continue
-        for j in range(i+1, min(i+6, len(motions))):
-            positions = [first, *(p["position"] for m in motions[i+1:j+1] for p in m["samples"])]
-            before, after = room_at(scene, first), room_at(scene, positions[-1])
-            if not before or not after or before == after:
+    for i in range(1, len(samples)):
+        a, b = samples[i-1][1], samples[i][1]
+        for opening in scene["openings"]:
+            sides = opening["connects"] or []
+            if len(sides) != 2 or not crossed_segment(a, b, opening["segment_xz"]):
                 continue
-            for opening in scene["openings"]:
-                if set(opening["connects"] or []) == {before, after} and any(
-                    crossed_segment(a, b, opening["segment_xz"]) for a, b in zip(positions, positions[1:])
-                ):
-                    event = {"opening": opening["id"], "from_room": before, "to_room": after,
-                             "step": motions[j]["step"]}
-                    if not events or any(event[k] != events[-1][k] for k in ("opening", "from_room", "to_room")):
-                        events.append(event)
-            break
+            before = next((r for r in reversed(rooms[:i]) if r), None)
+            after = next((r for r in rooms[i:] if r), None)
+            if before == after or {before, after} != set(sides):
+                continue
+            event = {"kind": "doorway_crossing", "opening": opening["id"], "from_room": before, "to_room": after,
+                     "step": samples[i][0], "level": opening["level"]}
+            if event not in events[-1:]:
+                events.append(event)
     return events
 
 
@@ -245,28 +243,62 @@ def _cut(executor, identifier):
              "node_frames": node_frames, "room": room_at(bundle["scene"], env.position()),
              "step": env.steps, "visited_rooms": list(dict.fromkeys(
                  room for p in env.trajectory if (room := room_at(bundle["scene"], p)))),
-             "traversals": _traversals(bundle["scene"], env.motions), "transform": deepcopy(executor.transform),
+             "traversals": _traversals(bundle["scene"], env.motions, env.trajectory[0]), "transform": deepcopy(executor.transform),
              "public_trajectory": history, "trajectory_level": level_at(env.position())}
-    for traversal in state["traversals"]:
-        before = [key for key in frames if bundle["frames"][key]["step"] < traversal["step"]]
-        after = [key for key in frames if bundle["frames"][key]["step"] >= traversal["step"]]
-        if before and after:
-            traversal.update(before_frame=before[-1], after_frame=after[0])
+    for i, traversal in enumerate(state["traversals"]):
+        events = state["traversals"]
+        lower = events[i-1]["step"] if i else 0
+        upper = events[i+1]["step"] if i+1 < len(events) else env.steps+1
+        for step, position in [(0, env.trajectory[0]), *(
+                (m["step"], p["position"]) for m in env.motions for p in m["samples"])]:
+            room = room_at(bundle["scene"], position)
+            if room is None:
+                continue
+            if step < traversal["step"] and room != traversal["from_room"]:
+                lower = max(lower, step+1)
+            if step > traversal["step"] and room != traversal["to_room"]:
+                upper = min(upper, step)
+        def evidence(room, start, end):
+            return [key for key in frames if start <= bundle["frames"][key]["step"] < end
+                    and bundle["frames"][key]["room"] == room
+                    and level_at(bundle["frames"][key]["pose"]["position"]) == traversal["level"]]
+        before = evidence(traversal["from_room"], lower, traversal["step"])
+        after = evidence(traversal["to_room"], traversal["step"], upper)
+        traversal["evidence_status"] = "available" if before and after else "missing"
+        if before:
+            traversal["before_frame"] = before[-1]
+        if after:
+            traversal["after_frame"] = after[0]
         for room_field, node_field, reverse in (("from_room", "from_node", True),
                                                ("to_room", "to_node", False)):
             valid = [(bundle["frames"][keys[0]]["step"], node)
                      for node, keys in node_frames.items() if keys and
-                     bundle["frames"][keys[0]]["room"] == traversal[room_field] and
-                     (bundle["frames"][keys[0]]["step"] < traversal["step"]) == reverse]
+                     keys[0] in evidence(traversal[room_field],
+                                         lower if reverse else traversal["step"],
+                                         traversal["step"] if reverse else upper)]
             if valid:
                 traversal[node_field] = sorted(valid, reverse=reverse)[0][1]
+    region_frames = [key for key in frames if bundle["frames"][key]["room"]]
+    transitions = []
+    for a, b in zip(region_frames, region_frames[1:]):
+        first, last = bundle["frames"][a], bundle["frames"][b]
+        level = level_at(first["pose"]["position"])
+        if first["room"] != last["room"] and level and level == level_at(last["pose"]["position"]):
+            if not any(t["from_room"] == first["room"] and t["to_room"] == last["room"] and
+                       first["step"] <= t["step"] <= last["step"] for t in state["traversals"]):
+                transitions.append({"kind": "zone_transition", "from_room": first["room"],
+                                    "to_room": last["room"], "level": level,
+                                    "before_frame": a, "after_frame": b, "step": last["step"]})
+    state["zone_transitions"] = transitions
     bundle["states"].append(state)
     return state
 
 
 def _branch(bundle, output, env_config, episode, state, kind, operation, cut=None, **fields):
     identifier = f"{state['id']}-{kind}-{len(bundle['trials'])}"
-    saved = read_snapshot(output / state["snapshot"])
+    snapshot = output / state["snapshot"]
+    start_digest = snapshot_digest(snapshot)
+    saved = read_snapshot(snapshot)
     calls = []
     records = []
     for phase in ("branch", "replay"):
@@ -298,7 +330,7 @@ def _branch(bundle, output, env_config, episode, state, kind, operation, cut=Non
     original, replayed = records
     agreement = (original["motions"] == replayed["motions"] and
                  original["positions"] == replayed["positions"] and original["pose"] == replayed["pose"])
-    trial = {"id": identifier, "kind": kind, "start_state": state["id"], "calls": calls,
+    trial = {"id": identifier, "kind": kind, "start_state": state["id"], "start_snapshot_sha256": start_digest, "calls": calls,
              "motions": original["motions"], "positions": original["positions"],
              "end_frame": original["end_frame"], "reference": outcome,
              "replay": {**replayed, "passed": agreement, "calls": calls}, **fields}
@@ -465,10 +497,11 @@ def collect(config: dict, output: Path, gpu: int) -> dict:
     return bundle
 
 
-def collect_trials(config: dict, output: Path, gpu: int, kinds=()) -> dict:
+def collect_trials(config: dict, output: Path, gpu: int, kinds=(), bundle_path=None) -> dict:
     """Resume from frozen observations and independently replay selected branches."""
     output = Path(output).resolve()
-    bundle = read_json(output / "private" / "bundle.json")
+    bundle_path = Path(bundle_path) if bundle_path else output / "private" / "bundle.json"
+    bundle = read_json(bundle_path)
     episode = EpisodeSpec(**bundle["episode"])
     env_config = {"scenes": config["assets"], "gpu": gpu, "seed": bundle["seed"], "depth": True}
     settings = config.get("collection", {})
@@ -480,7 +513,9 @@ def collect_trials(config: dict, output: Path, gpu: int, kinds=()) -> dict:
     def branch(state, kind, operation, **details):
         if kinds and kind not in kinds:
             return None
-        if any(t["kind"] == kind and t["start_state"] == state["id"] for t in bundle["trials"]):
+        if any(t["kind"] == kind and t["start_state"] == state["id"] and not t.get("invalidated")
+               and t.get("start_snapshot_sha256") == snapshot_digest(output / state["snapshot"])
+               for t in bundle["trials"]):
             return None
         return _branch(bundle, output, env_config, episode, state, kind, operation, **details)
 
@@ -567,5 +602,5 @@ def collect_trials(config: dict, output: Path, gpu: int, kinds=()) -> dict:
             branch(states[-1], "direct",
                     lambda ex, calls: _straight(ex, calls, old), goal_positions=[old],
                     target_node=next(iter(states[1]["node_frames"])))
-    write_json(output / "private" / "bundle.json", bundle)
+    write_json(bundle_path, bundle)
     return bundle
