@@ -14,8 +14,8 @@ from PIL import Image
 
 from src.common.io import write_json
 from src.common.progress import Progress
-from src.harness.memory import MemoryStore
-from src.harness.observations import Observations
+from src.harness.memory.entity import MemoryStore
+from src.harness.spatial.observations import Observations
 from src.common.coordinates import validate_map
 
 

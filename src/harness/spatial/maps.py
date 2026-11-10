@@ -1,6 +1,6 @@
 """Public wall/memory views with reversible image-to-map coordinates."""
 
-from .errors import ToolInputError
+from ..errors import ToolInputError
 
 import hashlib
 import json
@@ -10,8 +10,8 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 from src.common.coordinates import apply_affine, invert_affine, xz_to_uv
-from .memory import MemoryStore, location
-from .map_labels import layout_labels
+from ..memory.entity import MemoryStore, location
+from .labels import layout_labels
 
 
 COLORS = {"room": "#2563eb", "door": "#c57813", "object": "#748096", "locate": "#9333ea", "node": "#748096"}

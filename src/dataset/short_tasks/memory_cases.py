@@ -13,9 +13,9 @@ from scipy.ndimage import binary_erosion, distance_transform_edt
 from src.common.coordinates import map_pose
 from src.common.io import write_json
 from src.dataset.episodes import EpisodeSpec
-from src.harness.geometry import Geometry
-from src.harness.memory import MemoryStore
-from src.harness.observations import Observations
+from src.harness.spatial.geometry import Geometry
+from src.harness.memory.entity import MemoryStore
+from src.harness.spatial.observations import Observations
 
 
 # Each row names a real cut, not a generated answer or a preferred tool sequence.

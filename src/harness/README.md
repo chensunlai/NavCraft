@@ -2,6 +2,20 @@
 
 Python 持有环境、公开观察和空间记忆，Pi Core 持有唯一的模型会话。模型通过所选记忆模式的工具与原生文件工具自主组织观察、检索、记忆维护和运动；程序不规定固定的导航阶段。
 
+## 源码组织
+
+```text
+src/harness/
+├── runtime/     会话与执行器、请求状态、Core 通信、工作空间、记录与配置
+├── memory/      entity.py 实体存储；node.py 节点与房间存储
+├── spatial/     观察索引、地图绘制、坐标投影、定位回显和公开计算辅助
+├── tools/       工具 schema、注册绑定和调用实现
+├── errors.py    可由模型修正的输入异常
+└── __init__.py  公共 Python 入口
+```
+
+外部通过 `from src.harness import open_session, PromptLimits, NavigationExecutor` 使用会话或独立执行器。`runtime` 组织执行，`tools` 把模型参数交给 `memory` 和 `spatial`；存储、绘图不管理模型循环。`spatial/navlib.py` 是复制到公开工作空间的独立脚本。
+
 ## 记忆模式
 
 工具选择统一由 `toolsets` 指定，完整组合放在 `config/harness/{entity,entity_geometry,node,node_geometry}.yaml`。例如 `[navigation, node_memory, geometry]`：共同执行工具＋节点记忆＋几何辅助。每次选择一种记忆；`geometry` 可选。列表整体替换，与服务、模型、上下文和预算配置组合。默认模型配置使用实体工具集。
@@ -70,7 +84,7 @@ flowchart LR
 
 `PromptResult` 返回 `submitted / answer / reason / requests / actions / elapsed_seconds / record`。未提交的普通回答也保存在 `answer`，不因此获得任务成功。`time_budget` 是预算耗尽，`tool_timeout` 等是执行异常。仅显式 `ToolInputError` 可由模型修正；程序异常终止本次执行并标记不确定状态。
 
-[tools/__init__.py](tools/__init__.py) 将每项 schema 与执行函数绑定为一个 `Tool`。共同 schema 在 [navigation_specs.py](tools/navigation_specs.py)，实体与节点 schema 分别在 [entity_specs.py](tools/entity_specs.py)、[node_specs.py](tools/node_specs.py)。[session.py](session.py) 管理 Agent 会话，[executor.py](executor.py) 管理导航执行，[request.py](request.py) 集中保存每次请求的状态和限制。
+[tools/__init__.py](tools/__init__.py) 将每项 schema 与执行函数绑定为一个 `Tool`。共同 schema 在 [navigation_specs.py](tools/navigation_specs.py)，实体与节点 schema 分别在 [entity_specs.py](tools/entity_specs.py)、[node_specs.py](tools/node_specs.py)。[session.py](runtime/session.py) 管理 Agent 会话，[executor.py](runtime/executor.py) 管理导航执行，[request.py](runtime/request.py) 集中保存每次请求的状态和限制。
 
 ## 共享坐标与引用
 

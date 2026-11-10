@@ -38,7 +38,7 @@ export function keepRecentRounds(entries: ProjectedSessionEntry[], preparation: 
 /** Count visible text with the application's fixed local tokenizer, on CPU only. */
 export function countSummaryTokens(python: string, text: string, signal?: AbortSignal): Promise<number> {
   return new Promise((accept, reject) => {
-    const child = spawn(python, ['-m', 'src.harness.tokenizer'], { cwd: process.cwd(),
+    const child = spawn(python, ['-m', 'src.harness.runtime.tokenizer'], { cwd: process.cwd(),
       env: { ...process.env, CUDA_VISIBLE_DEVICES: '', TOKENIZERS_PARALLELISM: 'false' },
       stdio: ['pipe', 'pipe', 'pipe'], signal });
     let stdout = '', stderr = '';

@@ -1,6 +1,6 @@
 """Geometry for selected RGB pixels and saved map views; no semantic inference."""
 
-from .errors import ToolInputError
+from ..errors import ToolInputError
 
 import json
 import math
@@ -10,7 +10,7 @@ import numpy as np
 from PIL import Image
 
 from src.common.coordinates import apply_affine, heading_from_forward, relative_xz, xz_to_uv
-from .memory import observation_index
+from ..memory.entity import observation_index
 
 
 def _records(path, key):

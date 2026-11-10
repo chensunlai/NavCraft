@@ -1,6 +1,6 @@
 """Validated, atomic batches over the single public spatial-memory document."""
 
-from .errors import ToolInputError
+from ..errors import ToolInputError
 
 from copy import deepcopy
 import json

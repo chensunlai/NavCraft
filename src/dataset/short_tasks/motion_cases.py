@@ -15,8 +15,8 @@ from src.common.io import write_json
 from src.dataset.episodes import EpisodeSpec
 from src.dataset.maps import prepare_map
 from src.environment import Environment
-from src.harness.executor import NavigationExecutor
-from src.harness.workspace import read_snapshot
+from src.harness import NavigationExecutor
+from src.harness.runtime.workspace import read_snapshot
 
 
 REPO = Path(__file__).resolve().parents[3]

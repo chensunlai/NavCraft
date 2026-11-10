@@ -3,7 +3,7 @@
 from PIL import Image, ImageDraw
 
 from .maps import _font
-from .memory import location
+from ..memory.entity import location
 
 
 def memory_feedback(executor, operations, before):

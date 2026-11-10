@@ -1,6 +1,6 @@
 """Geometric assistance for model-selected points; never reads task goals or scores."""
 
-from .errors import ToolInputError
+from ..errors import ToolInputError
 
 from copy import deepcopy
 import json
@@ -11,7 +11,7 @@ import time
 from src.common.io import write_json
 from src.common.coordinates import bearing_distance, body_forward, uv_to_world, world_to_uv
 from .geometry import Geometry
-from .memory import location
+from ..memory.entity import location
 
 
 class SpatialTools:

@@ -7,14 +7,14 @@ from pathlib import Path
 import threading
 
 from src.common.io import write_json
-from .errors import ToolInputError
-from .memory import MemoryStore
-from .node_memory import NodeMemory
-from .maps import MapRenderer
-from .observations import Observations
+from ..errors import ToolInputError
+from ..memory.entity import MemoryStore
+from ..memory.node import NodeMemory
+from ..spatial.maps import MapRenderer
+from ..spatial.observations import Observations
 from .request import RequestState
-from .spatial import SpatialTools
-from .tools import Toolsets, bind_tools
+from ..spatial.assistance import SpatialTools
+from ..tools import Toolsets, bind_tools
 from .trace import TraceWriter
 from .workspace import prepare_workspace, copy_snapshot_assets
 

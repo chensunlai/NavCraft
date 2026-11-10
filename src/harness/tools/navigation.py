@@ -6,7 +6,7 @@ import uuid
 
 from src.common.actions import ACTIONS
 from src.common.coordinates import world_to_uv
-from ..memory_feedback import memory_feedback
+from ..spatial.feedback import memory_feedback
 
 
 class NavigationTools:

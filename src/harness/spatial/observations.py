@@ -1,6 +1,6 @@
 """Publish only RGB and map-relative pose; simulator annotations stay private."""
 
-from .errors import ToolInputError
+from ..errors import ToolInputError
 
 from copy import deepcopy
 import hashlib

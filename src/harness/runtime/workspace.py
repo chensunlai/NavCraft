@@ -36,8 +36,8 @@ def prepare_workspace(workspace, private, environment, scene_map, memory_type, s
     validate_map(transform)
     if memory_type == "node" and transform["walls"]:
         raise ValueError("Node memory requires a public map without walls")
-    shutil.copyfile(Path(__file__).with_name("navlib.py"), workspace / "scene/navlib.py")
-    shutil.copyfile(Path(__file__).parents[1] / "common/coordinates.py", workspace / "scene/coordinates.py")
+    shutil.copyfile(Path(__file__).parents[1] / "spatial/navlib.py", workspace / "scene/navlib.py")
+    shutil.copyfile(Path(__file__).parents[2] / "common/coordinates.py", workspace / "scene/coordinates.py")
     if state.get("workspace"):
         for name in ("scene", "observations", "memory", "scratch"):
             source = Path(state["workspace"]) / name

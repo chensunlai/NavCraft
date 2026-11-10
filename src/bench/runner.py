@@ -90,7 +90,7 @@ def execute_goals(environment, session, episode, limits, directory):
 
 
 def run_episode(repo, model_config, episode, environment_config, scene_map, directory, limits, *, map_layer="walls"):
-    from src.harness.session import PromptLimits, open_session
+    from src.harness import PromptLimits, open_session
 
     selection = Toolsets.resolve(model_config["toolsets"])
     repo, directory = Path(repo), Path(directory)

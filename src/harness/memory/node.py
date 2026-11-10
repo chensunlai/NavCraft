@@ -1,6 +1,6 @@
 """Model-written place summaries indexing immutable scene panoramas."""
 
-from .errors import ToolInputError
+from ..errors import ToolInputError
 
 from copy import deepcopy
 import json
@@ -8,7 +8,7 @@ import math
 from pathlib import Path
 import re
 
-from .memory import atomic_json
+from .entity import atomic_json
 
 
 class NodeMemory:

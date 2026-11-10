@@ -7,7 +7,7 @@ from jsonschema import Draft7Validator
 from ..errors import ToolInputError
 from . import entity_specs, navigation_specs, node_specs
 from .node import NodeMemoryTools
-from .runtime import NavigationTools
+from .navigation import NavigationTools
 
 
 @dataclass(frozen=True)

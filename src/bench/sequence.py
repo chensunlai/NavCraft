@@ -14,7 +14,7 @@ from src.common.io import redact, write_json
 from src.dataset.episodes import EpisodeSpec
 from src.environment import Environment
 from src.harness.tools import Toolsets
-from src.harness.session import PromptLimits, open_session
+from src.harness import PromptLimits, open_session
 
 from .metrics import spl
 from .runner import INFRASTRUCTURE_REASONS, validate_single_floor

@@ -15,8 +15,9 @@ from src.common.io import read_json, redact, write_json
 from src.dataset.episodes import EpisodeSpec
 from src.environment import Environment
 from src.harness.tools import Toolsets
-from src.harness.trace import read_trace
-from src.harness.session import PromptLimits, open_session, read_snapshot
+from src.harness.runtime.trace import read_trace
+from src.harness import PromptLimits, open_session
+from src.harness.runtime.workspace import read_snapshot
 
 from .runner import INFRASTRUCTURE_REASONS
 

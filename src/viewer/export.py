@@ -14,7 +14,7 @@ import shutil
 
 from PIL import Image
 
-from src.harness.trace import read_trace
+from src.harness.runtime.trace import read_trace
 
 TEXT_LIMIT = 16000
 
