@@ -152,3 +152,18 @@ class SceneTests(unittest.TestCase):
             del task["inputs_sha256"]
             with self.assertRaisesRegex(ValueError, "seal"):
                 validate_frozen_inputs(task, case)
+
+    def test_traversal_requires_same_floor_and_actual_finite_segment(self):
+        from src.dataset.tasks_subset.sampling.collection import _traversals
+
+        scene = {"levels": [{"id": "L1", "floor_height": 0}], "rooms": [
+            {"id": "a", "level": "L1", "polygon_xz": [[-2,-2],[0,-2],[0,2],[-2,2]]},
+            {"id": "b", "level": "L1", "polygon_xz": [[0,-2],[2,-2],[2,2],[0,2]]}],
+            "openings": [{"id": "D", "level": "L1", "segment_xz": [[0,-1],[0,1]], "connects": ["a","b"]}]}
+        motions = [{"step": 1, "samples": [{"position": [-.4,0,0]}, {"position": [.4,0,0]}]}]
+        events = _traversals(scene,motions,[-1,0,0])
+        self.assertEqual(events[0]["opening"], "D")
+        motions[0]["samples"] = [{"position": [-.4,2,0]}, {"position": [.4,2,0]}]
+        self.assertEqual(_traversals(scene,motions,[-1,2,0]), [])
+        motions[0]["samples"] = [{"position": [-.4,0,1.5]}, {"position": [.4,0,1.5]}]
+        self.assertEqual(_traversals(scene,motions,[-1,0,1.5]), [])

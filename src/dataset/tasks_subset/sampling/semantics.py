@@ -43,10 +43,74 @@ def _object_pixels(mask, objects, descriptor, owners):
         matched = present.intersection(mapping) if valid else set()
         ys, xs = np.nonzero(np.isin(mask, list(matched))) if matched else ([], [])
         rows[identifier] = {
-            "mapping_valid": valid, "mapping_ambiguous": ambiguous, "pixels": len(xs),
+            "mapping_valid": valid, "mapping_ambiguous": ambiguous, "mapped_ids": mapping, "pixels": len(xs),
             "bbox": [int(min(xs)), int(min(ys)), int(max(xs))+1, int(max(ys))+1] if len(xs) else None,
         }
     return rows
+
+
+def link_native_identity(bundle, root):
+    """Associate reviewed foreground pixels across views using unique native IDs."""
+    root = Path(root)
+    groups = {}
+    for sight in bundle["sightings"]:
+        if sight.pop("native_identity", None):
+            sight["identity_verified"] = False
+    capability = bundle.get("instance_capability", {})
+    if not capability.get("available"):
+        return bundle
+    source = bundle["source"]
+    try:
+        if any(_digest(Path(capability["stage"][field])) != expected
+               for field, expected in capability["asset_sha256"].items()):
+            return bundle
+        if _digest(Path(source["map_directory"])/"objects.json") != capability["object_map_sha256"]:
+            return bundle
+        native_map = {obj["id"]: obj["semantic_ids"] for obj in load_scene(Path(source["map_directory"]))["objects"]}
+    except (OSError, ValueError, KeyError):
+        return bundle
+    owners = Counter(i for mapped in native_map.values() for i in set(mapped))
+    validated = {}
+    for sight in bundle["sightings"]:
+        key = sight["frame"]
+        row = bundle.get("instance_evidence", {}).get(key, {})
+        frame = bundle["frames"][key]
+        obj = row.get("objects", {}).get(sight["id"], {})
+        binding = sight.get("review_source", {})
+        mapped = native_map.get(sight["id"], [])
+        if (not row.get("valid") or not obj.get("mapping_valid") or obj.get("mapping_ambiguous")
+                or obj.get("mapped_ids") != mapped or not mapped or any(owners[i] != 1 for i in mapped)
+                or not sight.get("semantic_verified")
+                or sight.get("review_candidate") not in obj.get("association_reviews", [])
+                or binding.get("frame") != key or binding.get("sha256") != row.get("source_rgb_sha256")
+                or binding.get("pixel") != sight.get("pixel") or binding.get("world") != sight.get("world")
+                or row.get("pose") != frame.get("pose") or row.get("camera") != frame.get("camera")):
+            continue
+        if key not in validated:
+            try:
+                valid = (_digest(root/frame["rgb"]) == row["source_rgb_sha256"] and
+                         _digest(root/row["mask"]) == row["mask_sha256"])
+                validated[key] = np.load(root/row["mask"], allow_pickle=False, mmap_mode="r") if valid else None
+            except (OSError, ValueError, KeyError):
+                validated[key] = None
+        mask = validated[key]
+        if mask is None:
+            continue
+        x,y = sight["pixel"]
+        if not 0 <= y < mask.shape[0] or not 0 <= x < mask.shape[1] or int(mask[y,x]) not in mapped:
+            continue
+        groups.setdefault((sight["id"],int(mask[y,x])), []).append(sight)
+    for (identifier, native), sightings in groups.items():
+        for sight in sightings:
+            pose = bundle["frames"][sight["frame"]]["pose"]["camera_position"]
+            others = [s for s in sightings if s["frame"] != sight["frame"] and
+                      np.linalg.norm(np.asarray(bundle["frames"][s["frame"]]["pose"]["camera_position"])-pose) >= .2]
+            if others:
+                sight.update(identity_verified=True, native_identity={
+                    "descriptor_id": native, "object": identifier,
+                    "review_candidates": [sight["review_candidate"], *[s["review_candidate"] for s in others]],
+                    "method": "reviewed_unique_native_instance_pixels"})
+    return bundle
 
 
 def collect_instance_evidence(bundle, root, config, gpu, frame_keys=None):
@@ -189,4 +253,70 @@ def collect_instance_evidence(bundle, root, config, gpu, frame_keys=None):
                           mapping_complete=complete, completeness_binding=bindings.get(identifier),
                           visibility=visibility(record["pixels"], valid=record["mapping_valid"],
                                                 associated=bool(reviews), complete=complete, threshold=threshold))
-    return result
+    return link_native_identity(result, root)
+
+
+def derive_instance_sightings(bundle, root):
+    """Reproject a reviewed static surface anchor, with native and depth checks."""
+    from .geometry import read_depth, visible_point
+    root = Path(root)
+    clean = deepcopy(bundle)
+    clean["sightings"] = [s for s in clean["sightings"] if s.get("method") != "native_instance_reprojection"]
+    if not clean.get("instance_capability", {}).get("available"):
+        return []
+    checked = link_native_identity(clean, root)
+    skipped = Counter()
+    bundle["instance_reprojection_report"] = {"skipped": skipped}
+    seeds = [s for s in checked["sightings"] if s.get("native_identity") and s.get("semantic_verified")]
+    if not seeds:
+        skipped["no_valid_reviewed_native_seed"] += 1
+    rows = []
+    masks, depths = {}, {}
+    prefix = {k for state in checked["states"] for k in state["frame_keys"]}
+    for seed in seeds:
+        native = seed["native_identity"]["descriptor_id"]
+        for key, evidence in checked["instance_evidence"].items():
+            frame = checked["frames"][key]
+            if key not in prefix or key == seed["frame"]:
+                continue
+            if not evidence.get("valid") or not frame.get("depth"):
+                skipped["missing_valid_cache_or_depth"] += 1
+                continue
+            if (evidence.get("camera") != frame.get("camera") or evidence.get("pose") != frame.get("pose")):
+                skipped["camera_or_pose_changed"] += 1
+                continue
+            try:
+                valid = (evidence.get("source_rgb_sha256") == _digest(root/frame["rgb"]) and
+                         evidence.get("mask_sha256") == _digest(root/evidence["mask"]))
+            except (OSError, KeyError):
+                valid = False
+            if not valid:
+                skipped["rgb_or_mask_changed"] += 1
+                continue
+            record = evidence["objects"].get(seed["id"], {})
+            if not record.get("mapping_valid") or native not in record.get("mapped_ids", []):
+                skipped["invalid_mapping"] += 1
+                continue
+            if key not in masks:
+                masks[key] = np.load(root/evidence["mask"],allow_pickle=False,mmap_mode="r")
+                depths[key] = read_depth(root/frame["depth"],frame["camera"])
+            if np.count_nonzero(masks[key] == native) < checked["instance_capability"]["min_pixels"]:
+                skipped["insufficient_native_pixels"] += 1
+                continue
+            pixel = visible_point(seed["world"],depths[key],frame["camera"],frame["world_from_optical"],tolerance=.045)
+            if pixel is None:
+                continue
+            x,y = pixel
+            if int(masks[key][y,x]) != native:
+                continue
+            rows.append({"kind":"object","id":seed["id"],"frame":key,"pixel":pixel,
+                "world":seed["world"],"method":"native_instance_reprojection",
+                "verified":True,"geometry_verified":True,"identity_verified":True,
+                "derived_from_review":seed["review_candidate"],"source_frame":seed["frame"],
+                "semantic_verified":False,
+                "native_identity":{"descriptor_id":native,"object":seed["id"],
+                    "method":"depth_consistent_reprojection_from_reviewed_native_surface"},
+                "evidence_binding":{"rgb_sha256":evidence["source_rgb_sha256"],
+                    "mask_sha256":evidence["mask_sha256"],"depth_sha256":_digest(root/frame["depth"]),
+                    "camera":frame["camera"],"pose":frame["pose"]}})
+    return rows

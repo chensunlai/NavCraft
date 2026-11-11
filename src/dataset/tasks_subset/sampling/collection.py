@@ -18,7 +18,7 @@ from src.environment.habitat import Environment
 from src.harness.runtime.executor import NavigationExecutor
 from src.harness.runtime.workspace import read_snapshot
 
-from ..bundle import reject, snapshot_digest, write_json
+from ..bundle import current_observation_frames, reject, snapshot_digest, write_json
 from .geometry import crossed_segment, floor_patch_fraction, project, read_depth, unproject, visible_point
 from .scene import load_scene, room_at
 
@@ -246,6 +246,9 @@ def _traversals(scene, motions, start):
         a, b = samples[i-1][1], samples[i][1]
         for opening in scene["openings"]:
             sides = opening["connects"] or []
+            floor = next(l["floor_height"] for l in scene["levels"] if l["id"] == opening["level"])
+            if abs(a[1]-floor) > .45 or abs(b[1]-floor) > .45:
+                continue
             if len(sides) != 2 or not crossed_segment(a, b, opening["segment_xz"]):
                 continue
             before = next((r for r in reversed(rooms[:i]) if r), None)
@@ -369,7 +372,9 @@ def _branch(bundle, output, env_config, episode, state, kind, operation, cut=Non
             measurement = None
             if goals:
                 distance = env.distance(goals)
-                measurement = {"positions": goals, "distance": distance if math.isfinite(distance) else None}
+                initial_distance = env.sim.distance_from(saved["pose"]["position"], goals)
+                measurement = {"positions": goals, "distance": distance if math.isfinite(distance) else None,
+                               "initial_distance": initial_distance if math.isfinite(initial_distance) else None}
             records.append({"motions": env.motions[start:], "positions": env.trajectory[start:],
                             "goal_measurement": measurement,
                             "end_frame": executor.frame_keys[executor.current["frame"]], "pose": env.pose(),
@@ -473,6 +478,9 @@ def collect(config: dict, output: Path, gpu: int) -> dict:
         source["limitations"].append("HSSD geometry-only sampling; room and object tasks require annotations.")
     else:
         candidates = [ep for ep in _start_episodes(config, scene_id) if room_at(scene, ep.start_position)]
+        route = config.get("collection", {}).get("room_route")
+        if route:
+            candidates = [ep for ep in candidates if room_at(scene, ep.start_position) == route[0]]
         if not candidates:
             raise ValueError("No training start unambiguously inside an annotated room")
         short = [ep for ep in candidates if ep.benchmark == "r2r" and ep.reference_path and
@@ -500,6 +508,10 @@ def collect(config: dict, output: Path, gpu: int) -> dict:
         node_limit = settings.get("nodes", 3)
         start_state = _cut(executor, "start")
         register_official_tasks(bundle, output, episode, start_state, env)
+        if settings.get("room_route"):
+            from .routes import walk_room_route
+            walk_room_route(executor, settings["room_route"], settings)
+            node_limit = 0
         for i in range(node_limit):
             frames = _panorama(executor, True)
             state = _cut(executor, f"stop-{i}")
@@ -518,9 +530,11 @@ def collect(config: dict, output: Path, gpu: int) -> dict:
                 break
             if options:
                 opening, point = options[0]
-                if any(s["id"] == opening["id"] and s["frame"] == state["current_frame"]
-                       for s in bundle["sightings"]):
-                    passages.append((state, opening["id"], point))
+                visible_frame = next((s["frame"] for s in bundle["sightings"]
+                    if s["id"] == opening["id"] and s["kind"] == "opening"
+                    and s["frame"] in current_observation_frames(bundle, state)), None)
+                if visible_frame:
+                    passages.append((state, opening["id"], point, visible_frame))
             else:
                 # Try a local accessible floor station; retain blocked attempts in the prefix.
                 point = next((p for x, z in ((1.3, 0), (0, 1.3), (-1.3, 0), (0, -1.3))
@@ -545,8 +559,8 @@ def collect(config: dict, output: Path, gpu: int) -> dict:
             executor.close()
         env.close()
 
-    bundle["passage_proposals"] = [{"state_id": state["id"], "opening": opening, "point": point}
-                                   for state, opening, point in passages]
+    bundle.setdefault("passage_proposals", []).extend([{"state_id": state["id"], "opening": opening, "point": point, "visible_frame": visible}
+                                   for state, opening, point, visible in passages])
     write_json(output / "private" / "bundle.json", bundle)
     return bundle
 
@@ -588,13 +602,13 @@ def collect_trials(config: dict, output: Path, gpu: int, kinds=(), bundle_path=N
     settings = config.get("collection", {})
     base_states = [state for state in bundle["states"] if state["id"] != "blocked"]
     by_id = {state["id"]: state for state in base_states}
-    passages = [(by_id[p["state_id"]], p["opening"], p["point"])
+    passages = [(by_id[p["state_id"]], p["opening"], p["point"], p["visible_frame"])
                 for p in bundle.get("passage_proposals", [])]
 
     def branch(state, kind, operation, **details):
         if kinds and kind not in kinds:
             return None
-        if any(t["kind"] == kind and t["start_state"] == state["id"] and t.get("official_task") == details.get("official_task") and not t.get("invalidated")
+        if any(t["kind"] == kind and t["start_state"] == state["id"] and all(t.get(field) == details.get(field) for field in ("official_task", "target", "opening", "pair_id", "variant")) and not t.get("invalidated")
                and t.get("start_snapshot_sha256") == snapshot_digest(output / state["snapshot"])
                for t in bundle["trials"]):
             return None
@@ -648,8 +662,16 @@ def collect_trials(config: dict, output: Path, gpu: int, kinds=(), bundle_path=N
         trial = branch(blocked, "nav_03", recover, variant="safe_waypoint")
         if trial and trial["reference"].get("positions"):
             trial["goal_positions"] = trial["reference"]["positions"]
-    for state, opening, point in passages[:1]:
-        branch(state, "nav_02", follow(point), opening=opening)
+    for state, opening, point, visible in passages[:1]:
+        def passage(ex, calls):
+            from .routes import passage_points
+            portal = next(o for o in bundle["scene"]["openings"] if o["id"] == opening)
+            destination = next(r for r in portal["connects"] if r != state["room"])
+            points = passage_points(ex, portal, destination)
+            if points is None or not _follow(ex, points[0], calls, radius=.15):
+                return {"reached":False}
+            return _straight(ex, calls, points[2])
+        branch(state, "nav_02", passage, opening=opening, visible_frame=visible)
     for state in states[1:]:
         key = state["current_frame"]
         for sighting in bundle["sightings"]:

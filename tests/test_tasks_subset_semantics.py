@@ -51,8 +51,8 @@ class InstanceEvidenceTests(unittest.TestCase):
             np.save(empty, np.array([[0, 0]]))
             obj = {"id": "tv", "name": "TV", "center_xyz": [], "size_xyz": [],
                    "rectangles_xz": [], "semantic_ids": [34]}
-            frame = {"rgb": "rgb.png", "pose": {}, "camera": {}}
-            row = {"valid": True, "camera": {}, "pose": {}, "source_rgb_sha256": sha(rgb),
+            frame = {"rgb": "rgb.png", "pose": {"camera_position": [0,0,0]}, "camera": {}}
+            row = {"valid": True, "camera": {}, "pose": {"camera_position": [0,0,0]}, "source_rgb_sha256": sha(rgb),
                    "mask": "mask.npy", "mask_sha256": sha(mask),
                    "objects": {"tv": {"mapping_valid": True, "pixels": 0}}}
             binding = {"frame": "f", "sha256": sha(rgb), "pixel": [0, 0], "world": [1, 2, 3]}
@@ -106,3 +106,92 @@ class InstanceEvidenceTests(unittest.TestCase):
         for row in rows.values():
             self.assertTrue(row["mapping_ambiguous"])
             self.assertFalse(row["mapping_valid"])
+
+    def test_native_identity_handles_different_surface_points(self):
+        import hashlib
+        from unittest.mock import patch
+        import numpy as np
+        from src.dataset.tasks_subset.sampling.semantics import link_native_identity
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mask = root/"mask.npy"
+            np.save(mask, np.array([[34,211]]))
+            rgb = root/"rgb"
+            rgb.write_bytes(b"RGB")
+            source = root/"objects.json"
+            source.write_bytes(b"map")
+            digest=lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+            sightings,frames,evidence=[],{},{}
+            for key,pos,pixel,world in [
+                ("a",[0,1,0],[0,0],[0,0,0]),
+                ("b",[1,1,0],[0,0],[1,0,0]),
+                ("c",[2,1,0],[1,0],[0,0,0])]:
+                review="review-"+key
+                frames[key]={"pose":{"camera_position":pos},"camera":{},"rgb":"rgb"}
+                sightings.append({"id":"tv","frame":key,"pixel":pixel,"world":world,
+                    "semantic_verified":True,"review_candidate":review,
+                    "review_source":{"frame":key,"sha256":digest(rgb),"pixel":pixel,"world":world}})
+                evidence[key]={"valid":True,"mask":"mask.npy","mask_sha256":digest(mask),
+                    "source_rgb_sha256":digest(rgb),"pose":frames[key]["pose"],"camera":{},
+                    "objects":{"tv":{"mapping_valid":True,"mapped_ids":[34,211],
+                                     "association_reviews":[review]}}}
+            bundle={"frames":frames,"sightings":sightings,"instance_evidence":evidence,
+                "source":{"map_directory":str(root)},
+                "instance_capability":{"available":True,"stage":{"render_asset":str(rgb)},
+                    "asset_sha256":{"render_asset":digest(rgb)},"object_map_sha256":digest(source)}}
+            with patch("src.dataset.tasks_subset.sampling.semantics.load_scene",
+                       return_value={"objects":[{"id":"tv","semantic_ids":[34,211]}]}):
+                link_native_identity(bundle,root)
+                self.assertTrue(sightings[0]["identity_verified"])
+                self.assertTrue(sightings[1]["identity_verified"])
+                self.assertNotIn("native_identity",sightings[2])
+                sightings[1]["review_source"]["sha256"]="wrong"
+                link_native_identity(bundle,root)
+                self.assertFalse(sightings[0]["identity_verified"])
+                self.assertFalse(sightings[1]["identity_verified"])
+                sightings[1]["review_source"]["sha256"]=digest(rgb)
+                link_native_identity(bundle,root)
+                evidence["b"]["camera"]={"changed":True}
+                link_native_identity(bundle,root)
+                self.assertFalse(sightings[0]["identity_verified"])
+
+    def test_derived_sighting_preserves_seed_world_and_rejects_other_id(self):
+        from unittest.mock import patch
+        import numpy as np
+        from src.dataset.tasks_subset.sampling.semantics import derive_instance_sightings
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            np.save(root/"mask.npy",np.array([[34,211],[34,211]]))
+            (root/"depth").write_bytes(b"depth")
+            world=[1.,2.,3.]
+            (root/"rgb").write_bytes(b"rgb")
+            import hashlib
+            digest=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+            frame={"rgb":"rgb","depth":"depth","camera":{},"world_from_optical":np.eye(4).tolist(),"pose":{}}
+            bundle={"instance_capability":{"available":True,"min_pixels":1,
+                "stage":{"render_asset":"/assets/hm3d/train/scene/scene.basis.glb"}},
+                "frames":{"source":frame,"dest":frame},"states":[{"frame_keys":["source","dest"]}],
+                "sightings":[{"kind":"object","id":"tv","frame":"source","world":world,
+                    "semantic_verified":True,"review_candidate":"review","native_identity":{"descriptor_id":34}}],
+                "instance_evidence":{"dest":{"valid":True,"mask":"mask.npy","mask_sha256":digest(root/"mask.npy"),"camera":{},"pose":{},
+                    "source_rgb_sha256":digest(root/"rgb"),"objects":{"tv":{"mapped_ids":[34],"mapping_valid":True,"pixels":2}}}}}
+            with patch("src.dataset.tasks_subset.sampling.semantics.link_native_identity", return_value=bundle), \
+                 patch("src.dataset.tasks_subset.sampling.geometry.read_depth",return_value=np.ones((2,2))), \
+                 patch("src.dataset.tasks_subset.sampling.geometry.visible_point", return_value=[0,0]):
+                rows=derive_instance_sightings(bundle,root)
+                self.assertEqual(rows[0]["world"],world)
+                self.assertFalse(rows[0]["semantic_verified"])
+                self.assertNotIn("review_source",rows[0])
+            with patch("src.dataset.tasks_subset.sampling.semantics.link_native_identity", return_value=bundle), \
+                 patch("src.dataset.tasks_subset.sampling.geometry.read_depth",return_value=np.ones((2,2))), \
+                 patch("src.dataset.tasks_subset.sampling.geometry.visible_point", return_value=[1,0]):
+                self.assertEqual(derive_instance_sightings(bundle,root),[])
+            bundle["instance_evidence"]["dest"]["valid"] = False
+            with patch.dict("sys.modules", {"habitat_sim": None}), \
+                 patch("src.dataset.tasks_subset.sampling.semantics.link_native_identity", return_value=bundle), \
+                 patch("src.dataset.tasks_subset.sampling.semantics.collect_instance_evidence",
+                       side_effect=AssertionError("must not render")):
+                self.assertEqual(derive_instance_sightings(bundle,root), [])
+                self.assertGreater(bundle["instance_reprojection_report"]["skipped"]["missing_valid_cache_or_depth"], 0)
