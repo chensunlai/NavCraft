@@ -91,7 +91,7 @@ def load_scene(directory: Path) -> dict:
                         "center_xyz": [(xmin+xmax)/2, sum(height)/2, (zmin+zmax)/2],
                         "size_xyz": [xmax-xmin, height[1]-height[0], zmax-zmin],
                         "rectangles_xz": rectangles, "height_range_m": height,
-                        "semantic_ids": row.get("semantic_mesh_ids", row.get("semantic_reference_ids", [])),
+                        "semantic_ids": row.get("semantic_mesh_ids", row.get("semantic_reference_ids", row.get("semantic_instances", []))),
                         "evidence": row.get("evidence_frames", []),
                         "annotation_quality": "schematic_source_unverified_in_runtime"})
     return {"levels": levels, "rooms": rooms, "openings": openings, "objects": objects,
