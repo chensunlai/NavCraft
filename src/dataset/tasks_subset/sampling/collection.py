@@ -7,6 +7,7 @@ from pathlib import Path
 import random
 
 import numpy as np
+import yaml
 
 from src.common.io import read_json
 from src.common.coordinates import world_to_uv
@@ -22,10 +23,55 @@ from .geometry import crossed_segment, project, read_depth, unproject, visible_p
 from .scene import load_scene, room_at
 
 
+def _hssd_episode(config, scene_id):
+    dataset = Path(config["assets"]) / "hssd-hab"
+    identifier = Path(scene_id).name.removesuffix(".scene_instance.json")
+    split_file = dataset / "scene_splits.yaml"
+    splits = yaml.safe_load(split_file.read_text())
+    if identifier not in splits["train"] or identifier.split("_")[0] in {x.split("_")[0] for x in splits["val"]}:
+        raise ValueError(f"HSSD scene is not an eligible train building: {identifier}")
+    return EpisodeSpec(f"hssd:sample:{identifier}", identifier, "hssd", scene_id,
+                       [0., 0., 0.], [0., 0., 0., 1.], [], str(split_file),
+                       provenance="program_assisted")
+
+
+def _environment_config(config, episode, gpu):
+    result = {"scenes": config["assets"], "gpu": gpu, "seed": config.get("seed", 0), "depth": True}
+    if episode.scene_id.startswith("hssd-hab/"):
+        result["scene_dataset_config"] = str(Path(config["assets"]) / "hssd-hab/hssd-hab.scene_dataset_config.json")
+    return result
+
+
+def _place_hssd_start(env, episode, scene, rng):
+    pathfinder = env.sim.sim.pathfinder
+    pathfinder.seed(env.config["seed"])
+    for _ in range(256):
+        point = [float(x) for x in pathfinder.get_random_navigable_point()]
+        if not all(map(math.isfinite, point)) or not any(abs(point[1]-l["floor_height"]) < .35 for l in scene["levels"]):
+            continue
+        if pathfinder.island_area(pathfinder.get_island(point)) < 10:
+            continue
+        angle = rng.uniform(0, math.tau)
+        rotation = [0., math.sin(angle/2), 0., math.cos(angle/2)]
+        episode.start_position, episode.start_rotation = point, rotation
+        env.restore_pose({"position": point, "rotation_xyzw": rotation,
+                          "camera_position": [point[0], point[1]+env.config["sensor_height"], point[2]],
+                          "camera_rotation_xyzw": rotation})
+        return
+    raise ValueError("No HSSD navigable start on an annotated floor")
+
+
+def _is_official_instruction(episode):
+    return episode.provenance == "official" and episode.benchmark in {"r2r", "rxr"}
+
+
 def _start_episodes(config, scene_id):
-    name = "objnav" if scene_id.startswith("hm3d/train/") else "r2r"
+    hm3d = scene_id.startswith("hm3d/train/")
+    name = config.get("collection", {}).get("episode_source", "objnav" if hm3d else "r2r")
+    if name not in ({"objnav", "goat"} if hm3d else {"r2r", "rxr"}):
+        raise ValueError(f"Incompatible episode source {name}: {scene_id}")
     source = create_source({"name": name, "root": config["datasets"][name], "split": "train"}, Path.cwd())
-    if name == "objnav":
+    if hm3d:
         identifier = Path(scene_id).name.removesuffix(".basis.glb")
         class SceneShard(type(source)):
             def _shards(self, requested):
@@ -35,15 +81,16 @@ def _start_episodes(config, scene_id):
                 return [path]
         source = SceneShard(source.config)
         goal_train = Path(config["datasets"]["goat"]) / "train/content" / f"{identifier}.json.gz"
-        held_out = [source.root / "val/content" / goal_train.name,
+        held_out = [Path(config["datasets"]["objnav"]) / "val/content" / goal_train.name,
                     Path(config["datasets"]["goat"]) / "val_unseen/content" / goal_train.name]
         if not goal_train.is_file() or any(path.is_file() for path in held_out):
             raise ValueError(f"HM3D scene not in the eligible train intersection: {scene_id}")
     else:
         if not scene_id.startswith("mp3d/"):
             raise ValueError(f"No verified training split configured for {scene_id}")
-        for split in ("val_unseen", "test"):
-            path = source.root / split / f"{split}.json.gz"
+        for split in ("val_unseen", "test_challenge" if name == "rxr" else "test"):
+            suffix = "_guide" if name == "rxr" else ""
+            path = source.root / split / f"{split}{suffix}.json.gz"
             if any(canonical_scene_id(e["scene_id"]) == scene_id for e in read_json(path)["episodes"]):
                 raise ValueError(f"MP3D scene overlaps {split}: {scene_id}")
     episodes = [e for e in source.load() if e.scene_id == scene_id]
@@ -105,7 +152,7 @@ def _follow(executor, point, calls=None, budget=42, radius=0.36, on_step=None):
     start = env.steps
     while env.steps-start < budget:
         p = env.position()
-        if math.dist(p, point) <= radius:
+        if env.distance([point]) < radius:
             return True
         path = env.shortest_path([point])
         if not path:
@@ -120,7 +167,7 @@ def _follow(executor, point, calls=None, budget=42, radius=0.36, on_step=None):
             _move(executor, ["turn_right" if delta >= 0 else "turn_left", "move_forward"], calls)
         if on_step:
             on_step()
-    return math.dist(env.position(), point) <= radius
+    return env.distance([point]) < radius
 
 
 def _sightings(executor, keys):
@@ -318,7 +365,13 @@ def _branch(bundle, output, env_config, episode, state, kind, operation, cut=Non
                 for call in calls:
                     call_reply = _call(executor, call["name"], call["arguments"])
                     receipts.append(call_reply)
+            goals = fields.get("goal_positions") or outcome.get("positions")
+            measurement = None
+            if goals:
+                distance = env.distance(goals)
+                measurement = {"positions": goals, "distance": distance if math.isfinite(distance) else None}
             records.append({"motions": env.motions[start:], "positions": env.trajectory[start:],
+                            "goal_measurement": measurement,
                             "end_frame": executor.frame_keys[executor.current["frame"]], "pose": env.pose(),
                             "nodes": deepcopy(executor.memory.nodes), "receipts": receipts,
                             "panoramas": list({f["group"] for f in bundle["frames"].values()
@@ -333,6 +386,7 @@ def _branch(bundle, output, env_config, episode, state, kind, operation, cut=Non
     trial = {"id": identifier, "kind": kind, "start_state": state["id"], "start_snapshot_sha256": start_digest, "calls": calls,
              "motions": original["motions"], "positions": original["positions"],
              "end_frame": original["end_frame"], "reference": outcome,
+             "goal_measurement": original["goal_measurement"],
              "replay": {**replayed, "passed": agreement, "calls": calls}, **fields}
     bundle["trials"].append(trial)
     return trial
@@ -413,18 +467,18 @@ def collect(config: dict, output: Path, gpu: int) -> dict:
     directory = map_directory(config["maps"], scene_id)
     scene = load_scene(directory)
     source = scene.pop("source")
-    episodes = _start_episodes(config, scene_id)
     rng = random.Random(config.get("seed", 0))
-    candidates = [ep for ep in episodes if room_at(scene, ep.start_position)]
-    if not candidates:
-        raise ValueError("No training start unambiguously inside an annotated room")
-    if scene_id.startswith("mp3d/"):
-        short = [ep for ep in candidates if ep.reference_path and
+    if scene_id.startswith("hssd-hab/"):
+        episode = _hssd_episode(config, scene_id)
+        source["limitations"].append("HSSD geometry-only sampling; room and object tasks require annotations.")
+    else:
+        candidates = [ep for ep in _start_episodes(config, scene_id) if room_at(scene, ep.start_position)]
+        if not candidates:
+            raise ValueError("No training start unambiguously inside an annotated room")
+        short = [ep for ep in candidates if ep.benchmark == "r2r" and ep.reference_path and
                  len(ep.goals[0]["instruction"].split()) <= 75 and
                  3.1 <= sum(math.dist(a, b) for a, b in zip(ep.reference_path, ep.reference_path[1:])) <= 7.5]
         episode = _select_start(short or candidates, scene, rng)
-    else:
-        episode = _select_start(candidates, scene, rng)
     source["split_evidence"] = {"split": "train", "benchmark": episode.benchmark,
                                 "episode_shard": episode.source_file,
                                 "sha256": hashlib.sha256(Path(episode.source_file).read_bytes()).hexdigest()}
@@ -432,20 +486,20 @@ def collect(config: dict, output: Path, gpu: int) -> dict:
               "episode": episode.to_dict(), "source": source, "scene": scene, "frames": {},
               "states": [], "sightings": [], "trials": [], "targets": [], "official_tasks": [],
               "rejections": []}
-    env_config = {"scenes": config["assets"], "gpu": gpu, "seed": bundle["seed"], "depth": True}
+    env_config = _environment_config({**config, "seed": bundle["seed"]}, episode, gpu)
+    bundle["environment_spec"] = {k: v for k, v in env_config.items() if k not in {"gpu", "depth"}}
     env = Environment(episode, env_config, output / "private" / "walk-0" / "raw")
     executor = None
     passages = []
     settings = config.get("collection", {})
     try:
+        if episode.provenance == "program_assisted":
+            _place_hssd_start(env, episode, scene, rng)
+            bundle["episode"] = episode.to_dict()
         executor = _Capture(output / "private" / "walk-0", env, output, bundle, "walk-0")
         node_limit = settings.get("nodes", 3)
         start_state = _cut(executor, "start")
-        if episode.benchmark == "r2r":
-            shortest = env.distance(episode.goals[0]["positions"])
-            if 0 < shortest <= 8 and len(episode.goals[0]["instruction"].split()) <= 75:
-                bundle["official_tasks"].append({"id": episode.id, "episode": episode.to_dict(),
-                                                 "state_id": start_state["id"], "shortest": shortest})
+        register_official_tasks(bundle, output, episode, start_state, env)
         for i in range(node_limit):
             frames = _panorama(executor, True)
             state = _cut(executor, f"stop-{i}")
@@ -497,13 +551,40 @@ def collect(config: dict, output: Path, gpu: int) -> dict:
     return bundle
 
 
+def register_official_tasks(bundle, output, episode, state, environment):
+    from hashlib import sha256
+    from src.bench.metrics import score_goal
+
+    if episode.provenance != "official":
+        return
+    for index, goal in enumerate(episode.goals):
+        shortest = environment.distance(goal["positions"])
+        threshold = score_goal(episode.benchmark, submitted=False, distance=shortest,
+                               shortest=shortest, path_length=0, steps=0)["official_success_distance"]
+        if not threshold <= shortest <= 8 or len(goal["instruction"].split()) > 75:
+            continue
+        source_index = goal.get("source_index", index)
+        identifier = f"{episode.id}:goal:{source_index}"
+        row = {"id": identifier, "episode": episode.to_dict(), "state_id": state["id"],
+               "goal_index": index, "source_goal_index": source_index, "shortest": shortest,
+               "threshold": threshold}
+        if goal.get("image_goal"):
+            frame = "official-target/" + sha256(identifier.encode()).hexdigest()[:20]
+            relative = Path("private") / (frame + ".png")
+            environment.target_image(goal["image_goal"], output / relative)
+            bundle["frames"][frame] = {"key": frame, "stream": "official-target", "rgb": str(relative)}
+            bundle["targets"].append({"id": identifier, "reference_frames": [frame]})
+            row["reference_frame"] = frame
+        bundle["official_tasks"].append(row)
+
+
 def collect_trials(config: dict, output: Path, gpu: int, kinds=(), bundle_path=None) -> dict:
     """Resume from frozen observations and independently replay selected branches."""
     output = Path(output).resolve()
     bundle_path = Path(bundle_path) if bundle_path else output / "private" / "bundle.json"
     bundle = read_json(bundle_path)
     episode = EpisodeSpec(**bundle["episode"])
-    env_config = {"scenes": config["assets"], "gpu": gpu, "seed": bundle["seed"], "depth": True}
+    env_config = _environment_config({**config, "seed": bundle["seed"]}, episode, gpu)
     settings = config.get("collection", {})
     base_states = [state for state in bundle["states"] if state["id"] != "blocked"]
     by_id = {state["id"]: state for state in base_states}
@@ -513,7 +594,7 @@ def collect_trials(config: dict, output: Path, gpu: int, kinds=(), bundle_path=N
     def branch(state, kind, operation, **details):
         if kinds and kind not in kinds:
             return None
-        if any(t["kind"] == kind and t["start_state"] == state["id"] and not t.get("invalidated")
+        if any(t["kind"] == kind and t["start_state"] == state["id"] and t.get("official_task") == details.get("official_task") and not t.get("invalidated")
                and t.get("start_snapshot_sha256") == snapshot_digest(output / state["snapshot"])
                for t in bundle["trials"]):
             return None
@@ -532,20 +613,23 @@ def collect_trials(config: dict, output: Path, gpu: int, kinds=(), bundle_path=N
 
     states = base_states
     for task in bundle["official_tasks"]:
-        goal = episode.goals[0]["positions"][0]
+        goal = task["episode"]["goals"][task["goal_index"]]
+        state = by_id[task["state_id"]]
+        threshold = task["threshold"]
+
         def official(ex, calls):
-            # Follow the original route where available; benchmark endpoint is separate.
-            for waypoint in [*episode.reference_path[1:], goal]:
-                if not _follow(ex, waypoint, calls, budget=26, radius=.5):
-                    break
-            arrived = ex.environment.distance([goal]) < 3
+            env = ex.environment
+            positions = goal["positions"]
+            nearest = min(positions, key=lambda p: env.distance([p]))
+            _follow(ex, nearest, calls, budget=55, radius=threshold)
+            arrived = env.distance(positions) < threshold
             if arrived:
                 _call(ex, "submit", {})
                 calls.append({"name": "submit", "arguments": {}})
             return {"reached": arrived}
-        trial = branch(states[0], "nav_18", official,
-                        official_task=task["id"])
-        if trial:
+
+        trial = branch(state, "nav_18", official, official_task=task["id"], goal_positions=goal["positions"])
+        if trial and _is_official_instruction(episode):
             trial["kinds"] = ["nav_16", "nav_18"]
     branch(states[0], "nav_04", _recording)
     branch(states[-1], "forward", forward, cut="blocked")
@@ -554,25 +638,14 @@ def collect_trials(config: dict, output: Path, gpu: int, kinds=(), bundle_path=N
         def recover(ex, calls):
             env = ex.environment
             start = np.asarray(env.position())
-            matrix = np.asarray(env.pose()["world_from_optical"])
-            forward, lateral = matrix[:3, 2], matrix[:3, 0]
-            alternatives = []
-            for advance in (.65, 1., 1.5):
-                for offset in (-1., 1., -.6, .6, -1.5, 1.5):
-                    proposal = start + advance*forward + offset*lateral
-                    point = env.snap_point(proposal)
-                    if point is None or math.dist(point, proposal) > .22:
-                        continue
-                    path = env.shortest_path([point])
-                    length = sum(math.dist(a, b) for a, b in zip(path, path[1:]))
-                    if .7 <= length <= 4:
-                        alternatives.append((length, point))
-            if not alternatives:
-                return {"reached": False, "reason": "no_local_bypass"}
-            _, point = min(alternatives)
-            return {"reached": _follow(ex, point, calls, budget=32, radius=.30),
+            alternatives = [p for p in reversed(env.trajectory[:-1])
+                            if .7 < math.dist(start, p) <= 2 and abs(p[1] - start[1]) < .25]
+            point = next((p for p in alternatives if .7 < env.distance([p]) <= 3), None)
+            if point is None:
+                return {"reached": False, "reason": "no_known_safe_waypoint"}
+            return {"reached": _follow(ex, point, calls, budget=32, radius=.27),
                     "positions": [point]}
-        trial = branch(blocked, "nav_03", recover)
+        trial = branch(blocked, "nav_03", recover, variant="safe_waypoint")
         if trial and trial["reference"].get("positions"):
             trial["goal_positions"] = trial["reference"]["positions"]
     for state, opening, point in passages[:1]:

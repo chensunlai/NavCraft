@@ -99,3 +99,45 @@ class SceneTests(unittest.TestCase):
             (copy / "link").symlink_to(original / "state.json")
             with self.assertRaisesRegex(ValueError, "Symlink"):
                 snapshot_digest(copy)
+
+    def test_hssd_carrier_requires_train_building_and_is_not_official(self):
+        from src.dataset.tasks_subset.sampling.collection import _hssd_episode, _is_official_instruction
+
+        with tempfile.TemporaryDirectory() as temporary:
+            split = Path(temporary) / "hssd-hab/scene_splits.yaml"
+            split.parent.mkdir()
+            split.write_text("train: ['10_1', '20_1']\nval: ['20_2', '30']\n")
+            config = {"assets": temporary}
+            scene = lambda name: f"hssd-hab/scenes/{name}.scene_instance.json"
+            episode = _hssd_episode(config, scene("10_1"))
+            self.assertEqual(episode.provenance, "program_assisted")
+            self.assertFalse(_is_official_instruction(episode))
+            for identifier in ("20_1", "20_2", "30", "40"):
+                with self.assertRaisesRegex(ValueError, "train building"):
+                    _hssd_episode(config, scene(identifier))
+
+    def test_frozen_seals_reject_mutated_inputs(self):
+        from PIL import Image
+        from src.dataset.tasks_subset.bundle import freeze_case, validate_frozen_inputs, write_json
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            snapshot = root / "states/s/snapshot"
+            write_json(snapshot / "state.json", {})
+            write_json(snapshot / "workspace/memory/nodes.json", {"nodes": []})
+            image = root / "source.png"
+            Image.new("RGB", (2, 2)).save(image)
+            task = freeze_case(root, {"id": "x", "snapshot": "../../states/s/snapshot"},
+                               {"accepted": [1]}, {}, [{"path": image, "caption": "RGB"}])
+            case = root / "cases/x"
+            self.assertTrue(validate_frozen_inputs(task, case))
+            for path in (case/"private/label.json", case/task["images"][0]["path"],
+                         snapshot/"workspace/memory/nodes.json"):
+                before = path.read_bytes()
+                path.write_bytes(before + b" ")
+                with self.assertRaisesRegex(ValueError, "seal|digest"):
+                    validate_frozen_inputs(task, case)
+                path.write_bytes(before)
+            del task["inputs_sha256"]
+            with self.assertRaisesRegex(ValueError, "seal"):
+                validate_frozen_inputs(task, case)

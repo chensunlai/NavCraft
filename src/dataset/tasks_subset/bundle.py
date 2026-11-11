@@ -38,6 +38,39 @@ def require_trial_snapshot(root, state, trial):
         raise ValueError("Trial start snapshot has changed")
 
 
+def _input_hashes(task, case):
+    case = Path(case).resolve()
+    root = case.parent.parent
+    hashes = {}
+    for field in ("snapshot", "label", "episode", "environment"):
+        if field not in task:
+            if field in ("snapshot", "label"):
+                raise ValueError(f"Missing required frozen input: {field}")
+            continue
+        value = Path(task[field])
+        path = (case / value).resolve(strict=True)
+        if value.is_absolute() or not path.is_relative_to(root):
+            raise ValueError(f"Frozen input escapes collection: {field}")
+        hashes[field] = (snapshot_digest(path) if field == "snapshot"
+                         else hashlib.sha256(path.read_bytes()).hexdigest())
+    return hashes
+
+
+def validate_frozen_inputs(task, case):
+    """Reject stale or unsealed frozen input before loading it for evaluation."""
+    if task.get("inputs_sha256") != _input_hashes(task, case):
+        raise ValueError("Missing or mismatched frozen input seals")
+    case = Path(case).resolve()
+    for image in task["images"]:
+        path = Path(image["path"])
+        resolved = (case / path).resolve(strict=True)
+        if path.is_absolute() or resolved.parent != case / "public":
+            raise ValueError("Frozen image outside case public directory")
+        if image.get("sha256") != hashlib.sha256(resolved.read_bytes()).hexdigest():
+            raise ValueError("Frozen image digest differs")
+    return True
+
+
 def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n")
@@ -61,7 +94,7 @@ def freeze_case(root, task, label, construction, images):
     directory = root / "cases" / identifier
     if directory.exists():
         raise FileExistsError(directory)
-    for field in ("snapshot", "episode"):
+    for field in ("snapshot", "episode", "environment"):
         if field not in task or task[field] is None:
             continue
         value = Path(task[field])
@@ -70,7 +103,7 @@ def freeze_case(root, task, label, construction, images):
             raise ValueError(f"Case {field} is outside the collection")
         if field == "snapshot" and not (location / "state.json").is_file():
             raise FileNotFoundError(location / "state.json")
-        if field == "episode" and not location.is_file():
+        if field in ("episode", "environment") and not location.is_file():
             raise FileNotFoundError(location)
     sources = []
     for image in images:
@@ -96,6 +129,7 @@ def freeze_case(root, task, label, construction, images):
                                      "sha256": hashlib.sha256(destination.read_bytes()).hexdigest()})
         write_json(directory / "private/label.json", label)
         write_json(directory / "construction.json", construction)
+        frozen["inputs_sha256"] = _input_hashes(frozen, directory)
         write_json(directory / "task.json", frozen)
     except Exception:
         shutil.rmtree(directory)
