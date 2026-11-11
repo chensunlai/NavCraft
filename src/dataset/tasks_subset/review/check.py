@@ -122,6 +122,27 @@ def _source_hashes(bundle):
           and _sha(Path(split["episode_shard"])) == split["sha256"], "training source changed")
 
 
+def _physical_references(root, state, task, construction, label, bundle):
+    if task["mode"] == "navigation":
+        trials = [construction["trial"]] if construction.get("trial") else []
+    else:
+        identifiers = label.get("trials", [])
+        if label.get("trial"):
+            identifiers = [label["trial"], *identifiers]
+        indexed = {trial["id"]: trial for trial in bundle["trials"]}
+        _need(all(identifier in indexed for identifier in identifiers), "required replay reference missing")
+        trials = [indexed[identifier] for identifier in dict.fromkeys(identifiers)]
+    if not trials:
+        _need(task["mode"] != "navigation" and not construction.get("physical_replay"),
+              "required replay reference missing")
+        return None
+    for trial in trials:
+        _need(any(candidate == trial for candidate in bundle["trials"]), "trial not bound to collection")
+        require_trial_snapshot(root, state, trial)
+        _replay(trial, state, bundle["frames"])
+    return True
+
+
 def _check_case(root, directory, task, construction, label, bundle, states, snapshot_errors):
     validate_frozen_inputs(task, directory)
     kind = task["kind"]
@@ -223,15 +244,7 @@ def check_collection(root, bundle_path=None, invalidations_path=None):
                 report.update(invalidated=invalidated[task["id"]], training_ready=False)
                 coverage[kind]["structural"] += 1
                 continue
-            trial = construction.get("trial") if task["mode"] == "navigation" else next(
-                (t for t in bundle["trials"] if t["id"] == label.get("trial")), None)
-            if trial:
-                _need(any(t == trial for t in bundle["trials"]), "trial not bound to collection")
-                require_trial_snapshot(root, state, trial)
-                _replay(trial, state, bundle["frames"])
-                report["physical"] = True
-            elif task["mode"] == "navigation" or construction.get("physical_replay"):
-                raise ValueError("required replay reference missing")
+            report["physical"] = _physical_references(root, state, task, construction, label, bundle)
             review_path = path.parent / "private/review.json"
             if review_path.exists():
                 review = read_json(review_path)
@@ -241,7 +254,7 @@ def check_collection(root, bundle_path=None, invalidations_path=None):
                 report["visual"] = review.get("visual") == "passed" and bool(review.get("reviewer"))
                 report["model_tried"] = bool(review.get("model_attempt"))
                 report["training_ready"] = (report["visual"] and review.get("label") == "passed"
-                    and review.get("public_evidence") == "passed" and (not trial or report["physical"]))
+                    and review.get("public_evidence") == "passed")
         except (OSError, ValueError, KeyError, TypeError, IndexError, ToolInputError) as exc:
             report["error"] = str(exc)
         if report.get("kind") in coverage:
