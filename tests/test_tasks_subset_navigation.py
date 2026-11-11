@@ -28,7 +28,7 @@ def test_crossing_uses_initial_point_and_finite_correct_floor_opening():
         return {"id": identifier, "level": "floor",
                 "polygon_xz": [[left, -2], [right, -2], [right, 2], [left, 2]]}
     label = {"kind": "nav_02", "from_room": "left", "to_room": "right",
-             "opening": {"level": "floor", "segment_xz": [[0, -.5], [0, .5]]},
+             "opening": {"kind": "door", "level": "floor", "segment_xz": [[0, -.5], [0, .5]]},
              "scene": {"levels": [{"id": "floor", "floor_height": 0}],
                        "rooms": [room("left", -2, 0), room("right", 0, 2)]}}
     def cross(start, end):
@@ -211,6 +211,13 @@ def test_reference_pair_changes_only_reference_and_private_answer(tmp_path):
               "scene": {"objects": [{"id": "A", "room": "room", "name": "chair"}]},
               "targets": [{"id": "target", "object_id": "A", "positions": [[2, 0, 0]]}],
               "navigation_evidence": {"distinct_instances": [pair]}}
+    bundle["scene"].update(levels=[{"id": "floor", "floor_height": 0}],
+                           rooms=[{"id": "room", "level": "floor",
+                                   "polygon_xz": [[-1, -2], [4, -2], [4, 2], [-1, 2]]}])
+    bundle["targets"][0]["approach_region"] = {
+        "room": "room", "floor_height": 0, "floor_tolerance": .25, "room_margin": .04,
+        "rectangles": [{"center_xz": [2, 0], "size": [.2, .2], "angle_deg": 0}],
+        "max_footprint_distance": .85}
     def build(variant, calls):
         trial = {"id": variant, "variant": variant, "target": "target", "comparison_id": "pair",
                  "visible_frame": "current", "goal_measurement": {"positions": [[2, 0, 0]], "distance": 0., "initial_distance": 2.},
@@ -220,6 +227,8 @@ def test_reference_pair_changes_only_reference_and_private_answer(tmp_path):
     pos, pos_label, pos_images = build("reference_match", [{"name": "submit"}])
     neg, neg_label, neg_images = build("wrong_instance", [])
     assert pos == neg
+    assert "within 0.85 m horizontally" in pos and "same floor and in the same room" in pos
+    assert "before either submitting a match or answering mismatch" in pos
     assert [im["caption"] for im in pos_images] == [im["caption"] for im in neg_images]
     assert pos_images[0]["path"].read_bytes() == neg_images[0]["path"].read_bytes()
     assert pos_images[1]["source"] != neg_images[1]["source"]
@@ -246,10 +255,14 @@ def test_reference_budget_rejects_motion_and_observation_overruns():
 def test_known_room_route_uses_prefix_events_only():
     from src.dataset.tasks_subset.navigation.construction import _intervening_room
     state = {"visited_rooms": ["A", "B", "C"], "traversals": [
-        {"from_room": "A", "to_room": "B"}, {"from_room": "B", "to_room": "C"}]}
-    assert _intervening_room(state, "A", "C")
-    assert not _intervening_room(state, "A", "B")
-    assert not _intervening_room({**state, "traversals": []}, "A", "C")
+        {"from_room": "A", "to_room": "B", "opening": "D1"},
+        {"from_room": "B", "to_room": "C", "opening": "D2"}]}
+    bundle = {"scene": {"openings": [{"id": "D1", "kind": "door"}, {"id": "D2", "kind": "open_passage"}]}}
+    assert _intervening_room(bundle, state, "A", "C")
+    assert not _intervening_room(bundle, state, "A", "B")
+    assert not _intervening_room(bundle, {**state, "traversals": []}, "A", "C")
+    bundle["scene"]["openings"][0]["kind"] = "open_functional_connection"
+    assert not _intervening_room(bundle, state, "A", "C")
 
 
 def test_close_across_wall_or_exact_threshold_does_not_count_as_arrival():
@@ -493,3 +506,46 @@ def test_execution_uncertain_is_not_promoted_by_positive_components(tmp_path):
             for model, decision in [("model-a", "accept"), ("model-b", "uncertain")]]
     result = finalize_execution(tmp_path, rows)
     assert result["success"] is None and result["status"] == "needs_review"
+
+
+def test_opening_band_projection_rejects_clipping_and_narrow_views():
+    from src.dataset.tasks_subset.sampling.geometry import project_opening_band
+    frame = {"camera": {"width": 200, "height": 200, "K": [[100, 0, 100], [0, 100, 100], [0, 0, 1]]},
+             "world_from_optical": [[1, 0, 0, 0], [0, -1, 0, .9], [0, 0, 1, 0], [0, 0, 0, 1]]}
+    opening = {"segment_xz": [[-.5, 2], [.5, 2]]}
+    outline = project_opening_band(frame, opening, 0)
+    expected = [[75, 132.5], [125, 132.5], [125, 62.5], [75, 62.5]]
+    assert all(type(value) is int for point in outline for value in point)
+    assert all(abs(value - ideal) <= .500001 for point, target in zip(outline, expected)
+               for value, ideal in zip(point, target))
+    assert project_opening_band(frame, {"segment_xz": [[-.5, .2], [.5, .2]]}, 0) is None
+    assert project_opening_band(frame, {"segment_xz": [[-.05, 2], [.05, 2]]}, 0) is None
+
+
+def test_nav02_draws_reviewed_outline_and_rejects_stale_rgb_binding(tmp_path):
+    import hashlib,json,pytest
+    from PIL import Image
+    from src.dataset.tasks_subset.sampling.geometry import project_opening_band
+    from src.dataset.tasks_subset.navigation.construction import _instruction
+    path=tmp_path/"rgb.png";Image.new("RGB",(200,200),"white").save(path)
+    frame={"rgb":"rgb.png","pose":{"position":[0,0,0]},
+           "camera":{"width":200,"height":200,"K":[[100,0,100],[0,100,100],[0,0,1]]},
+           "world_from_optical":[[1,0,0,0],[0,-1,0,.9],[0,0,1,0],[0,0,0,1]]}
+    opening={"id":"D1","kind":"door","level":"floor","connects":["A","B"],
+             "segment_xz":[[-.5,2],[.5,2]]}
+    outline=project_opening_band(frame,opening,0)
+    sight={"id":"D1","kind":"opening","frame":"current","pixel":[100,100],"semantic_verified":True,
+           "outline":outline,"review_source":{"outline":outline,
+            "sha256":hashlib.sha256(path.read_bytes()).hexdigest(),
+            "annotation_hash":hashlib.sha256(json.dumps(opening,sort_keys=True,allow_nan=False).encode()).hexdigest()}}
+    scene={"objects":[],"openings":[opening],"levels":[{"id":"floor","floor_height":0}],
+           "rooms":[{"id":"A","level":"floor","polygon_xz":[[-2,-2],[2,-2],[2,2],[-2,2]]},
+                    {"id":"B","level":"floor","polygon_xz":[[-2,2],[2,2],[2,4],[-2,4]]}]}
+    bundle={"frames":{"current":frame},"scene":scene,"sightings":[sight]}
+    state={"current_frame":"current","frame_keys":["current"],"room":"A"}
+    trial={"id":"trial","opening":"D1","visible_frame":"current"}
+    _,_,images=_instruction("nav_02",trial,state,frame,bundle,[[0,0,3]],tmp_path)
+    assert images[0]["source"]["outline"]==outline
+    sight["review_source"]["sha256"]="stale"
+    with pytest.raises(ValueError,match="review binding"):
+        _instruction("nav_02",trial,state,frame,bundle,[[0,0,3]],tmp_path)

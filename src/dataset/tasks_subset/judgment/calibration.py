@@ -4,29 +4,39 @@ from math import atan2, degrees, hypot
 import numpy as np
 
 
-def floor_support(c, sight):
+def floor_support(c,sight):
+    key=(sight["frame"],tuple(sight["pixel"]),tuple(sight["world"]))
+    cache=c.__dict__.setdefault("_floor_support_cache",{})
+    if key not in cache:
+        cache[key]=_measure_floor_support(c,sight)
+    return cache[key]
+
+
+def _measure_floor_support(c, sight):
     f = c.frames[sight["frame"]]
     levels = c.bundle["scene"].get("levels", [])
-    matches = [level["floor_height"] for level in levels if abs(sight["world"][1]-level["floor_height"]) <= .08]
-    if len(matches) != 1 or not f.get("camera") or not f.get("world_from_optical") or not f.get("depth"):
+    floor_heights=[level["floor_height"] for level in levels]
+    if not floor_heights or not f.get("camera") or not f.get("world_from_optical") or not f.get("depth"):
         return None
-    from ..sampling.geometry import floor_patch_fraction, read_depth
+    from ..sampling.geometry import measure_horizontal_floor_patch, read_depth
     cache = c.__dict__.setdefault("_depth_cache",{})
     try:
         if sight["frame"] not in cache:
             cache[sight["frame"]]=read_depth(c.root/f["depth"],f["camera"])
-        patch=floor_patch_fraction(cache[sight["frame"]],f["camera"],f["world_from_optical"],
-                                   sight["pixel"],matches[0])
+        measured=measure_horizontal_floor_patch(cache[sight["frame"]],f["camera"],f["world_from_optical"],
+                                   sight["pixel"],floor_heights,f["pose"]["position"][1])
     except (OSError,KeyError):
         return None
-    if patch < .9:
+    if measured is None:
         return None
+    c.__dict__.setdefault("_floor_measurements",{})[(sight["frame"],tuple(sight["pixel"]))]={
+        "frame":sight["frame"],"pixel":sight["pixel"],"measurement":measured}
     matrix = np.asarray(f["world_from_optical"], dtype=float)
     if np.linalg.norm(matrix[[0,2],3]-np.asarray(c.position(sight["frame"])))>.01:
         return None
     ray = np.linalg.solve(f["camera"]["K"], [*sight["pixel"], 1])
     direction = matrix[:3, :3] @ ray
-    height = matrix[1, 3]-matches[0]
+    height = matrix[1, 3]-measured["height_m"]
     if not .3 < height < 2.5 or direction[1] >= -.18:
         return None
     origin = matrix[:3, 3]
@@ -144,3 +154,28 @@ def public_intersection(first,second,first_pixel,second_pixel,transform):
     if min(lengths)<=0:
         return None
     return (origins[0]+lengths[0]*rays[0]).tolist()
+
+
+def calibrated_turn(c, first, second, expected):
+    """In-place yaw recoverable from the same marked surface and public intrinsics."""
+    if first["kind"] != second["kind"] or first["id"] != second["id"] or np.linalg.norm(
+            np.asarray(first["world"])-second["world"]) > .06:
+        return None
+    bearings=[]; public={}
+    matrices=[]
+    for name,sight in (("first",first),("second",second)):
+        frame=c.frames[sight["frame"]]
+        matrix=np.asarray(frame.get("world_from_optical",[]))
+        if matrix.shape!=(4,4) or not frame.get("camera") or max(abs(matrix[1,0]),abs(matrix[1,2]))>.001:
+            return None
+        K=np.asarray(frame["camera"]["K"])
+        ray=np.linalg.solve(K,[*sight["pixel"],1])
+        bearings.append(degrees(atan2(ray[0],ray[2])))
+        public[name]={"K":K.tolist()}
+        matrices.append(matrix)
+    if np.linalg.norm(matrices[0][:3,3]-matrices[1][:3,3])>.03:
+        return None
+    recovered=(bearings[0]-bearings[1]+180)%360-180
+    if abs((recovered-expected+180)%360-180)>2:
+        return None
+    return public,recovered

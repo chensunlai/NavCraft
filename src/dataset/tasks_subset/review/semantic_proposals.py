@@ -1,5 +1,6 @@
 """RGB type proposals for semantic surfaces, including non-passable openings."""
 import re
+from ..sampling.scene import is_physical_opening
 
 
 def opening_type_proposals(bundle):
@@ -30,6 +31,8 @@ def opening_type_proposals(bundle):
     from ..sampling.geometry import project
     levels={level["id"]:level["floor_height"] for level in bundle["scene"].get("levels",[])}
     for opening in bundle["scene"].get("openings",[]):
+        if not is_physical_opening(opening):
+            continue
         if opening.get("level") not in levels or not opening.get("segment_xz"):
             continue
         (ax,az),(bx,bz)=opening["segment_xz"]

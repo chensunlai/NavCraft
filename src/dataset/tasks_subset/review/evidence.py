@@ -9,6 +9,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 from ..bundle import write_json
+from ..sampling.scene import is_physical_opening
 
 
 def _digest(value):
@@ -25,12 +26,23 @@ def review_candidates(bundle, root):
             "foreground_in_schematic_bounds", "depth_clear_at_annotated_portal",
         }:
             continue
+        if s["kind"]=="opening" and not is_physical_opening(annotation):
+            continue
         source = bundle["frames"][s["frame"]]
         digest = sha256((root / source["rgb"]).read_bytes()).hexdigest()
         evidence = {"frame": s["frame"], "sha256": digest, "pixel": s["pixel"],
                     "geometry_method": s["method"], "world": s["world"],
                     "annotation_hash": _digest(annotation),
                     "scene_hashes": bundle.get("source", {}).get("sha256", {})}
+        if s["kind"]=="opening":
+            from ..sampling.geometry import project_opening_band
+            level=next((l for l in bundle["scene"].get("levels",[]) if l["id"]==annotation.get("level")),None)
+            if not level or not source.get("camera") or not source.get("world_from_optical"):
+                continue
+            outline=project_opening_band(source,annotation,level["floor_height"])
+            if outline is None:
+                continue
+            evidence["outline"]=outline
         name = annotation.get("category") or annotation.get("name") or annotation["kind"]
         if name == "passage":
             name = "opening"
@@ -45,7 +57,7 @@ def review_candidates(bundle, root):
     from ..judgment.corrections import current_correction_reviews
     from ..navigation.construction import navigation_review_proposals
 
-    proposals = chain(judgment_review_proposals(bundle, root), navigation_review_proposals(bundle, root), target_reviews(bundle), opening_type_proposals(bundle), surface_region_proposals(bundle), span_review_proposals(bundle,root), current_correction_reviews(bundle,root))
+    proposals = chain(judgment_review_proposals(bundle, root), navigation_review_proposals(bundle, root), target_reviews(bundle,root), opening_type_proposals(bundle), surface_region_proposals(bundle), span_review_proposals(bundle,root), current_correction_reviews(bundle,root))
     for raw in proposals:
         evidence = {"frames": [{"frame": key, "sha256": sha256(
             (root / bundle["frames"][key]["rgb"]).read_bytes()).hexdigest()} for key in raw["frames"]],
@@ -55,7 +67,8 @@ def review_candidates(bundle, root):
 
 
 def _checks(candidate):
-    return candidate.get("check_keys", ["visible", "name_type_match"])
+    return candidate.get("check_keys", ["visible","name_type_match"]+
+                         (["frame_alignment"] if candidate["kind"]=="opening" else []))
 
 
 def apply_reviews(bundle, root, reviews):
@@ -153,6 +166,9 @@ def apply_reviews(bundle, root, reviews):
             s["kind"] != "object" or s["semantic_verified"])
         if s["kind"] == "opening":
             s["type_verified"] = s["semantic_verified"]
+            s.pop("outline",None)
+            if s["semantic_verified"]:
+                s["outline"]=candidate["source"]["outline"]
     objects = {o["id"]: o for o in bundle["scene"].get("objects", [])}
     sightings = defaultdict(list)
     for s in result["sightings"]:
@@ -204,6 +220,10 @@ def model_review(repo, config, output, root, bundle, candidate, reviewer):
             path = root / frame["rgb"]
             endpoints=candidate.get("endpoint_markers",[None]*len(evidence["frames"]))[index]
             polygon=candidate.get("polygons",[None]*len(evidence["frames"]))[index]
+            if marker is not None and isinstance(marker[0],(list,tuple)):
+                if polygon is not None:
+                    raise ValueError("A view cannot supply two polygon markers")
+                polygon,marker=marker,None
             if marker is not None or endpoints or polygon:
                 with Image.open(path) as image:
                     image = image.convert("RGB")
@@ -222,13 +242,21 @@ def model_review(repo, config, output, root, bundle, candidate, reviewer):
         frame = bundle["frames"][evidence["frame"]]
         with Image.open(root / frame["rgb"]) as image:
             image = image.convert("RGB")
-        x, y = evidence["pixel"]
-        ImageDraw.Draw(image).ellipse((x-9, y-9, x+9, y+9), outline="#00ffff", width=3)
+        if candidate["kind"]=="opening":
+            ImageDraw.Draw(image).polygon([tuple(p) for p in evidence["outline"]],outline="#00ffff",width=3)
+            prompt=(f"The cyan outline locates a proposed nearby physical {candidate['name']}. "
+                    "Its top and bottom deliberately span only a middle-height band, not the true lintel/threshold. "
+                    "The left/right sides should identify one and the same nearby physical entry, allowing small "
+                    "schematic offsets. Set frame_alignment only if it actually brackets that entry; reject "
+                    "a wall, a background cabinet or a different farther doorway. Check visibility and type.")
+        else:
+            x, y = evidence["pixel"]
+            ImageDraw.Draw(image).ellipse((x-9, y-9, x+9, y+9), outline="#00ffff", width=3)
+            prompt=(f"Inspect the exact cyan-marked region. Proposed type: {candidate['name']!r}. "
+                    "Determine if a scene entity is clearly visible at the mark and its type matches.")
         marked = output / "candidate.png"
         image.save(marked)
         images.append({"path": marked.resolve(), "caption": "RGB candidate"})
-        prompt = (f"Inspect the exact cyan-marked region. Proposed type: {candidate['name']!r}. "
-                  "Determine if a scene entity is clearly visible at the mark and its type matches.")
     check_keys = _checks(candidate)
     prompt += (" If ambiguous report uncertain. Return JSON with decision (accept/reject/uncertain), "
                f"reason (one short visual observation), and boolean keys: {', '.join(check_keys)}.")

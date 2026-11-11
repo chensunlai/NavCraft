@@ -4,7 +4,7 @@ import json
 
 from src.bench.metrics import score_goal
 from ..sampling.geometry import crossed_segment
-from ..sampling.scene import room_at
+from ..sampling.scene import is_physical_opening, room_at
 
 
 def _samples(motions):
@@ -13,6 +13,8 @@ def _samples(motions):
 
 def doorway_crossed(points, scene, opening, source, destination):
     """Check that real motion through the finite opening leads into its other room."""
+    if not is_physical_opening(opening):
+        return False
     level = next((l for l in scene["levels"] if l["id"] == opening["level"]), None)
     if not level:
         return False

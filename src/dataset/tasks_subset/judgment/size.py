@@ -153,7 +153,7 @@ def build_size_comparisons(c):
            if r.get("review_candidate") and set(r["selection"]["frames"])<=c.keys]
     for first,second in combinations(spans,2):
         a,b=first["selection"],second["selection"]
-        if a["object"]==b["object"] or a["selection"]["axis"]!=b["selection"]["axis"]:
+        if a["object"]==b["object"]:
             continue
         if abs(a["length_m"]-b["length_m"])<=.3:
             continue
@@ -166,8 +166,8 @@ def build_size_comparisons(c):
                                     [(f"{name}{i+1}",p) for i,p in enumerate(list(reversed(source["pixels"])) if reverse else source["pixels"])]))
         answer="A" if pair[0]["length_m"]>pair[1]["length_m"] else "B"
         c.put("compare_distance_size","Which physical object has the larger complete horizontal physical span "
-              f"at these specified parts? A: {pair[0]['selection']['axis_description']}; "
-              f"B: {pair[1]['selection']['axis_description']}. Both use the defined {a['selection']['axis']} axis. "
+              f"at these specified parts? A ({pair[0]['selection']['axis']}): {pair[0]['selection']['axis_description']}; "
+              f"B ({pair[1]['selection']['axis']}): {pair[1]['selection']['axis_description']}. "
               "The paired endpoint marks are actual visible boundaries, not image widths.",
               enum("A","B"),[answer],pictures,private={"variant":"physical_horizontal_span_comparison",
                                                      "span_facts":[first,second],"margin_m":.3,

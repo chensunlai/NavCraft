@@ -86,12 +86,41 @@ def test_empty_history_does_not_invent_crossings(tmp_path):
     assert not c.options
 
 
+def test_room_graph_does_not_publish_unindexed_private_room_alias(tmp_path, monkeypatch):
+    import src.dataset.tasks_subset.judgment.construction as construction
+    b = _bundle(tmp_path)
+    state = b["states"][0]
+    state.update(room="b", visited_rooms=["a", "b", "private-c"],
+                 room_aliases={"a": "Room A", "b": "Room B", "private-c": "Hidden Room"},
+                 node_frames={"N1": ["before"], "N2": ["current"]},
+                 traversals=[{"opening": "D", "from_room": "a", "to_room": "b",
+                              "before_frame": "before", "after_frame": "current",
+                              "from_node": "N1", "to_node": "N2"}])
+    b["scene"].update(rooms=[{"id": key} for key in ("a", "b", "private-c")],
+                      openings=[{"id": "D", "kind": "door", "connects": ["a", "b"]}])
+    for key, room in (("before", "a"), ("current", "b")):
+        b["frames"][key]["room"] = room
+        b["frames"][key]["yaw"] = 0
+    b["sightings"] = [{"frame": key, "kind": "opening", "id": "D", "pixel": [80, 50],
+                       "world": [0, 0, -1], "verified": True, "method": "fixture"}
+                      for key in ("before", "current")]
+    monkeypatch.setattr(construction, "_opening_supported", lambda *_: True)
+    monkeypatch.setattr(construction, "_node_snapshot", lambda _: {"nodes": [
+        {"id": "N1", "room": "Room A"}, {"id": "N2", "room": "Room B"}]})
+    c = Context(b, state, tmp_path, {})
+    c.prefix = lambda: [construction.row("before"), construction.row("current")]
+    _rooms(c)
+    assert c.options["room_adjacency"]
+    assert "Hidden Room" not in json.dumps(c.options)
+
+
 def test_frozen_judgment_runner(tmp_path, monkeypatch):
     bundle = _bundle(tmp_path)
     from src.dataset.tasks_subset.sampling.geometry import project
     import numpy as np
     monkeypatch.setattr("src.dataset.tasks_subset.sampling.geometry.read_depth",lambda *args: np.ones((100,160)))
-    monkeypatch.setattr("src.dataset.tasks_subset.sampling.geometry.floor_patch_fraction",lambda *args: 1.)
+    monkeypatch.setattr("src.dataset.tasks_subset.sampling.geometry.measure_horizontal_floor_patch",
+                        lambda *args: {"height_m":0.,"normal_world":[0,1,0],"tilt_degrees":0.})
     bundle["scene"]["levels"]=[{"floor_height":0}]
     for key,frame in bundle["frames"].items():
         x=frame["pose"]["position"][0]
@@ -160,9 +189,13 @@ def test_panorama_uses_sensor_heading_not_constant_public_body_heading(tmp_path)
     assert not c.current_panorama
 
 
-def test_rejected_portal_cannot_reenter_as_geometry_verified(tmp_path):
+def test_rejected_portal_cannot_reenter_as_geometry_verified(tmp_path, monkeypatch):
     b = _bundle(tmp_path)
-    b["scene"]["openings"] = [{"id": "shared", "kind": "passage"}]
+    b["scene"]["openings"] = [{"id": "shared", "kind": "passage", "level": "L"}]
+    b["scene"]["levels"] = [{"id":"L","floor_height":0}]
+    b["frames"]["before"].update(camera={"fx":100},world_from_optical=[[1]])
+    monkeypatch.setattr("src.dataset.tasks_subset.sampling.geometry.project_opening_band",
+                        lambda *args: [[10,10],[30,10],[30,70],[10,70]])
     b["sightings"][0].update(kind="opening", method="depth_clear_at_annotated_portal")
     c, = review_candidates(b, tmp_path)
     record = {"candidate_id": c["candidate_id"], "kind": c["kind"], "source": c["source"],
@@ -274,8 +307,11 @@ def test_review_reapplication_clears_unbound_derived_facts(tmp_path):
 def test_arrival_branch_is_reachable(tmp_path, monkeypatch):
     from src.dataset.tasks_subset.judgment.construction import _targets
     b=_bundle(tmp_path)
-    t={"id":"t","reference_frames":["before"],"reference_pixel":[10,10]}
-    b["judgment_evidence"]={"arrivals":[{"state":"cut","target":"t","review_candidate":"bound"}]}
+    t={"id":"t","object_id":"O","reference_frames":["before"],"reference_pixel":[10,10]}
+    b["targets"]=[{**t,"approach_region":{"room":"R"}}]
+    monkeypatch.setattr("src.dataset.tasks_subset.judgment.targets.arrival_pictures",
+                        lambda *args: [("before","Target reference",[("T",[10,10])])])
+    b["judgment_evidence"]={"arrivals":[{"state":"cut","target":"t","review_candidate":"bound","frames":["before"]}]}
     sight=b["sightings"][1]
     monkeypatch.setattr("src.dataset.tasks_subset.judgment.targets.arrival_candidates",
                         lambda bundle: iter([(t,b["states"][0],sight,.85,True)]))
@@ -294,7 +330,8 @@ def test_camera_distance_variant_has_public_floor_calibration(tmp_path,monkeypat
     b["sightings"]=[{"id":"p","kind":"point","frame":"current","pixel":[80,85],
                      "world":[.25,0,-2],"verified":True,"method":"fixture"}]
     monkeypatch.setattr("src.dataset.tasks_subset.sampling.geometry.read_depth",lambda *_:np.ones((100,160)))
-    monkeypatch.setattr("src.dataset.tasks_subset.sampling.geometry.floor_patch_fraction",lambda *_:1.)
+    monkeypatch.setattr("src.dataset.tasks_subset.sampling.geometry.measure_horizontal_floor_patch",
+                        lambda *args: {"height_m":0.,"normal_world":[0,1,0],"tilt_degrees":0.})
     c=Context(b,b["states"][0],tmp_path,{})
     _visual(c)
     row=c.options["distance_estimation"][0]
@@ -415,6 +452,10 @@ def test_model_review_accepts_explicit_none_markers(tmp_path,monkeypatch):
     monkeypatch.setattr("src.dataset.tasks_subset.review.model.run_fixed_evidence",fake_model)
     record=model_review(tmp_path,{},tmp_path/"review",tmp_path,b,candidate,"fixture")
     assert record["decision"]=="uncertain" and len(captured)==1
+    outline=[[10,10],[40,10],[40,70],[10,70]]
+    model_review(tmp_path,{},tmp_path/"outline",tmp_path,b,{**candidate,"markers":[outline]},"fixture")
+    with Image.open(tmp_path/"outline/candidate-1.png") as marked:
+        assert marked.getpixel((10,20))==(0,255,255)
     with pytest.raises(ValueError):
         model_review(tmp_path,{},tmp_path/"invalid",tmp_path,b,{**candidate,"markers":[]}, "fixture")
 
@@ -493,3 +534,134 @@ def test_model_review_records_execution_failure_separately(tmp_path,monkeypatch)
                         tmp_path/"budget",tmp_path,b,candidate,"tag")
     assert record["execution_status"]=="budget_exhausted"
     assert record["response_reason"]=="output_limit" and record["model"]=="Actual-Qwen"
+
+
+def test_build_rebinds_native_measurements_after_rgb_depth_or_pose_change(tmp_path,monkeypatch):
+    from copy import deepcopy
+    from hashlib import sha256
+    import numpy as np
+    # Base identity is the separately tested input boundary. Target projection/depth,
+    # pixels and cache hashes below are real, not mocked.
+    monkeypatch.setattr("src.dataset.tasks_subset.sampling.semantics.link_native_identity",lambda b,r:b)
+    monkeypatch.setattr("src.dataset.tasks_subset.sampling.semantics.collect_instance_evidence",
+                        lambda *_a,**_k:pytest.fail("build must never render"))
+    for name in ("source.png","dest.png"):
+        Image.new("RGB",(5,5),"gray").save(tmp_path/name)
+    Image.fromarray(np.full((5,5),2000,dtype=np.uint16)).save(tmp_path/"depth.png")
+    np.save(tmp_path/"mask.npy",np.full((5,5),34,dtype=np.int32))
+    camera={"K":[[1,0,2],[0,1,2],[0,0,1]],"width":5,"height":5,"depth_scale":.001,
+            "depth_invalid_value":0,"depth_min":.01,"depth_max":10}
+    matrix=np.eye(4).tolist();pose={"position":[0,0,0],"camera_position":[0,0,0]}
+    frames={k:{"rgb":k+".png","depth":"depth.png","camera":camera,"world_from_optical":matrix,
+               "pose":deepcopy(pose),"public_pose":{"pos":[.5,.5],"heading":180},"step":i,"stream":"walk"}
+            for i,k in enumerate(("source","dest"))}
+    row={"valid":True,"pose":deepcopy(pose),"camera":camera,"source_rgb_sha256":sha256((tmp_path/"dest.png").read_bytes()).hexdigest(),
+         "mask":"mask.npy","mask_sha256":sha256((tmp_path/"mask.npy").read_bytes()).hexdigest(),
+         "objects":{"tv":{"mapping_valid":True,"mapped_ids":[34]}}}
+    b={"scene_id":"fixture","scene":{"objects":[]},"frames":frames,"targets":[],
+       "states":[{"id":"cut","snapshot":"unused","current_frame":"dest","frame_keys":["source","dest"],
+                  "node_frames":{},"step":1,"transform":{"origin":[-1,-1],"size_m":2}}],
+       "sightings":[{"frame":"source","kind":"object","id":"tv","pixel":[2,2],"world":[0,0,2],
+                     "method":"fixture","verified":True,"semantic_verified":True,"identity_verified":True,
+                     "review_candidate":"seed","native_identity":{"descriptor_id":34}}],
+       "instance_capability":{"available":True,"min_pixels":1},
+       "instance_evidence":{"dest":row}}
+    build_judgments(b,tmp_path,{"judgment_kinds":[]})
+    assert len(b["derived_sightings"])==1
+    baseline=deepcopy(b);depth=(tmp_path/"depth.png").read_bytes();rgb=(tmp_path/"dest.png").read_bytes()
+    for changed in ("depth","rgb","pose"):
+        b=deepcopy(baseline)
+        if changed=="depth":
+            Image.fromarray(np.full((5,5),1000,dtype=np.uint16)).save(tmp_path/"depth.png")
+        elif changed=="rgb":
+            Image.new("RGB",(5,5),"red").save(tmp_path/"dest.png")
+        else:
+            b["frames"]["dest"]["pose"]["camera_position"]=[1,0,0]
+        build_judgments(b,tmp_path,{"judgment_kinds":[]})
+        assert b["derived_sightings"]==[],changed
+        (tmp_path/"depth.png").write_bytes(depth);(tmp_path/"dest.png").write_bytes(rgb)
+
+
+def test_distinct_instance_preserves_reviewed_public_context(tmp_path):
+    from src.dataset.tasks_subset.judgment.targets import build_instance_correspondence
+    from types import SimpleNamespace
+    fact = {"review_candidate":"pair", "same_category":True,
+            "reference_frames":["before"],"current_frame":"current",
+            "requested_object":"one","observed_object":"two",
+            "public_context":[{"frame":"context","caption":"Node N001; public capture pose"}]}
+    sights={"before":[{"kind":"object","id":"one","frame":"before","pixel":[10,20],"identity_verified":True}],
+            "current":[{"kind":"object","id":"two","frame":"current","pixel":[30,20],"identity_verified":True}],
+            "context":[]}
+    results=[]
+    c=SimpleNamespace(state={"frame_keys":list(sights)},sights=sights,keys=set(sights),
+                      bundle={"navigation_evidence":{"distinct_instances":[fact]}},
+                      put=lambda *a,**kw:results.append((a,kw)))
+    build_instance_correspondence(c)
+    args,private=results[0]
+    assert args[2:4] == ({"type":"boolean"},[False])
+    assert args[4][-1] == ("context","Node N001; public capture pose",[])
+    assert "static scene" in args[1]
+    assert private["private"]["pair_fact"] == fact
+    c.keys.remove("context")
+    results.clear()
+    build_instance_correspondence(c)
+    assert not results
+
+
+def test_rotation_is_recoverable_from_public_bearings_and_rejects_other_surface():
+    import numpy as np
+    from types import SimpleNamespace
+    from src.dataset.tasks_subset.judgment.calibration import calibrated_turn
+    K=[[100,0,100],[0,100,100],[0,0,1]]
+    frame={"camera":{"K":K},"world_from_optical":np.eye(4).tolist()}
+    c=SimpleNamespace(frames={"a":frame,"b":frame})
+    a={"frame":"a","kind":"point","id":"P","pixel":[100,100],"world":[0,0,-2]}
+    b={**a,"frame":"b","pixel":[100-100/3**.5,100]}
+    public,recovered=calibrated_turn(c,a,b,30)
+    assert recovered == pytest.approx(30)
+    assert set(public["first"])=={"K"}
+    assert calibrated_turn(c,a,{**b,"world":[.1,0,-2]},30) is None
+    assert calibrated_turn(c,a,b,-30) is None
+    assert calibrated_turn(c,a,{**b,"pixel":[100,100]},30) is None
+
+
+def test_opening_outline_is_reviewed_and_bound_not_a_background_dot(tmp_path,monkeypatch):
+    b=_bundle(tmp_path)
+    b["scene"].update(openings=[{"id":"shared","kind":"passage","level":"L"}],levels=[{"id":"L","floor_height":0}])
+    b["sightings"]=b["sightings"][:1]
+    b["sightings"][0].update(kind="opening",method="depth_clear_at_annotated_portal")
+    b["frames"]["before"].update(camera={"K":[[100,0,70],[0,100,50],[0,0,1]]},world_from_optical=[[1]])
+    outline=[[10,10],[40,10],[40,80],[10,80]]
+    monkeypatch.setattr("src.dataset.tasks_subset.sampling.geometry.project_opening_band",lambda *args:outline)
+    candidate,=review_candidates(b,tmp_path)
+    assert candidate["source"]["outline"]==outline
+    checks={"visible":True,"name_type_match":True,"frame_alignment":True}
+    reviews=[{"candidate_id":candidate["candidate_id"],"source":candidate["source"],"kind":"opening",
+              "reviewer":r,"checks":checks,"decision":"accept","reason":"Actual nearby physical entrance"} for r in ("a","b")]
+    accepted=apply_reviews(b,tmp_path,reviews)["sightings"][0]
+    assert accepted["semantic_verified"] and accepted["outline"]==outline
+    assert accepted["review_source"]["outline"]==outline
+    checks["frame_alignment"]=False
+    assert not apply_reviews(b,tmp_path,reviews)["sightings"][0]["semantic_verified"]
+
+
+def test_arrival_producer_consumes_current_panorama_bound_derived_identity(tmp_path,monkeypatch):
+    from src.dataset.tasks_subset.judgment.targets import arrival_candidates
+    b=_bundle(tmp_path)
+    target={"id":"target","object_id":"O","reference_frames":["before"],"reference_pixel":[10,10]}
+    region={"room":"R","max_footprint_distance":.85,"rectangles":[{"center_xz":[.5,0],"size":[.2,.2],"angle_deg":0}]}
+    b["targets"]=[{**target,"positions":[[1,0,0]],"approach_region":region}]
+    b["states"][0]["room"]="R"
+    b["frames"]["current"]["group"]="pano"
+    b["frames"]["current-other"]={**b["frames"]["current"],"yaw":60}
+    b["states"][0]["frame_keys"].append("current-other")
+    derived={"kind":"object","id":"O","frame":"current-other","pixel":[25,25],"world":[1,0,0],
+             "identity_verified":True,"semantic_verified":False,"method":"native_instance_reprojection",
+             "evidence_binding":{"rgb_sha256":"bound"}}
+    b["derived_sightings"]=[derived]
+    monkeypatch.setattr("src.dataset.tasks_subset.judgment.targets.instance_targets",lambda *args:iter([target]))
+    monkeypatch.setattr("src.dataset.tasks_subset.navigation.scoring.in_approach_region",lambda *args:True)
+    rows=list(arrival_candidates(b))
+    assert len(rows)==1 and rows[0][2] is derived and rows[0][4] is True
+    derived.pop("evidence_binding")
+    assert not list(arrival_candidates(b))

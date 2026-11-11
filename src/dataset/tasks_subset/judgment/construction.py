@@ -2,7 +2,7 @@
 from collections import defaultdict, deque
 import hashlib
 import random
-from .calibration import describe, floor_support, public_camera, shared_pair, measured_floor_motion
+from .calibration import describe, floor_support, public_camera, shared_pair, measured_floor_motion, calibrated_turn
 from itertools import combinations
 import json
 from math import atan2, cos, degrees, dist, hypot, radians, sin
@@ -11,6 +11,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 from ..bundle import freeze_case, reject, require_trial_snapshot
+from ..sampling.scene import is_physical_opening
 from ..catalog import JUDGMENT_KINDS
 
 ATOMIC_CONDITION = (" Translations are nominally 0.25 m and turns 30 degrees. Attempt the listed actions "
@@ -82,7 +83,7 @@ def row(key, caption="", markers=()):
 
 
 def mark(sighting, name):
-    return name, sighting["pixel"]
+    return name, sighting.get("outline") if sighting["kind"]=="opening" and sighting.get("outline") else sighting["pixel"]
 
 
 class Context:
@@ -165,16 +166,39 @@ def _panorama_rows(c, keys):
     return [row(k, f"View {c.frames[k]['yaw']}° relative to the panorama's forward view") for k in keys]
 
 
+def _opening_supported(c,sight):
+    from ..sampling.geometry import project_opening_band
+    opening=c.openings.get(sight["id"],{})
+    if not (sight["kind"]=="opening" and sight.get("semantic_verified") is True
+            and sight.get("geometry_verified",sight.get("verified")) is True
+            and is_physical_opening(opening)):
+        return False
+    key=(sight["frame"],sight["id"])
+    cache=c.__dict__.setdefault("_opening_support_cache",{})
+    if key not in cache:
+        source=sight.get("review_source",{})
+        frame=c.frames[sight["frame"]]
+        level=next((l for l in c.bundle["scene"].get("levels",[]) if l["id"]==opening.get("level")),None)
+        outline=(project_opening_band(frame,opening,level["floor_height"]) if level and frame.get("camera")
+                 and frame.get("world_from_optical") else None)
+        cache[key]=bool(outline and sight.get("outline")==source.get("outline")==outline and
+            source.get("frame")==sight["frame"] and
+            source.get("sha256")==hashlib.sha256((c.root/frame["rgb"]).read_bytes()).hexdigest() and
+            source.get("annotation_hash")==hashlib.sha256(json.dumps(opening,sort_keys=True,allow_nan=False).encode()).hexdigest())
+    return cache[key]
+
+
 def _distinct(c, keys, kinds):
     best = {}
     for k in keys:
         for s in c.sights[k]:
-            if s["kind"] in kinds:
+            if s["kind"] in kinds and (s["kind"]!="opening" or _opening_supported(c,s)):
                 best.setdefault((s["kind"], s["id"]), s)
     return list(best.values())
 
 
 def _layout(c, items, base, pictures, kind, memory=False):
+    items=[s for s in items if s["kind"] in {"object","point"}]
     if len(items) < 2:
         return
     supported = [(s, shared_pair(c,s)) for s in items]
@@ -316,9 +340,15 @@ def _views(c):
                 c.put("relative_camera_pose",prompt,MOTION,[motion],evidence,private=private)
                 c.put("camera_motion",prompt,MOTION,[motion],evidence,private=private)
         elif displacement <= .03 and abs(motion["yaw"]) >= 20:
-            c.put("relative_camera_pose","The camera only rotated in place. Estimate its clockwise signed turn in degrees.",
+            turn=next(((x,y,calibrated_turn(c,x,y,motion["yaw"])) for x,y in shared
+                       if calibrated_turn(c,x,y,motion["yaw"]) is not None),None)
+            if turn is None:
+                continue
+            p,q,(intrinsics,recovered)=turn
+            pictures=[row(a,"First view",[mark(p,"A")]),row(b,"Second view",[mark(q,"A")])]
+            c.put("relative_camera_pose","The camera only rotated in place. Mark A denotes the same surface point. Estimate its clockwise signed turn in degrees. Intrinsics in pixels: "+json.dumps(intrinsics),
                   num("signed_degrees",8),[motion["yaw"]],pictures,
-                  private={"measurements":[p,q],"baseline_m":displacement,"variant":"rotation_only"})
+                  private={"measurements":[p,q],"baseline_m":displacement,"variant":"calibrated_rotation_only","public_reconstruction":recovered})
 
 
 def _identity_verified(s):
@@ -335,7 +365,7 @@ def _memory(c):
     for key in node_keys:
         for sight in c.sights[key]:
             identity=(sight["kind"],sight["id"])
-            if sight["kind"] in {"object","opening"} and identity not in supported and shared_pair(c,sight):
+            if sight["kind"] == "object" and identity not in supported and shared_pair(c,sight):
                 supported[identity]=sight
     sightings=[supported.get((s["kind"],s["id"]),s) for s in sightings]
     if len(c.nodes) >= 2 and len({s["frame"] for s in sightings}) >= 2:
@@ -362,6 +392,8 @@ def _memory(c):
                       current, memory=True)
     transform = c.state["transform"]
     for s in c.sights[c.current]:
+        if s["kind"] not in {"object","point"}:
+            continue
         second = shared_pair(c,s)
         if second is None:
             continue
@@ -411,7 +443,7 @@ def _rooms(c):
     for k in c.state["frame_keys"]:
         for s in c.sights[k]:
             room = c.frames[k].get("room")
-            if s["kind"] == "opening" and s["id"] in seen and room in (c.openings[s["id"]]["connects"] or []):
+            if s["kind"] == "opening" and s["id"] in seen and _opening_supported(c,s) and room in (c.openings[s["id"]]["connects"] or []):
                 by_room[room].setdefault(s["id"], s)
     traversals = c.state.get("traversals", [])
     actual_crossed = {event["opening"] for event in traversals}
@@ -424,7 +456,8 @@ def _rooms(c):
                 c.frames[before].get("room") == a and c.frames[after].get("room") == b):
             crossings.append((a, b, opening, event))
     crossed = {opening for _, _, opening, _ in crossings}
-    room_ids = sorted(r for r in c.state.get("visited_rooms", []) if aliases(r))
+    named_rooms = {n.get("room") for n in _node_snapshot(c)["nodes"] if n.get("room")} if c.nodes else set()
+    room_ids = sorted(r for r in c.state.get("visited_rooms", []) if aliases(r) in named_rooms)
     review = next((x for x in c.bundle.get("judgment_evidence", {}).get("rooms", [])
                    if x["state"] == c.state["id"] and x.get("review_candidate")), {})
     choices = review.get("rooms", [])
@@ -475,9 +508,15 @@ def _rooms(c):
         if not aliases(a) or not aliases(b):
             continue
         s = seen[opening]
-        log.extend([row(s["frame"], "Recognizable opening", [mark(s, opening)]),
-                    row(event["before_frame"], "Earlier observed view"),
-                    row(event["after_frame"], "Later observed view")])
+        before, after = event["before_frame"], event["after_frame"]
+        first_step, last_step = c.frames[before]["step"], c.frames[after]["step"]
+        sequence = [key for key in c.state["frame_keys"]
+                    if first_step <= c.frames[key]["step"] <= last_step
+                    and (not c.frames[key].get("group") or key in {before, after})]
+        sequence = list(dict.fromkeys([before, *sequence, after]))
+        sequence.sort(key=lambda key: c.frames[key]["step"])
+        log.append(row(s["frame"], "Recognizable opening " + opening, [mark(s, opening)]))
+        log.extend(row(key, "Sequential observed route frame") for key in sequence)
     missing_crossings = actual_crossed - crossed
     for s in exits:
         opening = s["id"]
@@ -621,7 +660,7 @@ def judgment_review_proposals(bundle, root):
             ]
             opening = trial.get("opening")
             sight = next((s for k in frames for s in c.sights[k]
-                          if s["kind"] == "opening" and s["id"] == opening), None)
+                          if s["kind"] == "opening" and s["id"] == opening and _opening_supported(c,s)), None)
             if sight:
                 purposes.append(("opening", "whether the actions would cross the cyan-marked opening"))
             target_point=next((s for k in frames for s in c.sights[k]
@@ -641,11 +680,11 @@ def judgment_review_proposals(bundle, root):
                 view_keys = list(frames)
                 markers = [None] * len(frames)
                 if purpose == "opening":
-                    markers[frames.index(sight["frame"])] = sight["pixel"]
+                    markers[frames.index(sight["frame"])] = mark(sight,"D")[1]
                 if purpose == "region":
                     markers[frames.index(target_point["frame"])]=target_point["pixel"]
                 if purpose == "direct":
-                    extra=[key for key,_,_ in c.prefix() if key not in view_keys]
+                    extra=[key for key in c.nodes[target_node] if key not in view_keys]
                     view_keys.extend(extra)
                     markers.extend([None]*len(extra))
                 calibration_note=""
@@ -654,7 +693,7 @@ def judgment_review_proposals(bundle, root):
                     calibration_note=describe(support)
                 if purpose=="direct":
                     calibration_note=" Public node panorama poses: "+json.dumps({
-                        node:c.frames[keys[0]]["public_pose"] for node,keys in c.nodes.items()})
+                        node:c.frames[keys[0]]["public_pose"] for node,keys in c.nodes.items() if node==target_node})
                     calibration_note+=". Target node is "+target_node+", panorama image numbers "+json.dumps([
                         view_keys.index(k)+1 for k in c.nodes[target_node] if k in view_keys])
                     calibration_note+=". Its fixed public map anchor is "+json.dumps(
@@ -741,7 +780,7 @@ def _trials(c):
                                               "rule":"horizontal displacement at blocked endpoint"})
         opening = trial.get("opening")
         seen = next((s for k in reviews.get("opening", {}).get("frames", []) for s in c.sights[k]
-                     if s["kind"] == "opening" and s["id"] == opening), None)
+                     if s["kind"] == "opening" and s["id"] == opening and _opening_supported(c,s)), None)
         if seen and opening in c.openings:
             from ..navigation.scoring import doorway_crossed
             a = c.frames[c.current]["pose"]["position"]
@@ -804,10 +843,14 @@ def _outcomes(c):
             continue
         motion = _motion(c, a, b)
         pictures = [row(a, "Before"), row(b, "After")]
-        common = {s["id"] for s in c.sights[a]} & {s["id"] for s in c.sights[b]}
-        if common and abs(motion["yaw"]) >= 20:
-            c.put("observed_action_outcome", "Estimate the camera's clockwise signed turn in degrees.",
-                  num("signed_degrees", 10), [motion["yaw"]], pictures)
+        turn=next(((p,q,calibrated_turn(c,p,q,motion["yaw"])) for p in c.sights[a] for q in c.sights[b]
+                   if abs(motion["yaw"])>=20 and calibrated_turn(c,p,q,motion["yaw"]) is not None),None)
+        if turn:
+            p,q,(intrinsics,recovered)=turn
+            c.put("observed_action_outcome", "The camera rotated in place. A is the same surface point. Estimate the clockwise signed turn in degrees. Intrinsics in pixels: "+json.dumps(intrinsics),
+                  num("signed_degrees", 10), [motion["yaw"]],
+                  [row(a,"Before",[mark(p,"A")]),row(b,"After",[mark(q,"A")])],
+                  private={"variant":"calibrated_observed_rotation","measurements":[p,q],"public_reconstruction":recovered})
         receipt = event.get("receipt", {})
         displacement = hypot(motion["right"],motion["forward"])
         if type(receipt.get("collision")) is bool and abs(displacement-.05)>.02:
@@ -858,7 +901,7 @@ def _outcomes(c):
                     from ..navigation.scoring import doorway_crossed
                     points=[c.frames[a]["pose"]["position"]]+[x["position"] for x in receipt.get("samples",[])]
                     crossed=doorway_crossed(points,c.bundle["scene"],opening,event["from_room"],event["to_room"])
-                    sight=next((x for k in (a,b) for x in c.sights[k] if x["id"]==opening["id"] and x["kind"]=="opening"),None)
+                    sight=next((x for k in (a,b) for x in c.sights[k] if x["id"]==opening["id"] and _opening_supported(c,x)),None)
                     if sight:
                         c.put("observed_action_outcome","Did the movement cross the marked opening?",
                               BOOL,[crossed],pictures+[row(sight["frame"],"Opening under consideration",[mark(sight,"D")])],
@@ -866,7 +909,7 @@ def _outcomes(c):
 
 
 def _targets(c):
-    from .targets import arrival_candidates, different_view
+    from .targets import arrival_candidates, arrival_pictures, different_view, pair_context, PAIR_CONTEXT_CONDITION
 
     current = c.current_panorama or [c.current]
     for target in c.bundle.get("targets", []):
@@ -887,9 +930,13 @@ def _targets(c):
                     and different_view(c.frames[ref], c.frames[pair["current_frame"]])):
                 sight = next((s for s in c.sights[pair["current_frame"]] if
                               s["id"] == pair["observed_object"] and _identity_verified(s)), None)
-                if sight:
-                    c.put("target_identity", "Do marks T and A identify the same physical instance?",
-                          BOOL, [False], refs + [row(sight["frame"], "Candidate", [mark(sight, "A")])])
+                context = pair_context(c, pair)
+                if sight and context is not None and pair.get("same_category") is True:
+                    c.put("target_identity", "Do marks T and A identify the same physical instance?" +
+                          (PAIR_CONTEXT_CONDITION if context else ""),
+                          BOOL, [False], refs + [row(sight["frame"], "Candidate", [mark(sight, "A")])] + context,
+                          private={"variant":"reviewed_distinct_instances","pair_fact":pair,
+                                   "measurements":[sight],"reference_frame":ref})
         from ..review.instances import node_visibility
         native = [record.get("completeness_binding") for row in c.bundle.get("instance_evidence",{}).values()
                   for identifier,record in row.get("objects",{}).items() if identifier==target["object_id"]
@@ -914,11 +961,16 @@ def _targets(c):
                     r.get("review_candidate") and r["state"] == state["id"] and r["target"] == target["id"]
                     for r in arrivals):
                 continue
-            c.put("target_arrival", f"Is the camera within {threshold} m horizontally of the marked "
-                  "target object's footprint, on the same floor and in the same room?",
-                  BOOL, [arrived], [row(target["reference_frames"][0], "Target reference",
-                                        [("T", target["reference_pixel"])]),
-                                    row(sight["frame"], "Current view", [mark(sight, "A")])])
+            pictures=arrival_pictures(c,target,sight)
+            if pictures is None or not any(r.get("review_candidate") and r["state"]==state["id"]
+                    and r["target"]==target["id"] and r.get("frames")==[p[0] for p in pictures] for r in arrivals):
+                continue
+            c.put("target_arrival", f"Is the current camera within {threshold} m horizontally of the marked "
+                  "target object's footprint, on the same floor and in the same room? A is a common target surface point, not the footprint boundary.",
+                  BOOL, [arrived], pictures,
+                  private={"variant":"physical_approach_region_multiview","target":target["id"],
+                           "approach_region":next(t["approach_region"] for t in c.bundle["targets"] if t.get("object_id")==target["object_id"] and t.get("approach_region")),
+                           "measurements":[sight],"rule":"physical approach region; boundary margin >0.25m"})
 
 
 def _node_snapshot(c):
@@ -1038,6 +1090,8 @@ def _render(c, pictures, memory, directory, crop_key=None, include_trajectory=Fa
                     if not all(0<=x<image.width and 0<=y<image.height for x,y in marker):
                         raise ValueError("Surface outline outside the source RGB")
                     draw.polygon([tuple(p) for p in marker],outline="cyan",width=3)
+                    x,y=min(p[0] for p in marker),min(p[1] for p in marker)
+                    draw.text((x+4,y+4),text,fill="white",stroke_width=2,stroke_fill="black")
                     continue
                 x,y=marker
                 if not (0 <= x < image.width and 0 <= y < image.height):
@@ -1046,6 +1100,12 @@ def _render(c, pictures, memory, directory, crop_key=None, include_trajectory=Fa
                 draw.text((max(0, x-8), max(0, y-19)), text, fill="white", stroke_width=2, stroke_fill="black")
             source = directory / f"marked-{i}.jpg"
             image.save(source, quality=92)
+        if include_trajectory:
+            frame=c.frames[key]
+            metadata={"step":frame["step"],"capture_pose":frame["public_pose"],"view_yaw":frame.get("yaw") or 0}
+            if frame.get("camera"):
+                metadata["K"]=frame["camera"]["K"]
+            captions.append("Public observation metadata: "+json.dumps(metadata))
         images.append({"path": source.resolve(), "caption": "; ".join(captions)})
         image_sources.append({"purpose": "target_reference" if "Target reference" in captions else "prefix", "frames": [key],
                               "markers": [{"text":name,("polygon" if pixel and isinstance(pixel[0],list) else "pixel"):pixel}
@@ -1148,7 +1208,9 @@ def build_judgments(bundle, root, config):
                 actual_state = render_context.state
                 try:
                     images, texts, source_frames, image_sources = _render(render_context, pictures, memory, root / "private" / "judgments" / identifier,
-                                                             private.get("landmark_crop"), kind == "visited_place")
+                        private.get("landmark_crop"), kind in {"visited_place", "room_exit_destination",
+                            "room_adjacency", "room_route", "rooms_with_untraversed_exits", "destination_exit",
+                            "node_opening_route", "exploration_frontier"})
                 except (OSError, ValueError) as exc:
                     reject(root, kind, identifier, str(exc))
                     continue
@@ -1159,7 +1221,9 @@ def build_judgments(bundle, root, config):
                         "limits": {"max_requests": 1, "max_turns": 1, "seconds": 180},
                         "provenance": {"scene_id": bundle["scene_id"], "state_id": actual_state["id"], "source_kind": "observations"}}
                 label = {"answer_schema": schema, "accepted": accepted, **private}
-                construction = {"image_sources": image_sources, "source_frames": source_frames, "state_id": actual_state["id"],
+                construction = {"floor_measurements":[record for record in c.__dict__.get("_floor_measurements",{}).values()
+                                                       if record["frame"] in source_frames],
+                                "image_sources": image_sources, "source_frames": source_frames, "state_id": actual_state["id"],
                                 "scene_source": bundle.get("source", {}), "physical_replay": bool(private.get("trial"))}
                 result.append(freeze_case(root, task, label, construction, images))
                 produced += 1

@@ -13,8 +13,8 @@ from ..bundle import current_observation_frames, freeze_case, reject, require_tr
 from ..catalog import NAVIGATION_KINDS
 from ..review.memory import public_room
 from .scoring import arrived_at_goal, doorway_crossed, in_approach_region
-from ..sampling.scene import room_at
-from ..sampling.geometry import floor_patch_fraction, read_depth
+from ..sampling.scene import is_physical_opening, room_at
+from ..sampling.geometry import floor_patch_fraction, project_opening_band, read_depth
 
 
 def _require(condition, reason):
@@ -174,7 +174,8 @@ def _instruction(kind, trial, state, frame, bundle, points, root):
     def mark(sighting_id, sighting_kind, key=current, caption=None):
         match = next((s for s in _target_sightings(bundle, root) if s["frame"] == key
                       and s["id"] == sighting_id and s["kind"] == sighting_kind
-                      and (_located_instance(s) if sighting_kind == "object" else s.get("verified"))), None)
+                      and (_located_instance(s) if sighting_kind == "object" else
+                           s.get("semantic_verified") if sighting_kind == "opening" else s.get("verified"))), None)
         _require(match and match.get("pixel"), "no verified current-frame marker")
         view = bundle["frames"][key]
         with Image.open(root / view["rgb"]) as original:
@@ -182,18 +183,34 @@ def _instruction(kind, trial, state, frame, bundle, points, root):
         x, y = match["pixel"]
         _require(0 <= x < image.width and 0 <= y < image.height, "marker outside source image")
         draw = ImageDraw.Draw(image)
-        radius = max(5, image.width // 100)
-        draw.ellipse((x-radius, y-radius, x+radius, y+radius), outline="red", width=3)
+        outline = None
+        if sighting_kind == "opening":
+            source = match.get("review_source", {})
+            opening = next(o for o in scene["openings"] if o["id"] == sighting_id)
+            floor = next(level["floor_height"] for level in scene["levels"] if level["id"] == opening["level"])
+            outline = match.get("outline")
+            _require(outline and outline == source.get("outline")
+                     and outline == project_opening_band(view, opening, floor)
+                     and source.get("sha256") == hashlib.sha256((root / view["rgb"]).read_bytes()).hexdigest()
+                     and source.get("annotation_hash") == hashlib.sha256(json.dumps(
+                         opening, sort_keys=True, allow_nan=False).encode()).hexdigest(),
+                     "opening outline lacks a current RGB/annotation review binding")
+            draw.line([*map(tuple, outline), tuple(outline[0])], fill="red", width=3)
+        else:
+            radius = max(5, image.width // 100)
+            draw.ellipse((x-radius, y-radius, x+radius, y+radius), outline="red", width=3)
         destination = root / "private" / "overlays" / (trial["id"] + "-" + kind + f"-{len(images):02}.png")
         destination.parent.mkdir(parents=True, exist_ok=True)
         image.save(destination)
         explicit_caption = caption is not None
-        caption = caption or "Current view with the requested location circled"
+        caption = caption or ("Current view with the requested physical opening outlined"
+                              if outline else "Current view with the requested location circled")
         if key != current and not explicit_caption:
             yaw = view["yaw"]
             caption = f"Current panorama view, {yaw if yaw <= 180 else yaw - 360:+g}° relative to body forward; positive is right."
         images.append({"path": destination.resolve(), "caption": caption,
-                       "source": {"purpose": "prefix", "frames": [key]}})
+                       "source": {"purpose": "prefix", "frames": [key],
+                                  **({"outline": outline} if outline else {})}})
         return match
 
     if kind == "nav_01" or (kind == "nav_14" and not obj):
@@ -207,7 +224,8 @@ def _instruction(kind, trial, state, frame, bundle, points, root):
         text = "Walk to the floor point circled in the marked current view."
     elif kind == "nav_02":
         opening = next((o for o in scene["openings"] if o["id"] == trial.get("opening")), None)
-        _require(opening and state["room"] in opening["connects"], "opening lacks a known source room")
+        _require(opening and is_physical_opening(opening) and state["room"] in opening["connects"],
+                 "opening lacks a known physical passage from the source room")
         visible_frame = trial.get("visible_frame")
         _require(visible_frame in current_observation_frames(bundle, state),
                  "opening reference is not in the current observation")
@@ -265,6 +283,7 @@ def _instruction(kind, trial, state, frame, bundle, points, root):
             text += f" Use the room label {alias!r} for this stop."
     elif kind in {"nav_05", "nav_07", "nav_09", "nav_10", "nav_12", "nav_14"}:
         _require(obj and description and positions and object_sightings, "missing grounded target instance")
+        _require(label.get("approach_region"), "object task lacks its declared footprint approach region")
         current_views = current_observation_frames(bundle, state)
         if kind in {"nav_05", "nav_14"}:
             visible_frame = trial.get("visible_frame", current)
@@ -338,7 +357,7 @@ def _instruction(kind, trial, state, frame, bundle, points, root):
                      "target lacks a verified sighting in the indexed memory prefix")
             known = set(state["visited_rooms"]) - {None}
             source, destination = state["room"], obj["room"]
-            _require(source in known and _intervening_room(state, source, destination),
+            _require(source in known and _intervening_room(bundle, state, source, destination),
                      "target is not separated by an intervening room in the known route")
             label.update(scene=scene, known_rooms=sorted(known), room_aliases={
                 identifier: public_room(state, identifier) for identifier in known
@@ -413,6 +432,12 @@ def _instruction(kind, trial, state, frame, bundle, points, root):
                      "official reference did not submit")
         label["_episode"] = episode
 
+    if label.get("approach_region"):
+        maximum = label["approach_region"]["max_footprint_distance"]
+        text += (f" Before finishing, stand on the same floor and in the same room as the target, "
+                 f"within {maximum:g} m horizontally of its footprint (its vertical projection onto the floor).")
+        if kind == "nav_05" and label.get("variant") == "reference_match":
+            text += " This approach condition applies before either submitting a match or answering mismatch."
     if kind not in {"nav_02", "nav_04"}:
         positions = label.get("positions", [])
         _require(points and positions, "replay lacks motion or labelled goals")
@@ -533,7 +558,7 @@ def _object_candidates(bundle, kind, root=None):
                 continue
             if kind == "nav_09":
                 if (same or not any(set(keys) & present & prefix for keys in state["node_frames"].values())
-                        or not _intervening_room(state, state["room"], obj["room"])):
+                        or not _intervening_room(bundle, state, state["room"], obj["room"])):
                     continue
             if kind == "nav_10" and (not _reviewed_absent(bundle, obj["id"], state["frame_keys"])
                                     or present & prefix or obj["room"] in state["visited_rooms"]):
@@ -559,16 +584,33 @@ def _object_candidates(bundle, kind, root=None):
                     break
 
 
-def _intervening_room(state, source, destination):
+def _intervening_room(bundle, state, source, destination):
+    import heapq
     known = set(state["visited_rooms"]) - {None}
-    links = [{e["from_room"], e["to_room"]} for e in state["traversals"]
-             if {e["from_room"], e["to_room"]} <= known]
-    if source == destination or any({source, destination} <= edge for edge in links):
-        return False
-    reached = {source}
-    for _ in links:
-        reached |= set().union(*(edge for edge in links if edge & reached))
-    return destination in reached
+    openings = {o["id"]: o for o in bundle["scene"]["openings"]}
+    graph = {}
+    for event in [*state["traversals"], *state.get("zone_transitions", [])]:
+        a, b = event["from_room"], event["to_room"]
+        opening = openings.get(event.get("opening"), {})
+        if not {a, b} <= known:
+            continue
+        if is_physical_opening(opening):
+            cost = 1
+        elif opening.get("kind") == "open_functional_connection":
+            cost = 0
+        else:
+            continue
+        graph.setdefault(a, []).append((b, cost)); graph.setdefault(b, []).append((a, cost))
+    distances, pending = {source: 0}, [(0, source)]
+    while pending:
+        distance, node = heapq.heappop(pending)
+        if distance != distances[node]:
+            continue
+        for neighbor, cost in graph.get(node, []):
+            if distance + cost < distances.get(neighbor, math.inf):
+                distances[neighbor] = distance + cost
+                heapq.heappush(pending, (distance + cost, neighbor))
+    return math.isfinite(distances.get(destination, math.inf)) and distances[destination] >= 2
 
 
 def _altered_cut(bundle, root, state, correction):
