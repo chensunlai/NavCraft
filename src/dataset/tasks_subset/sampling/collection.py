@@ -20,7 +20,7 @@ from src.harness.runtime.workspace import read_snapshot
 
 from ..bundle import current_observation_frames, reject, snapshot_digest, write_json
 from .geometry import crossed_segment, floor_patch_fraction, project, read_depth, unproject, visible_point
-from .scene import load_scene, room_at
+from .scene import is_physical_opening, load_scene, room_at
 
 
 def _hssd_episode(config, scene_id):
@@ -213,7 +213,7 @@ def _sightings(executor, keys):
                 add("object", obj["id"], pixel, world, "foreground_in_schematic_bounds",
                     False, "requires_runtime_instance_review")
         for opening in scene["openings"]:
-            if opening["status"] != "confirmed_open":
+            if opening["status"] != "confirmed_open" or not is_physical_opening(opening):
                 continue
             (a, b), (c, d) = opening["segment_xz"]
             y = next(level["floor_height"] for level in scene["levels"] if level["id"] == opening["level"])
@@ -238,13 +238,16 @@ def _panorama(executor, record_node):
     return keys
 
 
-def _traversals(scene, motions, start):
+def _boundary_crossings(scene, motions, start):
     samples = [(0, start), *((m["step"], p["position"]) for m in motions for p in m["samples"])]
     rooms = [room_at(scene, p) for _, p in samples]
     events = []
     for i in range(1, len(samples)):
         a, b = samples[i-1][1], samples[i][1]
         for opening in scene["openings"]:
+            physical = is_physical_opening(opening)
+            if not physical and opening.get("kind") != "open_functional_connection":
+                continue
             sides = opening["connects"] or []
             floor = next(l["floor_height"] for l in scene["levels"] if l["id"] == opening["level"])
             if abs(a[1]-floor) > .45 or abs(b[1]-floor) > .45:
@@ -255,11 +258,17 @@ def _traversals(scene, motions, start):
             after = next((r for r in rooms[i:] if r), None)
             if before == after or {before, after} != set(sides):
                 continue
-            event = {"kind": "doorway_crossing", "opening": opening["id"], "from_room": before, "to_room": after,
+            event = {"kind": "doorway_crossing" if physical else "zone_transition",
+                     "opening": opening["id"], "from_room": before, "to_room": after,
                      "step": samples[i][0], "level": opening["level"]}
             if event not in events[-1:]:
                 events.append(event)
     return events
+
+
+def _traversals(scene, motions, start):
+    return [event for event in _boundary_crossings(scene, motions, start)
+            if event["kind"] == "doorway_crossing"]
 
 
 def _frame_index(bundle, keys):
@@ -288,15 +297,15 @@ def _cut(executor, identifier):
         history.extend({"pos": world_to_uv(s["position"], executor.transform),
                         "level": level_at(s["position"]), "step": motion["step"]}
                        for s in motion["samples"])
+    events = _boundary_crossings(bundle["scene"], env.motions, env.trajectory[0])
     state = {"id": identifier, "snapshot": str(directory.relative_to(root)),
              "current_frame": executor.frame_keys[executor.current["frame"]], "frame_keys": frames,
              "node_frames": node_frames, "room": room_at(bundle["scene"], env.position()),
              "step": env.steps, "visited_rooms": list(dict.fromkeys(
                  room for p in env.trajectory if (room := room_at(bundle["scene"], p)))),
-             "traversals": _traversals(bundle["scene"], env.motions, env.trajectory[0]), "transform": deepcopy(executor.transform),
+             "traversals": [event for event in events if event["kind"] == "doorway_crossing"], "transform": deepcopy(executor.transform),
              "public_trajectory": history, "trajectory_level": level_at(env.position())}
-    for i, traversal in enumerate(state["traversals"]):
-        events = state["traversals"]
+    for i, traversal in enumerate(events):
         lower = events[i-1]["step"] if i else 0
         upper = events[i+1]["step"] if i+1 < len(events) else env.steps+1
         for step, position in [(0, env.trajectory[0]), *(
@@ -329,13 +338,13 @@ def _cut(executor, identifier):
             if valid:
                 traversal[node_field] = sorted(valid, reverse=reverse)[0][1]
     region_frames = [key for key in frames if bundle["frames"][key]["room"]]
-    transitions = []
+    transitions = [event for event in events if event["kind"] == "zone_transition"]
     for a, b in zip(region_frames, region_frames[1:]):
         first, last = bundle["frames"][a], bundle["frames"][b]
         level = level_at(first["pose"]["position"])
         if first["room"] != last["room"] and level and level == level_at(last["pose"]["position"]):
             if not any(t["from_room"] == first["room"] and t["to_room"] == last["room"] and
-                       first["step"] <= t["step"] <= last["step"] for t in state["traversals"]):
+                       first["step"] <= t["step"] <= last["step"] for t in events):
                 transitions.append({"kind": "zone_transition", "from_room": first["room"],
                                     "to_room": last["room"], "level": level,
                                     "before_frame": a, "after_frame": b, "step": last["step"]})

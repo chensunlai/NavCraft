@@ -154,15 +154,22 @@ class SceneTests(unittest.TestCase):
                 validate_frozen_inputs(task, case)
 
     def test_traversal_requires_same_floor_and_actual_finite_segment(self):
-        from src.dataset.tasks_subset.sampling.collection import _traversals
+        from src.dataset.tasks_subset.sampling.collection import _boundary_crossings, _traversals
 
         scene = {"levels": [{"id": "L1", "floor_height": 0}], "rooms": [
             {"id": "a", "level": "L1", "polygon_xz": [[-2,-2],[0,-2],[0,2],[-2,2]]},
             {"id": "b", "level": "L1", "polygon_xz": [[0,-2],[2,-2],[2,2],[0,2]]}],
-            "openings": [{"id": "D", "level": "L1", "segment_xz": [[0,-1],[0,1]], "connects": ["a","b"]}]}
+            "openings": [{"id": "D", "kind": "door", "level": "L1", "segment_xz": [[0,-1],[0,1]], "connects": ["a","b"]}]}
         motions = [{"step": 1, "samples": [{"position": [-.4,0,0]}, {"position": [.4,0,0]}]}]
         events = _traversals(scene,motions,[-1,0,0])
         self.assertEqual(events[0]["opening"], "D")
+        scene["openings"][0]["kind"] = "open_functional_connection"
+        self.assertEqual(_traversals(scene,motions,[-1,0,0]), [])
+        zone, = _boundary_crossings(scene,motions,[-1,0,0])
+        self.assertEqual((zone["kind"],zone["opening"],zone["from_room"],zone["to_room"]),
+                         ("zone_transition","D","a","b"))
+        scene["openings"][0]["kind"] = "open_passage"
+        self.assertEqual(_traversals(scene,motions,[-1,0,0])[0]["opening"], "D")
         motions[0]["samples"] = [{"position": [-.4,2,0]}, {"position": [.4,2,0]}]
         self.assertEqual(_traversals(scene,motions,[-1,2,0]), [])
         motions[0]["samples"] = [{"position": [-.4,0,1.5]}, {"position": [.4,0,1.5]}]
@@ -189,3 +196,13 @@ class SceneTests(unittest.TestCase):
         self.assertIsNone(measure(invalid))
         self.assertIsNone(measure(depth,[0,.05]))
         self.assertIsNone(measure(depth,body=.3))
+
+    def test_floor_height_band_does_not_accept_vertical_furniture_face(self):
+        import numpy as np
+        from src.dataset.tasks_subset.sampling.geometry import measure_horizontal_floor_patch
+        camera={"K":[[400,0,320],[0,400,240],[0,0,1]]}
+        matrix=np.diag([1.,-1.,-1.,1.]);matrix[1,3]=.5
+        # At y=440 this wall patch has median world Y=0, with every pixel within
+        # +/- .0225m of that height. Only its surface normal reveals it is vertical.
+        depth=np.ones((480,640))
+        self.assertIsNone(measure_horizontal_floor_patch(depth,camera,matrix,[320,440],[0],0))

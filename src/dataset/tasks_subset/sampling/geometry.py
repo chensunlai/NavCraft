@@ -16,6 +16,24 @@ def project(world, camera, world_from_optical):
     return float(x), float(y), float(p[2])
 
 
+def project_opening_band(frame, opening, floor_height):
+    """Project a middle-height band locating a passage; this does not measure its width."""
+    a, b = opening["segment_xz"]
+    corners = [[a[0], floor_height + .25, a[1]], [b[0], floor_height + .25, b[1]],
+               [b[0], floor_height + 1.65, b[1]], [a[0], floor_height + 1.65, a[1]]]
+    projected = [project(point, frame["camera"], frame["world_from_optical"]) for point in corners]
+    if any(point is None for point in projected):
+        return None
+    width, height = frame["camera"]["width"], frame["camera"]["height"]
+    if any(not (8 <= x <= width - 8 and 8 <= y <= height - 8) for x, y, _ in projected):
+        return None
+    outline = [[int(round(point[0])), int(round(point[1]))] for point in projected]
+    if (any(not (8 <= x <= width - 8 and 8 <= y <= height - 8) for x, y in outline)
+            or abs((outline[0][0] + outline[3][0] - outline[1][0] - outline[2][0]) / 2) < 30):
+        return None
+    return outline
+
+
 def unproject(pixel, depth_m, camera, world_from_optical):
     if not np.isfinite(depth_m) or not camera.get("depth_min", 0) < depth_m < camera.get("depth_max", np.inf):
         return None
@@ -103,9 +121,21 @@ def measure_horizontal_floor_patch(depth, camera, world_from_optical, pixel, flo
     support=valid&(residuals<=.025)
     if len(matched)!=1 or abs(median-body_height)>.10 or support.mean()<.9:
         return None
+    points=(matrix[:3,:3]@(rays[:,support]*z[support])).T+matrix[:3,3]
+    centered=points-points.mean(axis=0)
+    _,singular,axes=np.linalg.svd(centered,full_matrices=False)
+    if singular[1]<.01:
+        return None
+    normal=axes[-1]
+    tilt=float(np.degrees(np.arccos(np.clip(abs(normal[1]),0,1))))
+    # A small patch on a vertical furniture face can also have a narrow Y range.
+    # Its fitted surface must itself be horizontal, not merely near floor height.
+    if tilt>15:
+        return None
     return {"height_m":median,"support_count":int(support.sum()),"sample_count":len(z),
             "support_fraction":float(support.mean()),
             "median_abs_residual_m":float(np.median(residuals[valid])),
             "max_inlier_residual_m":float(residuals[support].max()),
+            "normal_world":normal.tolist(),"tilt_degrees":tilt,
             "declared_floor_height":matched[0],"body_height":body_height,
             "method":"depth_world_y_horizontal_disk","pixel":[x,y],"radius":radius}

@@ -1,12 +1,14 @@
 """Matched physical counterfactuals from one immutable observation cut."""
 from pathlib import Path
+from hashlib import sha256
+import json
 import math
 
 from src.common.io import read_json
 from src.dataset.episodes import EpisodeSpec
 
 from ..bundle import reject, snapshot_digest, write_json
-from .geometry import floor_patch_fraction, project, read_depth, unproject
+from .geometry import measure_horizontal_floor_patch, project, read_depth, unproject
 from .collection import _branch, _environment_config, _move, _yaw_delta
 
 
@@ -25,10 +27,14 @@ def collect_point_pairs(config, root, gpu, bundle_path=None):
         for y in range(int(h*.7), int(h*.96), 14):
             for x in range(int(w*.3),int(w*.7), 22):
                 point = unproject((x,y),depth[y,x], frame["camera"],frame["world_from_optical"])
-                floor = state["transform"]["floor_height"]
-                if (point is None or abs(point[1]-floor) > .12 or
-                        floor_patch_fraction(depth, frame["camera"], frame["world_from_optical"],
-                                             [x,y], floor) < .9):
+                measured = measure_horizontal_floor_patch(
+                    depth,frame["camera"],frame["world_from_optical"],[x,y],
+                    [level["floor_height"] for level in bundle["scene"]["levels"]],
+                    frame["pose"]["position"][1])
+                if point is None or measured is None:
+                    continue
+                floor = measured["height_m"]
+                if abs(point[1]-floor) > .12:
                     continue
                 distance = math.dist(point,frame["pose"]["position"])
                 turn = _yaw_delta(frame["pose"],point)
@@ -40,7 +46,8 @@ def collect_point_pairs(config, root, gpu, bundle_path=None):
             reject(root,"point",state["id"],"no_visible_floor_patch_within_action_budget",stage="pair_proposal")
             continue
         _, point,pixel,steps,nturn,turn = min(choices)
-        identifier = f"{state['id']}-floor-pair"
+        binding = json.dumps([snapshot_digest(root/state["snapshot"]),key,pixel,point],sort_keys=True)
+        identifier = f"{state['id']}-floor-pair-{sha256(binding.encode()).hexdigest()[:12]}"
         if any(t.get("pair_id")==identifier and t.get("start_snapshot_sha256")==snapshot_digest(root/state["snapshot"])
                for t in bundle["trials"]):
             continue

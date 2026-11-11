@@ -7,6 +7,11 @@ from pathlib import Path
 from src.dataset.maps import _number, _scene_coordinates, _source_point
 
 
+def is_physical_opening(opening):
+    """A functional zone boundary is not a door or a visually identifiable passage."""
+    return opening.get("kind") in {"door", "opening", "passage", "open_passage"}
+
+
 def load_scene(directory: Path) -> dict:
     directory = Path(directory)
     hashes = {}
