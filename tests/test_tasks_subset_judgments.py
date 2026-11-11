@@ -282,5 +282,3 @@ def test_arrival_branch_is_reachable(tmp_path, monkeypatch):
     c=Context(b,b["states"][0],tmp_path,{})
     _targets(c)
     assert c.options["target_arrival"][0][2]==[True]
-
-

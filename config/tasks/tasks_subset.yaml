@@ -1,0 +1,19 @@
+assets: data/nas/scene_datasets
+maps: data/scene_maps
+datasets:
+  objnav: data/datasets/objectnav/hm3d/v2
+  goat: data/datasets/goat_bench/hm3d/v1
+  r2r: data/datasets/r2r
+  rxr: data/datasets/rxr
+scenes:
+  - hm3d/train/00612-GsQBY83r3hb/GsQBY83r3hb.basis.glb
+  - hm3d/train/00669-DNWbUAJYsPy/DNWbUAJYsPy.basis.glb
+  - mp3d/17DRP5sb8fy/17DRP5sb8fy.glb
+  - hssd-hab/scenes/104862396_172226349.scene_instance.json
+seed: 7
+collection:
+  nodes: 3
+  route_actions: 42
+review:
+  models: []
+  limit: 3
