@@ -80,3 +80,32 @@ def crossed_segment(start, end, segment, endpoint_margin=0.05):
         return False
     t, u = np.linalg.solve(matrix, a-p)
     return bool(0 < t <= 1 and endpoint_margin < u*length < length-endpoint_margin)
+
+
+def measure_horizontal_floor_patch(depth, camera, world_from_optical, pixel, floor_heights,
+                                   body_height, radius=9):
+    """Measure a locally horizontal real surface near one declared floor."""
+    x,y = map(int,pixel)
+    if not radius <= x < depth.shape[1]-radius or not radius <= y < depth.shape[0]-radius:
+        return None
+    yy,xx = np.mgrid[y-radius:y+radius+1,x-radius:x+radius+1]
+    disk=(xx-x)**2+(yy-y)**2<=radius**2
+    z=depth[y-radius:y+radius+1,x-radius:x+radius+1][disk]
+    rays=np.linalg.solve(camera["K"],np.array([xx[disk],yy[disk],np.ones(len(z))]))
+    matrix=np.asarray(world_from_optical)
+    heights=(matrix[1,:3]@rays)*z+matrix[1,3]
+    valid=np.isfinite(heights)&np.isfinite(z)&(z>0)
+    if valid.sum()<.9*len(z):
+        return None
+    median=float(np.median(heights[valid]))
+    matched=[h for h in floor_heights if abs(h-median)<=.10]
+    residuals=np.abs(heights-median)
+    support=valid&(residuals<=.025)
+    if len(matched)!=1 or abs(median-body_height)>.10 or support.mean()<.9:
+        return None
+    return {"height_m":median,"support_count":int(support.sum()),"sample_count":len(z),
+            "support_fraction":float(support.mean()),
+            "median_abs_residual_m":float(np.median(residuals[valid])),
+            "max_inlier_residual_m":float(residuals[support].max()),
+            "declared_floor_height":matched[0],"body_height":body_height,
+            "method":"depth_world_y_horizontal_disk","pixel":[x,y],"radius":radius}

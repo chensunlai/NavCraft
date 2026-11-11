@@ -167,3 +167,25 @@ class SceneTests(unittest.TestCase):
         self.assertEqual(_traversals(scene,motions,[-1,2,0]), [])
         motions[0]["samples"] = [{"position": [-.4,0,1.5]}, {"position": [.4,0,1.5]}]
         self.assertEqual(_traversals(scene,motions,[-1,0,1.5]), [])
+
+    def test_measured_floor_patch_rejects_mixed_invalid_and_ambiguous_floor(self):
+        import numpy as np
+        from src.dataset.tasks_subset.sampling.geometry import measure_horizontal_floor_patch
+        camera={"K":[[30,0,20],[0,30,20],[0,0,1]]}
+        matrix=np.diag([1.,-1.,-1.,1.])
+        matrix[1,3]=1.
+        yy,xx=np.mgrid[0:50,0:50]
+        depth=np.full((50,50),np.nan)
+        depth[21:,:]=30/(yy[21:,:]-20)
+        def measure(values,floors=[.073],body=0):
+            return measure_horizontal_floor_patch(values,camera,matrix,[25,35],floors,body)
+        self.assertAlmostEqual(measure(depth)["height_m"],0.)
+        self.assertEqual(measure(depth)["support_fraction"],1.)
+        bad=depth.copy()
+        bad[:,25:]*=.9
+        self.assertIsNone(measure(bad))
+        invalid=depth.copy()
+        invalid[:,25:]=np.nan
+        self.assertIsNone(measure(invalid))
+        self.assertIsNone(measure(depth,[0,.05]))
+        self.assertIsNone(measure(depth,body=.3))
