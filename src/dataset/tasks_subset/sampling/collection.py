@@ -19,7 +19,7 @@ from src.harness.runtime.executor import NavigationExecutor
 from src.harness.runtime.workspace import read_snapshot
 
 from ..bundle import reject, snapshot_digest, write_json
-from .geometry import crossed_segment, project, read_depth, unproject, visible_point
+from .geometry import crossed_segment, floor_patch_fraction, project, read_depth, unproject, visible_point
 from .scene import load_scene, room_at
 
 
@@ -658,6 +658,12 @@ def collect_trials(config: dict, output: Path, gpu: int, kinds=(), bundle_path=N
             world = sighting["world"]
             start = bundle["frames"][key]["pose"]["position"]
             if abs(world[1]-start[1]) > .13 or not .7 < math.dist(start, world) < 3:
+                continue
+            frame = bundle["frames"][key]
+            if (not frame.get("depth") or floor_patch_fraction(
+                    read_depth(output / frame["depth"], frame["camera"]), frame["camera"],
+                    frame["world_from_optical"], sighting["pixel"],
+                    state["transform"]["floor_height"]) < .9):
                 continue
             identifier = sighting["id"]
             trial = branch(state, "nav_01", follow(world, .37),

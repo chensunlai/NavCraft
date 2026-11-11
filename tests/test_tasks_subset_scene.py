@@ -5,11 +5,22 @@ from pathlib import Path
 import numpy as np
 
 from src.dataset.tasks_subset.bundle import freeze_case
-from src.dataset.tasks_subset.sampling.geometry import crossed_segment, project, unproject, visible_point
+from src.dataset.tasks_subset.sampling.geometry import crossed_segment, floor_patch_fraction, project, unproject, visible_point
 from src.dataset.tasks_subset.sampling.scene import room_at
 
 
 class SceneTests(unittest.TestCase):
+    def test_floor_patch_rejects_a_hole_through_an_obstacle(self):
+        camera = {"K": [[20, 0, 20], [0, 20, 0], [0, 0, 1]]}
+        matrix = [[1, 0, 0, 0], [0, -1, 0, 1], [0, 0, -1, 0], [0, 0, 0, 1]]
+        yy, _ = np.mgrid[0:41, 0:41]
+        depth = 20. / np.maximum(yy, 1)
+        self.assertEqual(floor_patch_fraction(depth, camera, matrix, [20, 20], 0), 1.)
+        covered = depth.copy() * .5
+        covered[19:22, 19:22] = depth[19:22, 19:22]
+        self.assertIsNotNone(visible_point([0, 0, -1], covered, {**camera, "width": 41, "height": 41}, matrix))
+        self.assertLess(floor_patch_fraction(covered, camera, matrix, [20, 20], 0), .1)
+
     def test_camera_rotation_and_occlusion(self):
         matrix = [[0, 0, 1, 3], [0, -1, 0, 2], [1, 0, 0, 0], [0, 0, 0, 1]]
         camera = {"K": [[3, 0, 2], [0, 3, 2], [0, 0, 1]], "width": 5, "height": 5}

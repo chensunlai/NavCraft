@@ -48,6 +48,24 @@ def visible_point(world, depth, camera, world_from_optical, tolerance=0.08):
     return [col, row]
 
 
+def floor_patch_fraction(depth, camera, world_from_optical, pixel, floor_height, radius=9):
+    """Fraction of the marked disk supported by floor, including occluded/invalid rays.
+
+    A ray through a wheel or chair can hit floor while the displayed mark covers the
+    obstacle. Require a visible patch, rather than accepting that isolated ray.
+    """
+    x, y = map(int, pixel)
+    if not (radius <= x < depth.shape[1] - radius and radius <= y < depth.shape[0] - radius):
+        return 0.
+    yy, xx = np.mgrid[y-radius:y+radius+1, x-radius:x+radius+1]
+    disk = (xx-x)**2 + (yy-y)**2 <= radius**2
+    sample = depth[y-radius:y+radius+1, x-radius:x+radius+1][disk]
+    rays = np.linalg.solve(camera["K"], np.array([xx[disk], yy[disk], np.ones(len(sample))]))
+    matrix = np.asarray(world_from_optical)
+    heights = (matrix[1, :3] @ rays) * sample + matrix[1, 3]
+    return float((np.isfinite(heights) & (np.abs(heights-floor_height) <= .06)).mean())
+
+
 def crossed_segment(start, end, segment, endpoint_margin=0.05):
     """True only for a proper finite XZ crossing away from the jambs."""
     p = np.asarray([start[0], start[2]])
