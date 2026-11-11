@@ -144,7 +144,7 @@ def test_repair_requires_both_destination_and_correction_to_matching_node():
     old = [{"id": "N1", "room": "Room 2"}]
     fixed = [{"id": "N1", "room": "Room 1"}]
     start, goal = [0, 0, 0], [2, 0, 0]
-    assert _score(label, start, goal, initial_nodes=old, nodes=fixed)["success"]
+    assert not _score(label, start, goal, initial_nodes=old, nodes=fixed)["success"]
     assert not _score(label, start, goal, initial_nodes=old, nodes=old)["success"]
     assert not _score(label, start, goal, initial_nodes=old, nodes=[{"id": "N2", "room": "Room 1"}])["success"]
     assert not _score(label, start, start, initial_nodes=old, nodes=fixed)["success"]
@@ -191,6 +191,7 @@ def test_current_panorama_excludes_future_frames_at_same_step():
 
 def test_reference_pair_changes_only_reference_and_private_answer(tmp_path):
     from PIL import Image
+    from pathlib import Path
     from src.dataset.tasks_subset.navigation.construction import _instruction
 
     frames = {}
@@ -203,15 +204,17 @@ def test_reference_pair_changes_only_reference_and_private_answer(tmp_path):
                   "semantic_verified": True, "identity_verified": True}
                  for obj, key in (("A", "current"), ("A", "same"), ("B", "different"))]
     pair = {"observed_object": "A", "requested_object": "B", "current_frame": "current",
-            "reference_frames": ["different"], "same_category": True, "review_candidate": "pair"}
+            "reference_frames": ["different"], "same_category": True, "review_candidate": "pair",
+            "public_context": [{"frame": "same", "caption": "Historical panorama, public pose"},
+                               {"frame": "different", "caption": "Other historical panorama, public pose"}]}
     bundle = {"frames": frames, "sightings": sightings,
               "scene": {"objects": [{"id": "A", "room": "room", "name": "chair"}]},
               "targets": [{"id": "target", "object_id": "A", "positions": [[2, 0, 0]]}],
               "navigation_evidence": {"distinct_instances": [pair]}}
     def build(variant, calls):
         trial = {"id": variant, "variant": variant, "target": "target", "comparison_id": "pair",
-                 "visible_frame": "current", "goal_measurement": {"positions": [[2, 0, 0]], "distance": 0.},
-                 "replay": {"calls": calls, "goal_measurement": {"positions": [[2, 0, 0]], "distance": 0.}}}
+                 "visible_frame": "current", "goal_measurement": {"positions": [[2, 0, 0]], "distance": 0., "initial_distance": 2.},
+                 "replay": {"calls": calls, "goal_measurement": {"positions": [[2, 0, 0]], "distance": 0., "initial_distance": 2.}}}
         return _instruction("nav_05", trial, state, frames["current"], bundle, [[2, 0, 0]], tmp_path)
 
     pos, pos_label, pos_images = build("reference_match", [{"name": "submit"}])
@@ -220,6 +223,8 @@ def test_reference_pair_changes_only_reference_and_private_answer(tmp_path):
     assert [im["caption"] for im in pos_images] == [im["caption"] for im in neg_images]
     assert pos_images[0]["path"].read_bytes() == neg_images[0]["path"].read_bytes()
     assert pos_images[1]["source"] != neg_images[1]["source"]
+    assert [Path(im["path"]).read_bytes() for im in pos_images[2:]] == [
+        Path(im["path"]).read_bytes() for im in neg_images[2:]]
     assert pos_label["matches"] and not neg_label["matches"]
     assert not _score(pos_label, [0, 0, 0], [2, 0, 0], answer="mismatch")["success"]
 
@@ -365,3 +370,126 @@ def test_absence_review_producer_includes_intermediate_history(tmp_path):
     proposals = list(navigation_review_proposals(bundle, tmp_path))
     assert any(row["fact"]["value"] == {"object": "chair", "frame": "middle", "visible": False}
                and row["frames"] == ["middle", "target"] for row in proposals)
+
+
+def test_execution_semantics_cannot_pass_with_one_review_or_stale_binding(tmp_path):
+    import pytest
+    from src.dataset.tasks_subset.bundle import write_json
+    from src.dataset.tasks_subset.review.execution import finalize_execution, _hash
+    path = tmp_path / "private/execution-review/manifest.json"
+    write_json(path, {"structural_score": {"details": {"event": True}}, "room_assignment_valid": True, "nodes": [{"role": "created", "node": {"room": "Room 1"}, "images": []},
+                {"role": "room_reference", "node": {"room": "Room 1"}, "images": []}]})
+    row = {"reviewer": "first", "model": "model-a", "manifest_sha256": _hash(path),
+           "answer": {"decision": "accept", "description_supported": True, "room_supported": True}}
+    assert not finalize_execution(tmp_path, [row])["success"]
+    assert finalize_execution(tmp_path, [row, {**row, "reviewer": "second", "model": "model-b"}])["success"]
+    write_json(path, {"changed": True})
+    with pytest.raises(ValueError, match="different execution"):
+        finalize_execution(tmp_path, [row])
+
+
+def test_execution_reviewer_identity_and_typed_new_room(tmp_path):
+    import pytest
+    from src.dataset.tasks_subset.bundle import write_json
+    from src.dataset.tasks_subset.review.execution import finalize_execution, _hash
+    path = tmp_path / "private/execution-review/manifest.json"
+    manifest = {"structural_score": {"details": {"event": True}}, "room_assignment_valid": True,
+                "room_assignment_mode": "first_room",
+                "nodes": [{"role": "created", "node": {"room": "Room 1"}, "images": []}]}
+    write_json(path, manifest)
+    def rows():
+        return [{"reviewer": name, "model": model, "manifest_sha256": _hash(path),
+                 "answer": {"decision": "accept", "description_supported": True, "room_supported": False}}
+                for name, model in [("a", "model-a"), ("b", "model-b")]]
+    assert finalize_execution(tmp_path, rows())["success"]
+    duplicate = rows()
+    duplicate[1]["model"] = duplicate[0]["model"]
+    with pytest.raises(ValueError, match="distinct models"):
+        finalize_execution(tmp_path, duplicate)
+    manifest["room_assignment_mode"] = "new_room"
+    manifest["nodes"][0]["node"]["room"] = "bedroom"
+    write_json(path, manifest)
+    assert not finalize_execution(tmp_path, rows())["success"]
+
+
+def test_correction_reuse_requires_exact_comparison_prefix_and_node_assignments(tmp_path):
+    from copy import deepcopy
+    from src.dataset.tasks_subset.bundle import write_json
+    from src.dataset.tasks_subset.navigation.construction import correction_applicable
+    frames, node_frames, nodes = {}, {}, []
+    for index in range(3):
+        identifier = f"N{index}"
+        keys = [f"{identifier}-{yaw}" for yaw in range(6)]
+        node_frames[identifier] = keys
+        frames.update({key: {"group": f"p_{index}"} for key in keys})
+        nodes.append({"id": identifier, "anchor": f"p_{index}", "panorama": f"p_{index}",
+                      "room": "Room 1" if index < 2 else "Room 2"})
+    source = {"id": "later", "snapshot": "later", "frame_keys": list(frames), "node_frames": node_frames,
+              "room_aliases": {"A": "Room 1", "B": "Room 2", "C": "Room 3"}}
+    earlier = {**source, "id": "earlier", "snapshot": "earlier", "room_aliases": {"A": "Room 1", "B": "Room 2"}}
+    for s in (source, earlier):
+        write_json(tmp_path / s["snapshot"] / "workspace/memory/nodes.json", {"nodes": nodes})
+    bundle = {"states": [source, earlier], "frames": frames}
+    fact = {"state": "later", "review_candidate": "review", "review_source": {"sha": "original"},
+            "node": "N0", "field": "room", "correct": "Room 1", "wrong": "Room 2",
+            "evidence_frame": "N0-0", "comparison_frames": list(frames)}
+    assert correction_applicable(bundle, earlier, fact, tmp_path)
+    assert not correction_applicable(bundle, {**earlier, "frame_keys": ["N0-0"]}, fact, tmp_path)
+    changed = deepcopy(nodes); changed[2]["room"] = "Room 1"
+    write_json(tmp_path / "earlier/workspace/memory/nodes.json", {"nodes": changed})
+    assert not correction_applicable(bundle, earlier, fact, tmp_path)
+
+
+def test_repair_order_requires_new_local_panorama_before_committed_edit():
+    import json
+    from src.dataset.tasks_subset.navigation.scoring import observed_before_repair
+    repair = {"node": "N1", "field": "room", "correct": "Room 1",
+              "anchor_uv": [.5, .5], "map_size_m": 20, "radius_m": 1., "floor_height": 0}
+    def receipt(name, args, value):
+        return json.dumps([name, args]), {"result": {"isError": False, "content": [{"text": json.dumps(value)}]}}
+    observe = receipt("observe", {"mode": "panorama"}, {"group": "p_new"})
+    edit = receipt("memory_edit", {"operations": [{"op": "update", "id": "N1", "room": "Room 1"}]},
+                   {"committed": True})
+    pano = {"step": 4, "frames": [1, 2, 3, 4, 5, 6], "pose": {"pos": [.51, .5]}}
+    env = NS(motions=[{"step": 4, "samples": [{"position": [0, 0, 0]}]}])
+    initial = {"position": [0, 0, 0], "receipt_ids": [], "panoramas": []}
+    executor = NS(_calls={"observe": observe, "edit": edit}, observations=NS(panorama=lambda _: pano))
+    assert observed_before_repair(env, executor, repair, initial)
+    executor._calls = {"edit": edit, "observe": observe}
+    assert not observed_before_repair(env, executor, repair, initial)
+    executor._calls = {"observe": observe, "edit": edit}
+    pano["pose"]["pos"] = [.8, .5]
+    assert not observed_before_repair(env, executor, repair, initial)
+
+
+def test_derived_observation_requires_current_bound_asset_bytes(tmp_path):
+    import hashlib
+    from src.dataset.tasks_subset.navigation.construction import _target_sightings
+    for name in ("rgb", "depth", "mask"):
+        (tmp_path / name).write_bytes(name.encode())
+    frame = {"rgb": "rgb", "depth": "depth", "pose": {"position": [0, 0, 0]}, "camera": {"K": []}}
+    binding = {name + "_sha256": hashlib.sha256((tmp_path/name).read_bytes()).hexdigest()
+               for name in ("rgb", "depth", "mask")}
+    binding.update(pose=frame["pose"], camera=frame["camera"])
+    seed = {"id": "A", "frame": "old", "semantic_verified": True, "review_candidate": "review"}
+    derived = {"id": "A", "frame": "now", "source_frame": "old", "method": "native_instance_reprojection",
+               "identity_verified": True, "derived_from_review": "review", "evidence_binding": binding}
+    bundle = {"sightings": [seed], "derived_sightings": [derived], "frames": {"now": frame},
+              "instance_evidence": {"now": {"mask": "mask"}}}
+    assert list(_target_sightings(bundle, tmp_path)) == [seed, derived]
+    (tmp_path/"depth").write_bytes(b"changed")
+    assert list(_target_sightings(bundle, tmp_path)) == [seed]
+
+
+def test_execution_uncertain_is_not_promoted_by_positive_components(tmp_path):
+    from src.dataset.tasks_subset.bundle import write_json
+    from src.dataset.tasks_subset.review.execution import finalize_execution, _hash
+    path = tmp_path / "private/execution-review/manifest.json"
+    write_json(path, {"structural_score": {"details": {"event": True}},
+                     "room_assignment_valid": True, "room_assignment_mode": "first_room",
+                     "nodes": [{"role": "created", "node": {"room": "Room 1"}, "images": []}]})
+    rows = [{"reviewer": model, "model": model, "manifest_sha256": _hash(path),
+             "answer": {"decision": decision, "description_supported": True, "room_supported": True}}
+            for model, decision in [("model-a", "accept"), ("model-b", "uncertain")]]
+    result = finalize_execution(tmp_path, rows)
+    assert result["success"] is None and result["status"] == "needs_review"

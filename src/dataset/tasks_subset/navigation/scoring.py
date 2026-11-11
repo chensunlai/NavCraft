@@ -63,6 +63,31 @@ def _result_value(result, key, default):
     return getattr(result, key, default)
 
 
+def observed_before_repair(environment, executor, repair, initial):
+    seen = False
+    positions = {m["step"]: m["samples"][-1]["position"] for m in environment.motions if m.get("samples")}
+    for identifier, (request, receipt) in getattr(executor, "_calls", {}).items():
+        if identifier in initial.get("receipt_ids", ()):
+            continue
+        name, args = json.loads(request)
+        result = receipt["result"]
+        if result.get("isError"):
+            continue
+        value = json.loads(result["content"][0]["text"])
+        if name == "observe" and args.get("mode") == "panorama":
+            panorama = executor.observations.panorama(value["group"])
+            position = positions.get(panorama["step"], initial["position"])
+            seen |= (value["group"] not in initial.get("panoramas", ())
+                    and len(panorama["frames"]) == 6
+                    and math.dist(panorama["pose"]["pos"], repair["anchor_uv"]) * repair["map_size_m"] <= repair["radius_m"]
+                    and abs(position[1] - repair["floor_height"]) <= .25)
+        if name == "memory_edit" and value.get("committed") is True and seen:
+            if any(op.get("op") == "update" and op.get("id") == repair["node"]
+                   and op.get(repair["field"]) == repair["correct"] for op in args["operations"]):
+                return True
+    return False
+
+
 def score_navigation(environment, executor, label, initial, result=None):
     kind = label["kind"]
     steps = environment.steps - initial["steps"]
@@ -116,7 +141,8 @@ def score_navigation(environment, executor, label, initial, result=None):
         before = next((n for n in original if n["id"] == repair["node"]), {})
         after = next((n for n in executor.memory.nodes if n["id"] == repair["node"]), {})
         event = (arrived and before.get(repair["field"]) == repair["wrong"]
-                 and after.get(repair["field"]) == repair["correct"])
+                 and after.get(repair["field"]) == repair["correct"]
+                 and observed_before_repair(environment, executor, repair, initial))
     elif kind in {"nav_16", "nav_18"} and label.get("benchmark"):
         if math.isfinite(distance):
             metrics = score_goal(label["benchmark"], submitted=submitted, distance=distance,

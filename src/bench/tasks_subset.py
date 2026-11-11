@@ -54,6 +54,9 @@ def _navigation(repo, config, output, task, case, label, limits, gpu, images):
         result = {"status": status, "reason": prompt.reason, "prompt": prompt.to_dict()}
         if status != "infrastructure_error":
             score = score_navigation(environment, nav, label, initial, prompt)
+            if task["kind"] == "nav_04":
+                from src.dataset.tasks_subset.review.execution import capture_execution_review
+                capture_execution_review(case / "task.json", output, nav, initial, score)
             over_path = (limits.max_path_length is not None and
                          score["details"]["path_length"] > limits.max_path_length + 1e-6)
             if over_path or score["details"]["actions"] > limits.max_actions:

@@ -71,9 +71,14 @@ def _require_goal_measurements(trial, label, endpoint):
 
 
 def _reviewed_absent(bundle, instance, keys):
+    from ..review.instances import frame_visibility
     rows = {(r["object"], r["frame"]): r for r in
             bundle.get("navigation_evidence", {}).get("visibility", [])}
-    return bool(keys) and all(rows.get((instance, key), {}).get("visible") is False for key in keys)
+    scope = next((t["instance_scope"] for t in bundle.get("targets", [])
+                  if t.get("object_id") == instance and t.get("instance_scope")), None)
+    return bool(keys) and all(rows.get((instance, key), {}).get("visible") is False
+                             or scope is not None and frame_visibility(bundle, key, instance, scope) == "absent"
+                             for key in keys)
 
 
 def _known_once(bundle, state, instance, present):
@@ -82,6 +87,67 @@ def _known_once(bundle, state, instance, present):
     return len(seen_nodes) == 1 and all(
         len(keys) == 6 and _reviewed_absent(bundle, instance, keys)
         for node, keys in nodes.items() if node != seen_nodes[0])
+
+
+def correction_applicable(bundle, state, fact, root):
+    """Reuse a reviewed correction only while its exact public comparisons remain unchanged."""
+    if (not fact.get("review_candidate") or not fact.get("review_source")
+            or fact.get("evidence_frame") not in state["frame_keys"]
+            or not set(fact.get("comparison_frames", [])) <= set(state["frame_keys"])):
+        return False
+    source = next((s for s in bundle["states"] if s["id"] == fact["state"]), None)
+    if source is None or any(
+            state.get("room_aliases", {}).get(room) != alias
+            for room, alias in source.get("room_aliases", {}).items()
+            if alias in {fact["correct"], fact["wrong"]}):
+        return False
+    def memory(cut):
+        return json.loads((Path(root) / cut["snapshot"] / "workspace/memory/nodes.json").read_text())["nodes"]
+    original = {n["id"]: n for n in memory(source)}
+    actual = {n["id"]: n for n in memory(state)}
+    groups = {bundle["frames"][key].get("group") for key in fact["comparison_frames"]}
+    involved = [n for n in original.values() if n["panorama"] in groups]
+    if len(involved) < 3 or set().union(*(set(source["node_frames"].get(n["id"], []))
+                                        for n in involved)) != set(fact["comparison_frames"]):
+        return False
+    if any(n["id"] not in actual or any(actual[n["id"]].get(field) != n.get(field)
+                                      for field in ("anchor", "panorama", "room")) for n in involved):
+        return False
+    return actual.get(fact["node"], {}).get(fact["field"]) == fact["correct"]
+
+
+def _located_instance(sight):
+    return sight.get("semantic_verified") is True or (
+        sight.get("method") == "native_instance_reprojection" and sight.get("identity_verified") is True
+        and sight.get("derived_from_review") and sight.get("evidence_binding"))
+
+
+def _target_sightings(bundle, root=None):
+    """Consume shared reviewed/derived observations without promoting semantic flags."""
+    yield from bundle["sightings"]
+    if root is None:
+        return
+    root = Path(root)
+    for sight in bundle.get("derived_sightings", []):
+        if not _located_instance(sight):
+            continue
+        binding = sight["evidence_binding"]
+        frame = bundle["frames"].get(sight["frame"], {})
+        evidence = bundle.get("instance_evidence", {}).get(sight["frame"], {})
+        seed = next((s for s in bundle["sightings"] if s["id"] == sight["id"]
+                     and s["frame"] == sight.get("source_frame") and s.get("semantic_verified")
+                     and s.get("review_candidate") == sight["derived_from_review"]), None)
+        if (not seed or binding.get("pose") != frame.get("pose")
+                or binding.get("camera") != frame.get("camera")):
+            continue
+        try:
+            for path, key in ((frame["rgb"], "rgb_sha256"), (frame["depth"], "depth_sha256"),
+                              (evidence["mask"], "mask_sha256")):
+                _require(hashlib.sha256((root / path).read_bytes()).hexdigest() == binding.get(key),
+                         "derived observation bytes changed")
+        except (OSError, KeyError, ValueError):
+            continue
+        yield sight
 
 
 def _instruction(kind, trial, state, frame, bundle, points, root):
@@ -93,8 +159,8 @@ def _instruction(kind, trial, state, frame, bundle, points, root):
     obj = objects.get(target.get("object_id"), {})
     scene = bundle["scene"]
     prefix = set(state["frame_keys"])
-    object_sightings = [s for s in bundle["sightings"]
-                        if s["kind"] == "object" and s["id"] == obj.get("id") and s.get("semantic_verified")]
+    object_sightings = [s for s in _target_sightings(bundle, root)
+                        if s["kind"] == "object" and s["id"] == obj.get("id") and _located_instance(s)]
     current = state["current_frame"]
     seen = {s["frame"] for s in object_sightings}
     positions = target.get("positions") or trial.get("goal_positions", [])
@@ -106,9 +172,9 @@ def _instruction(kind, trial, state, frame, bundle, points, root):
         label.update(approach_region=target["approach_region"], scene=scene)
 
     def mark(sighting_id, sighting_kind, key=current, caption=None):
-        match = next((s for s in bundle["sightings"] if s["frame"] == key
+        match = next((s for s in _target_sightings(bundle, root) if s["frame"] == key
                       and s["id"] == sighting_id and s["kind"] == sighting_kind
-                      and s.get("semantic_verified" if sighting_kind == "object" else "verified")), None)
+                      and (_located_instance(s) if sighting_kind == "object" else s.get("verified"))), None)
         _require(match and match.get("pixel"), "no verified current-frame marker")
         view = bundle["frames"][key]
         with Image.open(root / view["rgb"]) as original:
@@ -142,7 +208,10 @@ def _instruction(kind, trial, state, frame, bundle, points, root):
     elif kind == "nav_02":
         opening = next((o for o in scene["openings"] if o["id"] == trial.get("opening")), None)
         _require(opening and state["room"] in opening["connects"], "opening lacks a known source room")
-        mark(opening["id"], "opening")
+        visible_frame = trial.get("visible_frame")
+        _require(visible_frame in current_observation_frames(bundle, state),
+                 "opening reference is not in the current observation")
+        mark(opening["id"], "opening", visible_frame)
         destination = next((r for r in opening["connects"] if r != state["room"]), None)
         _require(destination and doorway_crossed([frame["pose"]["position"], *points], scene, opening,
                                                  state["room"], destination),
@@ -210,7 +279,7 @@ def _instruction(kind, trial, state, frame, bundle, points, root):
                 text = "Walk up to the object circled in the supplied current observation and submit when you reach it."
                 label["variant"] = variant
             else:
-                pair = next((p for p in _reference_pairs(bundle, state, obj["id"], visible_frame)
+                pair = next((p for p in _reference_pairs(bundle, state, obj["id"], visible_frame, root)
                              if p["review_candidate"] == trial.get("comparison_id")), None)
                 _require(pair is not None and variant in {"reference_match", "wrong_instance"},
                          "missing approved reference comparison")
@@ -219,10 +288,46 @@ def _instruction(kind, trial, state, frame, bundle, points, root):
                 reference = pair["matching_frame"] if matches else pair["reference_frames"][0]
                 instance = obj["id"] if matches else pair["requested_object"]
                 mark(instance, "object", reference, "Reference image with the comparison object circled.")
+                for context in pair.get("public_context", []):
+                    key = context["frame"]
+                    _require(key in prefix, "comparison context is outside the public prefix")
+                    images.append({"path": bundle["frames"][key]["rgb"], "caption": context["caption"],
+                                   "source": {"purpose": "prefix", "frames": [key]}})
                 text = REFERENCE_MATCH_INSTRUCTION
+                if pair.get("public_context"):
+                    text += " The extra panoramas show the same static scene; objects have not moved. Use their public capture poses and surroundings."
                 label.update(variant="reference_match", matches=matches)
         else:
             text = f"Find the {description} and walk up to it."
+            if kind in {"nav_07", "nav_09", "nav_10", "nav_12"}:
+                registered = next((t for t in bundle.get("targets", [])
+                                   if t.get("object_id") == obj["id"]
+                                   and (t.get("identity_verified") and t.get("reference_pixel")
+                                        or kind == "nav_10" and t.get("source_kind") == "independently_rendered_target_reference"
+                                        and t.get("reference_root_check"))
+                                   and t.get("reference_frames")
+                                   and (kind != "nav_10" or t.get("source_kind") == "independently_rendered_target_reference")
+                                   and (kind == "nav_10" or set(t["reference_frames"]) <= prefix)), None)
+                _require(registered, "navigation target lacks an unambiguous registered RGB reference")
+                key = registered["reference_frames"][0]
+                if key not in prefix:
+                    _require(bundle["frames"][key]["stream"] in {"official-target", "target-reference"},
+                             "unknown target reference is not from a formal independent source")
+                    check = registered.get("reference_root_check", {})
+                    _require(check.get("decision") == "accept" and check.get("reviewer")
+                             and check.get("source_rgb_sha256") == hashlib.sha256(
+                                 (root / bundle["frames"][key]["rgb"]).read_bytes()).hexdigest(),
+                             "independent reference review does not bind its RGB")
+                sight = next((s for s in object_sightings if s["frame"] == key), None)
+                if sight:
+                    mark(obj["id"], "object", key, "Requested target instance.")
+                    images[-1]["source"]["purpose"] = "prefix" if key in prefix else "target_reference"
+                else:
+                    images.append({"path": bundle["frames"][key]["rgb"], "caption": "Requested target instance",
+                                   "source": {"purpose": "target_reference", "frames": [key]}})
+                text = "Find the target instance shown in the reference image and walk up to it."
+                if registered.get("instance_scope"):
+                    text += " Match this visible part: " + registered["instance_scope"]
         if kind == "nav_07":
             _require(_known_once(bundle, state, obj["id"], seen)
                      and _reviewed_absent(bundle, obj["id"], current_views)
@@ -254,8 +359,30 @@ def _instruction(kind, trial, state, frame, bundle, points, root):
             after = next((n for n in trial["replay"].get("nodes", []) if n["id"] == repair["node"]), {})
             _require(repair["wrong"] != repair["correct"] and before.get(repair["field"]) == repair["wrong"]
                      and after.get(repair["field"]) == repair["correct"], "replay did not repair the corrupted fact")
-            label["repair"] = repair
-            text += " Correct any memory entry that you can verify is wrong along the way."
+            anchor = next(key for key in state["node_frames"][repair["node"]]
+                          if bundle["frames"][key]["group"] == before["anchor"])
+            label["repair"] = {**repair, "anchor_uv": bundle["frames"][anchor]["public_pose"]["pos"],
+                               "floor_height": bundle["frames"][anchor]["pose"]["position"][1],
+                               "map_size_m": state["transform"]["size_m"], "radius_m": 1.}
+            seen, committed = False, False
+            replay_calls, receipts = trial["replay"]["calls"], trial["replay"].get("receipts", [])
+            _require(len(replay_calls) == len(receipts), "repair reference lacks actual receipts")
+            for call, value in zip(replay_calls, receipts):
+                if call["name"] == "observe" and call["arguments"].get("mode") == "panorama":
+                    views = [row for row in bundle["frames"].values()
+                             if row.get("group") == value.get("group")
+                             and row.get("stream") == "replay-" + trial["id"]]
+                    seen |= (len(views) == 6
+                            and math.dist(views[0]["public_pose"]["pos"], label["repair"]["anchor_uv"])
+                            * state["transform"]["size_m"] <= 1.
+                            and abs(views[0]["pose"]["position"][1] - label["repair"]["floor_height"]) <= .25)
+                if call["name"] == "memory_edit" and value.get("committed") is True and seen:
+                    committed |= any(op.get("op") == "update" and op.get("id") == repair["node"]
+                                     and op.get(repair["field"]) == repair["correct"]
+                                     for op in call["arguments"]["operations"])
+            _require(committed, "reference did not observe locally before committing the repair")
+            text += (f" Along the way, take a new panorama within 1m of node {repair['node']} "
+                     "to check its room assignment, then correct that node if its room is wrong.")
     else:
         official = next((o for o in bundle.get("official_tasks", []) if o.get("id", o["episode"]["id"])
                          == trial.get("official_task") and o["state_id"] == state["id"]), None)
@@ -291,13 +418,15 @@ def _instruction(kind, trial, state, frame, bundle, points, root):
         _require(points and positions, "replay lacks motion or labelled goals")
         _require_goal_measurements(trial, label, points[-1])
         if kind not in {"nav_16", "nav_18"}:
-            _require(min(math.dist(frame["pose"]["position"], p) for p in positions)
-                     >= label["success_distance"], "starting pose is already in the target area")
+            measurement = trial.get("goal_measurement") or {}
+            _require("initial_distance" in measurement, "reference lacks initial geodesic measurement")
+            _require(not arrived_at_goal(label, frame["pose"]["position"], measurement["initial_distance"]),
+                     "starting pose is already in the target area")
     return text, label, images
 
 
 def build_navigation(bundle, root, config):
-    root = Path(root)
+    root = Path(root).resolve()
     states = {s["id"]: s for s in bundle["states"]}
     tasks = []
     comparisons = {}
@@ -354,11 +483,11 @@ REFERENCE_MATCH_INSTRUCTION = (
 )
 
 
-def _reference_pairs(bundle, state, instance, visible):
+def _reference_pairs(bundle, state, instance, visible, root=None):
     from ..judgment.targets import different_view
 
-    sightings = {(s["id"], s["frame"]): s for s in bundle["sightings"]
-                 if s["kind"] == "object" and s.get("semantic_verified") and s.get("pixel")}
+    sightings = {(s["id"], s["frame"]): s for s in _target_sightings(bundle, root)
+                 if s["kind"] == "object" and _located_instance(s) and s.get("pixel")}
     if not sightings.get((instance, visible), {}).get("identity_verified"):
         return
     frames = bundle["frames"]
@@ -378,12 +507,12 @@ def _reference_pairs(bundle, state, instance, visible):
                 break
 
 
-def _object_candidates(bundle, kind):
+def _object_candidates(bundle, kind, root=None):
     """Keep frame-level presence and verified absence distinct from missing annotations."""
     reviews = bundle.get("navigation_evidence", {})
     reviewed = {(r["object"], r["frame"]): r for r in reviews.get("visibility", [])}
     reviewed.update({(s["id"], s["frame"]): {"object": s["id"], "frame": s["frame"], "visible": True}
-                     for s in bundle["sightings"] if s["kind"] == "object" and s.get("semantic_verified")})
+                     for s in _target_sightings(bundle, root) if s["kind"] == "object" and _located_instance(s)})
     for obj in bundle["scene"]["objects"]:
         present = {frame for (identifier, frame), row in reviewed.items()
                    if identifier == obj["id"] and row["visible"]}
@@ -395,8 +524,7 @@ def _object_candidates(bundle, kind):
             prefix = set(state["frame_keys"])
             current_views = current_observation_frames(bundle, state)
             visible = next((key for key in current_views if key in present), None)
-            absent = bool(current_views) and all(
-                reviewed.get((obj["id"], key), {}).get("visible") is False for key in current_views)
+            absent = _reviewed_absent(bundle, obj["id"], current_views)
             same = state["room"] == obj["room"]
             correction = None
             if kind == "nav_05" and not (visible and same):
@@ -412,7 +540,7 @@ def _object_candidates(bundle, kind):
                 continue
             if kind == "nav_12":
                 correction = next((r for r in reviews.get("corrections", [])
-                                   if r.get("review_candidate") and r.get("state") == state["id"]
+                                   if root is not None and correction_applicable(bundle, state, r, root)
                                    and r.get("target") == obj["id"]
                                    and r.get("field") in {"room", "description"}
                                    and r.get("evidence_frame") in prefix
@@ -425,7 +553,7 @@ def _object_candidates(bundle, kind):
                          "repair": correction, "visible_frame": visible}
             yield candidate
             if kind == "nav_05":
-                for pair in _reference_pairs(bundle, state, obj["id"], visible):
+                for pair in _reference_pairs(bundle, state, obj["id"], visible, root):
                     for variant in ("reference_match", "wrong_instance"):
                         yield {**candidate, "variant": variant, "comparison_id": pair["review_candidate"]}
                     break
@@ -501,9 +629,9 @@ def prepare_navigation(bundle, root, config, gpu, kinds=()):
     verifiable corrections. Missing reviews remain candidate rejections.
     """
     from src.dataset.episodes import EpisodeSpec
-    from ..sampling.collection import _branch, _call, _follow
+    from ..sampling.collection import _branch, _call, _cut, _follow
 
-    root = Path(root)
+    root = Path(root).resolve()
     if type(gpu) is not int or gpu not in (0, 1):
         raise ValueError("Subset navigation requires physical GPU 0 or 1")
     objects = {obj["id"]: obj for obj in bundle["scene"]["objects"]}
@@ -513,7 +641,10 @@ def prepare_navigation(bundle, root, config, gpu, kinds=()):
     limit = config.get("navigation_candidates_per_kind", 1)
     env_config = {**bundle["environment_spec"], "gpu": gpu, "depth": True}
     for kind in selected:
-        candidates = list(_object_candidates(bundle, kind))
+        candidates = list(_object_candidates(bundle, kind, root))
+        selected_state = config.get("navigation_states", {}).get(kind)
+        if selected_state:
+            candidates = [row for row in candidates if row["state"] == selected_state]
         for candidate in candidates:
             digest = hashlib.sha256(json.dumps(candidate, sort_keys=True).encode()).hexdigest()[:12]
             candidate["id"] = f"{kind}-{candidate['state']}-{digest}"
@@ -530,17 +661,21 @@ def prepare_navigation(bundle, root, config, gpu, kinds=()):
                       + [c for c in candidates if c.get("comparison_id") in pairs])
         for candidate in chosen:
             identifier = candidate["id"]
-            if any(t.get("candidate") == identifier for t in bundle["trials"]):
+            if any(t.get("candidate") == identifier and not t.get("invalidated") for t in bundle["trials"]):
                 continue
             state = states[candidate["state"]]
             obj = objects[candidate["object"]]
             repair = candidate["repair"]
             try:
                 if repair:
+                    repair = {**repair, "source_review_state": repair["state"],
+                              "actual_start_state": state["id"]}
                     state = _altered_cut(bundle, root, state, repair)
 
                 def operation(executor, calls):
+                    from src.harness.runtime.request import PromptLimits
                     environment = executor.environment
+                    allowance = PromptLimits(**config.get("navigation_limits", {"max_actions": 90})).max_actions
                     def call(name, args):
                         result = _call(executor, name, args)
                         calls.append({"name": name, "arguments": args})
@@ -549,20 +684,33 @@ def prepare_navigation(bundle, root, config, gpu, kinds=()):
                     if repair:
                         source = bundle["frames"][repair["evidence_frame"]]
                         if math.dist(environment.position(), source["pose"]["position"]) > .35:
-                            _require(_follow(executor, source["pose"]["position"], calls, radius=.3),
+                            _require(_follow(executor, source["pose"]["position"], calls,
+                                             budget=allowance - 2, radius=.3),
                                      "could not reach correction evidence")
                         call("observe", {"mode": "panorama"})
                         call("memory_edit", {"operations": [{"op": "update", "id": repair["node"],
                                                              repair["field"]: repair["correct"]}]})
+                        checkpoint = _cut(executor, identifier + "-after-repair")
+                        checkpoint["room_aliases"] = dict(state.get("room_aliases", {}))
+                        checkpoint["correction_provenance"] = {
+                            "source_trial": executor.stream, "review_candidate": repair["review_candidate"],
+                            "source_review_state": repair["state"], "actual_start_state": repair["actual_start_state"],
+                            "node": repair["node"], "node_anchor": executor.memory.get(repair["node"])["anchor"],
+                            "capture_pose": environment.pose(), "fact": repair}
                     positions, region = approach_positions(environment, bundle["scene"], obj)
                     _require(positions, "no reachable same-room approach region")
                     interior = {**region, "max_footprint_distance": region["max_footprint_distance"] - .25,
                                 "room_margin": region["room_margin"] + .20}
                     goal = next((point for point in positions if in_approach_region(bundle["scene"], point, interior)),
                                 positions[0])
-                    _require(environment.distance(positions) >= .4, "already inside the approach area")
-                    reached = _follow(executor, goal, calls,
-                                      budget=config.get("collection", {}).get("route_actions", 42), radius=.25)
+                    initial_position = bundle["frames"][state["current_frame"]]["pose"]["position"]
+                    initial_distance = environment.sim.distance_from(initial_position, positions)
+                    _require(not arrived_at_goal(
+                        {"success_distance": threshold, "approach_region": region, "scene": bundle["scene"]},
+                        initial_position, initial_distance), "already inside the approach area")
+                    remaining = allowance - (environment.steps - state["step"]) - 2
+                    _require(remaining > 0, "reference exhausted the public action allowance")
+                    reached = _follow(executor, goal, calls, budget=remaining, radius=.25)
                     reached = reached and in_approach_region(bundle["scene"], environment.position(), region)
                     if reached and kind == "nav_05" and candidate.get("variant") != "wrong_instance":
                         call("submit", {})
@@ -581,19 +729,20 @@ def prepare_navigation(bundle, root, config, gpu, kinds=()):
                 bundle["targets"].append({"id": identifier, "object_id": obj["id"],
                     "description": obj["name"], "positions": outcome["positions"],
                     "success_distance": outcome["success_distance"], "approach_region": outcome["approach_region"]})
-            except ValueError as error:
+            except (ValueError, RuntimeError) as error:
                 reject(root, kind, identifier, str(error), stage="reference")
     return bundle
 
 
 def navigation_review_proposals(bundle, root):
     """Propose targeted RGB reviews; the central reviewer binds and accepts them."""
-    root = Path(root)
+    root = Path(root).resolve()
     objects = {obj["id"]: obj for obj in bundle["scene"]["objects"]}
     observed = {}
     absence_proposals = set()
     for sight in bundle["sightings"]:
-        if sight["kind"] == "object" and sight.get("pixel"):
+        if (sight["kind"] == "object" and sight.get("pixel")
+                and sight.get("method") != "native_instance_reprojection"):
             observed.setdefault(sight["id"], {})[sight["frame"]] = sight
 
     def proposal(kind, name, frames, prompt, check, key, value, annotations, markers=None):
@@ -645,6 +794,30 @@ def navigation_review_proposals(bundle, root):
                         {"observed_object": identifier, "requested_object": other_id,
                          "current_frame": visible, "reference_frames": [reference], "same_category": True}, [obj, other],
                         [sightings[visible]["pixel"], other_sightings[reference]["pixel"]])
+                    reference_node = next((node for node, keys in state["node_frames"].items()
+                                           if reference in keys and len(keys) == 6 and set(keys) <= prefix), None)
+                    if len(current_views) == 6 and reference_node:
+                        context = []
+                        for title, keys in (("Current panorama", current_views),
+                                            (f"Historical node {reference_node}", state["node_frames"][reference_node])):
+                            for key in keys:
+                                view = bundle["frames"][key]
+                                context.append({"frame": key, "caption": f"{title}; yaw {view['yaw']} degrees; "
+                                                f"public capture pose {json.dumps(view['public_pose'])}"})
+                        keys = list(dict.fromkeys([visible, reference, *[item["frame"] for item in context]]))
+                        captions = {item["frame"]: item["caption"] for item in context}
+                        yield proposal(
+                            "navigation_instance_pair", name, keys,
+                            "The first two marked images are the candidate objects. Additional images are complete "
+                            "panoramas already available at this cut. This is one static scene; the objects were not moved. "
+                            "Do the surroundings, complete panoramas and public capture poses establish that the two "
+                            "marked objects are of the same category but different physical instances? If not, return uncertain. "
+                            + " ".join(f"Image {i+1}: {captions.get(key, 'Marked candidate')}" for i, key in enumerate(keys)),
+                            ["same_category", "visibly_distinct"], "distinct_instances",
+                            {"observed_object": identifier, "requested_object": other_id, "current_frame": visible,
+                             "reference_frames": [reference], "same_category": True, "public_context": context},
+                            [obj, other],
+                            [sightings[visible]["pixel"], other_sightings[reference]["pixel"]] + [None]*(len(keys)-2))
         memory_file = root / state["snapshot"] / "workspace/memory/nodes.json"
         if not memory_file.is_file():
             continue
