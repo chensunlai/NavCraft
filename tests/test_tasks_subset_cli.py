@@ -35,6 +35,16 @@ class SubsetCLITests(unittest.TestCase):
                 self.assertEqual(trials.call_args.args[-1], enriched)
             self.assertEqual(raw.read_bytes(), original)
             self.assertEqual(reviewed.read_bytes(), previous_review)
+            paired = {**bundle, "targets": [{"id": "paired-floor-point"}]}
+            with patch("src.dataset.tasks_subset.__main__.collect_trials", return_value=bundle), \
+                 patch("src.dataset.tasks_subset.sampling.pairs.collect_point_pairs", return_value=paired) as pairs, \
+                 patch("src.dataset.tasks_subset.sampling.pairs.collect_motion_probes") as probes, \
+                 patch("src.dataset.tasks_subset.navigation.construction.prepare_navigation"):
+                main(base + ["--phase", "trials", "--trial", "point", "--bundle", "private/enriched_bundle.json"])
+                self.assertEqual(pairs.call_args.args[-1], enriched)
+                probes.assert_not_called()
+            self.assertEqual(json.loads(enriched.read_text())["targets"], paired["targets"])
+            self.assertEqual(raw.read_bytes(), original)
             write_json(root / "manifest.json", {"cases": [{"kind": "nav_02"}]})
             with patch("src.dataset.tasks_subset.review.check.check_collection", return_value={}) as check, \
                  patch("src.dataset.tasks_subset.review.inspection.write_inspection"):
@@ -65,6 +75,31 @@ class SubsetCLITests(unittest.TestCase):
             entry = json.loads(entries[0])
             self.assertEqual((entry["reviewer"], entry["reasoning_effort"], entry["decision"]),
                              ("same-model", "low", "uncertain"))
+
+    def test_review_deduplicates_actual_model_across_reviewer_tags(self):
+        from src.dataset.tasks_subset.review.stage import run_review
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "private/bundle.json"
+            write_json(source, {})
+            config = root / "model.json"
+            write_json(config, {"model": "actual-model", "reasoning_effort": "high"})
+            candidate = {"candidate_id": "abc", "kind": "object", "source": {}}
+            record = {**candidate, "reviewer": "display-name/high", "model": "actual-model",
+                      "decision": "uncertain", "execution_status": "budget_exhausted",
+                      "checks": {}, "reason": "No valid response"}
+            log = root / "private/reviews.jsonl"
+            log.write_text(json.dumps(record) + "\n")
+            imported = root / "imported.jsonl"
+            imported.write_text(json.dumps({**record, "reviewer": "another-display-name"}) + "\n")
+            with patch("src.dataset.tasks_subset.review.stage.review_candidates", return_value=[candidate]), \
+                 patch("src.dataset.tasks_subset.review.stage.apply_reviews", return_value={}), \
+                 patch("src.dataset.tasks_subset.review.stage.model_review") as model:
+                run_review({}, root, source, {"review": {"models": [config]}})
+                run_review({}, root, source, {}, imported=imported)
+                model.assert_not_called()
+            self.assertEqual([json.loads(line) for line in log.read_text().splitlines()], [record])
 
     def test_incremental_semantics_keeps_other_scene_index(self):
         with TemporaryDirectory() as temp:

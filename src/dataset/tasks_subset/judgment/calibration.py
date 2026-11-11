@@ -22,6 +22,8 @@ def floor_support(c, sight):
     if patch < .9:
         return None
     matrix = np.asarray(f["world_from_optical"], dtype=float)
+    if np.linalg.norm(matrix[[0,2],3]-np.asarray(c.position(sight["frame"])))>.01:
+        return None
     ray = np.linalg.solve(f["camera"]["K"], [*sight["pixel"], 1])
     direction = matrix[:3, :3] @ ray
     height = matrix[1, 3]-matches[0]
@@ -112,3 +114,33 @@ def measured_floor_motion(c, pairs):
         return None
     return {"right":float(offset[0]),"forward":float(offset[1]),
             "yaw":float((degrees(yaw)+180)%360-180)}
+
+
+def public_intersection(first,second,first_pixel,second_pixel,transform):
+    """Recover XZ from public UV/body+yaw/K only; validate this horizontal-camera variant."""
+    origins=[];rays=[]
+    for frame,pixel in ((first,first_pixel),(second,second_pixel)):
+        matrix=np.asarray(frame.get("world_from_optical",[]))
+        if matrix.shape!=(4,4) or abs(matrix[1,0])>.001 or abs(matrix[1,2])>.001:
+            return None
+        pose=frame["public_pose"]
+        origin=np.asarray(transform["origin"])+np.asarray(pose["pos"])*transform["size_m"]
+        if np.linalg.norm(origin-matrix[[0,2],3])>.015:
+            return None
+        heading=np.radians(pose["heading"]+(frame.get("yaw") or 0))
+        optical=np.linalg.solve(frame["camera"]["K"],[*pixel,1])
+        bearing=np.arctan2(optical[0],optical[2])
+        direction=np.array([np.sin(heading+bearing),-np.cos(heading+bearing)])
+        actual=matrix[:3,:3]@optical;actual=actual[[0,2]]/np.linalg.norm(actual[[0,2]])
+        if np.linalg.norm(direction-actual)>.002:
+            return None
+        origins.append(origin);rays.append(direction)
+    if np.linalg.norm(origins[1]-origins[0])<.55:
+        return None
+    matrix=np.column_stack((rays[0],-rays[1]))
+    if abs(np.linalg.det(matrix))<np.sin(np.radians(5)):
+        return None
+    lengths=np.linalg.solve(matrix,origins[1]-origins[0])
+    if min(lengths)<=0:
+        return None
+    return (origins[0]+lengths[0]*rays[0]).tolist()

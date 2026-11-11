@@ -7,7 +7,7 @@ def different_view(a, b):
     return dist(a["pose"]["position"], b["pose"]["position"]) >= .2
 
 
-def instance_targets(bundle):
+def instance_targets(bundle,root=None):
     by_object = defaultdict(list)
     for s in bundle["sightings"]:
         f = bundle["frames"][s["frame"]]
@@ -19,16 +19,23 @@ def instance_targets(bundle):
         for ref in views:
             if any(different_view(bundle["frames"][ref["frame"]], bundle["frames"][x["frame"]])
                    for x in views):
+                from ..review.instances import frame_visibility
+                scopes={record["completeness_binding"]["scope"]
+                        for key,row in bundle.get("instance_evidence",{}).items()
+                        for identifier,record in row.get("objects",{}).items()
+                        if identifier==obj and record.get("completeness_binding") and
+                        frame_visibility(bundle,key,obj,root=root)!="unknown"}
+                extra={"instance_scope":next(iter(scopes))} if len(scopes)==1 else {}
                 yield {"id": f"judgment-instance-{obj}", "object_id": obj,
                        "reference_frames": [ref["frame"]], "reference_pixel": ref["pixel"],
-                       "identity_verified": True, "source_benchmark": None}
+                       "identity_verified": True, "source_benchmark": None, **extra}
                 break
 
 
-def register_instance_targets(bundle):
+def register_instance_targets(bundle,root=None):
     targets = bundle.setdefault("targets", [])
     known = {t["id"] for t in targets}
-    targets.extend(t for t in instance_targets(bundle) if t["id"] not in known)
+    targets.extend(t for t in instance_targets(bundle,root) if t["id"] not in known)
 
 
 def target_reviews(bundle):
@@ -74,3 +81,36 @@ def arrival_candidates(bundle):
             if arrived != (distance < threshold):
                 continue
             yield target, state, s, threshold, arrived
+
+
+def build_instance_correspondence(c):
+    """Instance identity uses reviewed native/body association, not identical surface points."""
+    from itertools import combinations
+    from .construction import BOOL,mark,row
+    groups=defaultdict(list)
+    for key in c.state["frame_keys"]:
+        for sight in c.sights[key]:
+            if sight["kind"] in {"object","opening"} and sight.get("identity_verified"):
+                groups[(sight["kind"],sight["id"])].append(sight)
+    for group in groups.values():
+        for first,second in combinations(group,2):
+            if not different_view(c.frames[first["frame"]],c.frames[second["frame"]]):
+                continue
+            c.put("cross_view_identity","Do the marked instances A and B denote the same physical entity?",
+                  BOOL,[True],[row(first["frame"],"First view",[mark(first,"A")]),
+                               row(second["frame"],"Second view",[mark(second,"B")])],
+                  private={"variant":"reviewed_instance_identity","measurements":[first,second],
+                           "rule":"same independently verified physical instance; markings need not be same surface point"})
+    for fact in c.bundle.get("navigation_evidence",{}).get("distinct_instances",[]):
+        keys=fact.get("reference_frames",[])
+        if not fact.get("review_candidate") or fact.get("same_category") is not True or len(keys)!=1:
+            continue
+        a,b=keys[0],fact["current_frame"]
+        if {a,b}-c.keys:
+            continue
+        first=next((s for s in c.sights[a] if s["id"]==fact["requested_object"] and s.get("identity_verified")),None)
+        second=next((s for s in c.sights[b] if s["id"]==fact["observed_object"] and s.get("identity_verified")),None)
+        if first and second:
+            c.put("cross_view_identity","Do the marked instances A and B denote the same physical entity?",
+                  BOOL,[False],[row(a,"First view",[mark(first,"A")]),row(b,"Second view",[mark(second,"B")])],
+                  private={"variant":"reviewed_distinct_instances","measurements":[first,second],"pair_fact":fact})

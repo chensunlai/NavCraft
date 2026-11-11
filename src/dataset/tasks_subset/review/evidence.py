@@ -2,7 +2,7 @@
 from copy import deepcopy
 from hashlib import sha256
 import json
-from collections import defaultdict
+from collections import defaultdict, Counter
 from math import dist
 from pathlib import Path
 
@@ -40,9 +40,12 @@ def review_candidates(bundle, root):
     from itertools import chain
     from ..judgment.construction import judgment_review_proposals
     from ..judgment.targets import target_reviews
+    from .semantic_proposals import opening_type_proposals, surface_region_proposals
+    from ..judgment.size import span_review_proposals
+    from ..judgment.corrections import current_correction_reviews
     from ..navigation.construction import navigation_review_proposals
 
-    proposals = chain(judgment_review_proposals(bundle, root), navigation_review_proposals(bundle, root), target_reviews(bundle))
+    proposals = chain(judgment_review_proposals(bundle, root), navigation_review_proposals(bundle, root), target_reviews(bundle), opening_type_proposals(bundle), surface_region_proposals(bundle), span_review_proposals(bundle,root), current_correction_reviews(bundle,root))
     for raw in proposals:
         evidence = {"frames": [{"frame": key, "sha256": sha256(
             (root / bundle["frames"][key]["rgb"]).read_bytes()).hexdigest()} for key in raw["frames"]],
@@ -60,6 +63,7 @@ def apply_reviews(bundle, root, reviews):
     bundle = deepcopy(bundle)
     bundle.pop("judgment_evidence", None)
     bundle.pop("navigation_evidence", None)
+    bundle.pop("derived_sightings", None)
     bundle["targets"] = [t for t in bundle.get("targets",[]) if not t["id"].startswith("judgment-instance-")]
     for sight in bundle["sightings"]:
         if "geometry_verified" not in sight:
@@ -71,11 +75,15 @@ def apply_reviews(bundle, root, reviews):
         sight["verified"] = sight["geometry_verified"] and sight["kind"] != "object"
     reviews = list(reviews)
     by_id = {c["candidate_id"]: c for c in review_candidates(bundle, root)}
-    if any(r.get("candidate_id") not in by_id for r in reviews):
+    while any(r.get("candidate_id") not in by_id for r in reviews):
         known = [r for r in reviews if r.get("candidate_id") in by_id]
-        if known:
-            enriched = apply_reviews(bundle, root, known)
-            by_id.update((c["candidate_id"], c) for c in review_candidates(enriched, root))
+        if not known:
+            break
+        enriched = apply_reviews(bundle, root, known)
+        generated={c["candidate_id"]:c for c in review_candidates(enriched,root)}
+        if not generated.keys()-by_id.keys():
+            break
+        by_id.update(generated)
     records = {}
     for review in reviews:
         candidate = by_id.get(review.get("candidate_id"))
@@ -95,13 +103,29 @@ def apply_reviews(bundle, root, reviews):
         group[reviewer] = review
     decisions, facts = {}, []
     for identifier, reviews_by_person in records.items():
-        values = list(reviews_by_person.values())
+        values = [record for record in reviews_by_person.values()
+                  if record.get("execution_status","completed")=="completed"]
+        independent=[record.get("model") or record["reviewer"] for record in values]
+        if len(set(independent))!=len(independent):
+            raise ValueError("Independent reviews require distinct actual models")
+        if not values:
+            continue
         c = by_id[identifier]
         approved = len(values) >= 2 and all(v["decision"] == "accept" and
             all(v["checks"].get(k) is True for k in _checks(c)) for v in values)
         rejected = any(v["decision"] == "reject" for v in values)
         if "fact" in c:
             fact = c["fact"]
+            if c.get("value_keys"):
+                agreed={}
+                for key,allowed in c["value_keys"].items():
+                    answers=[v.get("values",{}).get(key) for v in values]
+                    if len(set(answers))!=1 or answers[0] not in allowed:
+                        approved=False
+                        break
+                    agreed[key]=answers[0]
+                if approved:
+                    fact={**fact,"value":{**fact["value"],**agreed}}
             if c.get("exclusive_checks"):
                 outcomes = [tuple(k for k in _checks(c) if v["checks"].get(k) is True) for v in values]
                 approved = (len(values) >= 2 and len(set(outcomes)) == 1 and len(outcomes[0]) == 1
@@ -114,6 +138,7 @@ def apply_reviews(bundle, root, reviews):
         key = c["kind"], c["instance"], c["source"]["frame"], tuple(c["source"]["pixel"])
         decisions[key] = ("accept" if approved else "reject" if rejected else "uncertain", c)
     result = deepcopy(bundle)
+    result["review_attempt_counts"]=dict(Counter(r.get("execution_status","completed") for r in reviews))
     for s in result["sightings"]:
         key = s["kind"], s["id"], s["frame"], tuple(s.get("pixel", []))
         decision, candidate = decisions.get(key, ("unreviewed", None))
@@ -153,8 +178,11 @@ def apply_reviews(bundle, root, reviews):
         row = {**fact["value"], "review_candidate": identifier, "review_source": by_id[identifier]["source"]}
         if row not in rows:
             rows.append(row)
+    from ..sampling.semantics import link_native_identity,derive_instance_sightings
+    result=link_native_identity(result,root)
+    result["derived_sightings"]=derive_instance_sightings(result,root)
     from ..judgment.targets import register_instance_targets
-    register_instance_targets(result)
+    register_instance_targets(result,root)
     return result
 
 
@@ -168,18 +196,27 @@ def model_review(repo, config, output, root, bundle, candidate, reviewer):
     evidence = candidate["source"]
     images = []
     if "frames" in evidence:
-        markers = candidate.get("markers", [None] * len(evidence["frames"]))
+        markers = candidate.get("markers")
+        if markers is None:
+            markers=[None]*len(evidence["frames"])
         for index, (item, marker) in enumerate(zip(evidence["frames"], markers, strict=True)):
             frame = bundle["frames"][item["frame"]]
             path = root / frame["rgb"]
-            if marker is not None:
+            endpoints=candidate.get("endpoint_markers",[None]*len(evidence["frames"]))[index]
+            polygon=candidate.get("polygons",[None]*len(evidence["frames"]))[index]
+            if marker is not None or endpoints or polygon:
                 with Image.open(path) as image:
                     image = image.convert("RGB")
-                x, y = marker
-                ImageDraw.Draw(image).ellipse((x-9, y-9, x+9, y+9), outline="#00ffff", width=3)
+                if polygon:
+                    ImageDraw.Draw(image).polygon([tuple(p) for p in polygon],outline="cyan",width=3)
+                for number,(x,y) in enumerate(endpoints or ([marker] if marker is not None else [])):
+                    draw=ImageDraw.Draw(image)
+                    draw.ellipse((x-9,y-9,x+9,y+9),outline="#00ffff",width=3)
+                    if endpoints:
+                        draw.text((x+10,y-10),str(number+1),fill="cyan")
                 path = output / f"candidate-{index+1}.png"
                 image.save(path)
-            images.append({"path": path.resolve(), "caption": "RGB evidence"})
+            images.append({"path": path.resolve(), "caption": candidate.get("captions",["RGB evidence"]*len(evidence["frames"]))[index]})
         prompt = candidate["prompt"]
     else:
         frame = bundle["frames"][evidence["frame"]]
@@ -195,20 +232,36 @@ def model_review(repo, config, output, root, bundle, candidate, reviewer):
     check_keys = _checks(candidate)
     prompt += (" If ambiguous report uncertain. Return JSON with decision (accept/reject/uncertain), "
                f"reason (one short visual observation), and boolean keys: {', '.join(check_keys)}.")
+    if candidate.get("value_keys"):
+        prompt+=" Also return values object with these enum fields: "+json.dumps(candidate["value_keys"])
     response = run_fixed_evidence(repo, config, output / "attempt", prompt, images,
                                   PromptLimits(max_requests=1, max_turns=1, seconds=180))
+    valid_response=True
     try:
         answer = json.loads(response["answer"])
         if (answer["decision"] not in {"accept", "reject", "uncertain"} or
                 any(type(answer[k]) is not bool for k in check_keys) or
+                any(answer.get("values",{}).get(k) not in choices for k,choices in candidate.get("value_keys",{}).items()) or
                 not isinstance(answer["reason"], str) or not answer["reason"].strip()):
             raise ValueError("invalid review answer")
     except (AttributeError, KeyError, TypeError, ValueError):
+        valid_response=False
         answer = {"decision": "uncertain", **dict.fromkeys(check_keys, False),
                   "reason": "No valid model review: " + str(response.get("reason", "unknown"))}
+    response_reason=response.get("reason")
+    if response_reason in {"output_limit","time_budget","turn_limit","request_budget","action_budget","path_budget"}:
+        execution_status="budget_exhausted"
+    elif response_reason in {"runtime_error","service_error","model_error","core_error","tool_timeout","execution_uncertain"}:
+        execution_status="service_error"
+    else:
+        execution_status="completed" if valid_response else "invalid_response"
+    last=response.get("last") or {}
     return {"candidate_id": candidate["candidate_id"], "kind": candidate["kind"],
             "source": candidate["source"], "reviewer": reviewer, "decision": answer["decision"],
-            "checks": {k: answer[k] for k in check_keys}, "reason": answer["reason"]}
+            "model":last.get("model") or config.get("model"),
+            "reasoning_effort":config.get("reasoning_effort","high"),
+            "response_reason":response_reason,"execution_status":execution_status,
+            "checks": {k: answer[k] for k in check_keys}, "values":answer.get("values",{}), "reason": answer["reason"]}
 
 
 def write_reviewed_bundle(bundle, root, reviews):

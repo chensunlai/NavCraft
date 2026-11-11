@@ -13,6 +13,10 @@ def _rows(path):
     return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
 
+def _review_key(record):
+    return record["candidate_id"], record.get("model") or record["reviewer"]
+
+
 def run_review(bundle, root, source, config, candidates=(), imported=None):
     root = Path(root)
     if Path(source).resolve() == (root / "private/reviewed_bundle.json").resolve():
@@ -26,13 +30,13 @@ def run_review(bundle, root, source, config, candidates=(), imported=None):
         raise ValueError("Unknown review candidate ID")
     log = private / "reviews.jsonl"
     records = _rows(log)
-    keys = {(r["candidate_id"], r["reviewer"]) for r in records}
+    keys = {_review_key(record) for record in records}
 
     def append(record):
         with log.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n")
         records.append(record)
-        keys.add((record["candidate_id"], record["reviewer"]))
+        keys.add(_review_key(record))
 
     if imported is not None:
         imported = Path(imported)
@@ -41,7 +45,7 @@ def run_review(bundle, root, source, config, candidates=(), imported=None):
         additions = []
         seen = keys.copy()
         for row in _rows(imported):
-            key = row["candidate_id"], row["reviewer"]
+            key = _review_key(row)
             if key not in seen:
                 additions.append(row)
                 seen.add(key)
@@ -67,11 +71,13 @@ def run_review(bundle, root, source, config, candidates=(), imported=None):
                 directory.mkdir(parents=True, exist_ok=False)
                 try:
                     record = model_review(Path.cwd(), model_config, directory, root, bundle, candidate, reviewer)
-                    record["status"] = "completed"
+                    record["status"] = record["execution_status"]
                 except Exception as exc:
                     record = {"candidate_id": key[0], "kind": candidate["kind"], "source": candidate["source"],
-                              "reviewer": reviewer, "decision": "uncertain", "checks": {},
-                              "status": "service_or_runtime_error", "reason": type(exc).__name__}
+                              "reviewer": reviewer, "model": model_config["model"],
+                              "decision": "uncertain", "checks": {},
+                              "status": "service_or_runtime_error", "execution_status": "service_error",
+                              "response_reason": "runtime_error", "reason": type(exc).__name__}
                 record.update(reasoning_effort=effort, attempt=str(directory.relative_to(root)))
                 write_json(directory / "review.json", record)
                 append(record)

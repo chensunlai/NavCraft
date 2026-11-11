@@ -19,12 +19,13 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--gpu", type=int, choices=(0, 1), default=0)
     parser.add_argument("--scene", action="append", help="Restrict to configured asset ID")
-    parser.add_argument("--phase", choices=("collect", "trials", "build", "check", "review", "semantics", "enrich", "prepare", "all"), default="collect")
+    parser.add_argument("--phase", choices=("collect", "trials", "build", "check", "review", "semantics", "enrich", "prepare", "endpoints", "reference", "all"), default="collect")
     parser.add_argument("--trial", action="append", help="Limit the trials phase to this kind")
     parser.add_argument("--bundle", type=Path, help="Bundle path relative to each scene directory, or absolute for one scene")
     parser.add_argument("--invalidations", type=Path, help="Explicit supersedes or invalidations record for check")
     parser.add_argument("--frame", action="append", help="Saved frame key to render for semantic evidence")
     parser.add_argument("--candidate", action="append", help="Review one candidate ID")
+    parser.add_argument("--object", dest="object_id", help="Scene object ID for an independent target reference")
     parser.add_argument("--import-reviews", type=Path, help="Apply existing JSONL without calling a model")
     args = parser.parse_args(argv)
     config = read_config(args.config)
@@ -37,6 +38,8 @@ def main(argv=None):
         parser.error("collect and all use a new collection, without --bundle")
     if args.phase == "enrich" and not args.bundle:
         parser.error("enrich requires an explicit reviewed --bundle")
+    if args.phase == "reference" and not args.object_id:
+        parser.error("reference requires --object")
     summary = []
     for scene in tqdm(scenes, unit="scene"):
         directory = args.output / "scenes" / scene.replace("/", "__")
@@ -57,6 +60,13 @@ def main(argv=None):
             bundle = collect({**config, "scene": scene}, directory, args.gpu)
         if args.phase in ("trials", "all"):
             bundle = collect_trials(config, directory, args.gpu, args.trial or (), bundle_path)
+            from .sampling.pairs import collect_motion_probes, collect_point_pairs
+            if not args.trial or "point" in args.trial:
+                bundle = collect_point_pairs(config, directory, args.gpu, bundle_path)
+            probe_kinds = set(args.trial or ()) & {"forward", "direct"}
+            if not args.trial or probe_kinds:
+                bundle = collect_motion_probes(config, directory, args.gpu, bundle_path,
+                                              kinds=probe_kinds)
         if args.phase in ("trials", "prepare", "all"):
             from .navigation.construction import prepare_navigation
             prepare_navigation(bundle, directory, config, args.gpu, args.trial or ())
@@ -71,6 +81,12 @@ def main(argv=None):
         if args.phase == "review":
             from .review.stage import run_review
             bundle = run_review(bundle, directory, bundle_path, config, args.candidate or (), args.import_reviews)
+        if args.phase == "endpoints":
+            from .judgment.size import run_endpoints
+            bundle = run_endpoints(bundle, directory, bundle_path, config, args.candidate or ())
+        if args.phase == "reference":
+            from .sampling.references import collect_target_reference
+            bundle = collect_target_reference(bundle, directory, config, args.gpu, args.object_id)
         if args.phase == "enrich":
             from .review.memory import enrich_node_memory
             bundle = enrich_node_memory(bundle, directory)
@@ -95,6 +111,8 @@ def main(argv=None):
         output_path = {"review": directory / "private/reviewed_bundle.json",
                        "semantics": directory / "private/instance_bundle.json",
                        "enrich": directory / "private/enriched_bundle.json",
+                       "endpoints": directory / "private/size_bundle.json",
+                       "reference": directory / "private/reference_bundle.json",
                        "build": built_path, "all": built_path}.get(args.phase, bundle_path)
         if output_path.is_file():
             manifest["stage"] = {"phase": args.phase, "input_bundle": input_record,

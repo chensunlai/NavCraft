@@ -32,6 +32,8 @@ flowchart TD
 - `sampling/geometry.py` 负责投影、深度一致性和有限开口线段等可独立验证的计算。
 - `sampling/semantics.py` 在已保存位姿渲染私有实例掩码，先核对 RGB，再检查实例关联和标注范围。
   像素为零只有在该实例的映射完整性有明确证据时才表示未见，否则保持未知。
+- 已审核表面点可通过真实深度和实例掩码投到其他已观察视图，保存为 `derived_sightings`。
+  这一步仅使用现有缓存，不渲染或调用模型；审核与构造入口重新核验来源，不把派生行冒充新的语义审核。
 - `review/evidence.py` 统一保存绑定 RGB、像素和源标注哈希的审核；`review/memory.py`
   从已审核的节点局部观察生成描述和房间别名，另存快照，原始快照保留。
 - `catalog.py` 保存题型目录；`judgment/construction.py` 和 `navigation/construction.py` 按实际证据构造样本。
@@ -130,6 +132,8 @@ subset --phase check --bundle private/built_bundle.json
 | collect | 真实观察与原始切点，保存为 `private/bundle.json` | Habitat，物理 GPU 0 或 1 |
 | review | 在 `private/review_candidates.json` 保存带哈希的候选；把审核增量追加到 `private/reviews.jsonl`，另存 `private/reviewed_bundle.json` | 无仿真；只在配置了模型且未指定导入时调用模型 |
 | semantics | 从指定包和已有观察生成 `private/instance_bundle.json`、私有掩码及绑定证据 | 当前支持 HM3D；新增帧用 GPU，已有合格帧仅核验缓存 |
+| endpoints | 导出 `private/size_candidates.json`，可调用模型选择可见物理边缘的两个端点；验证后另存 `private/size_bundle.json` | 无仿真；默认只导出，有 `review.models` 才选择像素 |
+| reference | 为 `--object` 指定实例独立渲染目标参考，另存 `private/reference_bundle.json` | Habitat；参考不加入巡游前缀，仍需绑定 RGB 的实例审核 |
 | enrich | 从显式审核包生成 `states_enriched/` 和 `private/enriched_bundle.json` | 无模型、无 GPU |
 | trials | 从指定包的切点重放；将试走结果写回指定包。可重复指定 `--trial` 限定种类 | Habitat，物理 GPU 0 或 1 |
 | build | 从指定包冻结 `cases/`，新增目标和隔离切点另存 `private/built_bundle.json` | 无模型、无 GPU |
@@ -138,7 +142,8 @@ subset --phase check --bundle private/built_bundle.json
 审核默认仅导出候选。配置 `review.models` 为模型配置路径列表，例如
 `[config/models/qwen27.yaml, config/models/sol.yaml]`，再运行 review 即可对默认前三条候选调用模型。
 可用 `--candidate ID` 精选候选，或用 `--import-reviews 路径.jsonl` 导入已有审核且不调用模型。
-同一真实模型 ID 对同一候选只记一次，推理档位单独记录。服务异常和不确定结果会留存，不计为通过。
+同一真实模型 ID 对同一候选只记一次，推理档位单独记录。服务异常、输出预算耗尽和语义不确定分别留存；
+前两者不是语义投票，真实的不确定或相互矛盾的有效审核仍阻止通过。
 相对 `--bundle` 以各场景集合为根；绝对路径只允许选一个场景。
 
 上述命令演示一条最小路径，语义审核为空时会留下拒绝记录，不保证产出所有题型。
@@ -152,6 +157,12 @@ subset --phase check --bundle private/built_bundle.json
 不能自动填入“全部完整”。实例掩码始终私有。
 当前 `target_seen_nodes` 的确定标签来自这条 HM3D 实例证据路径；可答性另行检查，
 不再由模型对各节点的投票直接决定真值。导航缺席审核覆盖切点的所有相关历史帧。
+
+尺寸比较先运行 `--phase endpoints --bundle private/instance_bundle.json`。可在
+`endpoints.pairs` 指定 `{object, frames: [第一视图, 第二视图], axis, part_description}`，
+或从导出的候选中用 `--candidate` 选择。模型只选像素；程序检查两端属于同一原生实例、
+处于同一水平面、第二视角深度一致，并能从公开相机参数和位姿重建。之后对 `size_bundle.json`
+运行 `review`，由两个独立审核者确认实体部位、完整边界和轴定义。几何通过不代替完整范围审核。
 
 记忆补写会使旧试走失效，必须从新快照重新 `trials`。冻结已有 cases/built 包时拒绝覆盖；
 修订应使用新的集合目录并保留原集合及失效原因。`prepare` 仅执行目标相关试走；
@@ -169,6 +180,12 @@ conda run --no-capture-output -n vln python -m src.bench.tasks_subset \
 判断题只有公开 RGB、问题和输出 schema，工具关闭；导航题恢复节点记忆快照并使用原子动作。
 结果区分软件/服务异常、预算耗尽、格式错误、任务失败和成功。真实 HTTP 请求、回执和用量
 保存在运行目录，用于核对实际工具与 reasoning effort。
+
+nav04 的新节点文字与房间语义由实际执行全景离线审核，保存在 `private/execution-review/`。
+运行 `python -m src.dataset.tasks_subset.review.execution --run <运行目录>
+--review-model config/models/qwen27.yaml --review-model config/models/sol.yaml`，
+得到独立的 `final_assessment.json`，原始执行结果保留。已知房间别名按程序比对；
+新房间可以使用新别名，带有“卧室”等类型含义的名称另需图像支持。双审都接受才能通过。
 
 ## 构造条件与当前边界
 
@@ -189,7 +206,8 @@ conda run --no-capture-output -n vln python -m src.bench.tasks_subset \
 | 目的地出口、节点开口路线、探索出口 | 已观察的连接图，等价路线均接受；探索不使用隐藏目标位置 |
 | 记忆矛盾 | 隔离副本的一处错误、公开可核对的反证、原始记录与修订来源 |
 
-远近比较目前实现距离变体，不声称同时覆盖尺寸比较；受阻恢复先实现下述安全点变体。
+远近比较包括距离变体，以及可见物体指定部位的水平宽度／长度比较；后者须经过端点几何与完整范围双审。
+具体变体是否已有通过实例以产物检查为准；受阻恢复先实现下述安全点变体。
 同类中的难度、正负例和方向分布必须从实际产物统计，构造器存在不代表已有均衡数据。
 
 HM3D 使用 ObjectNav 和 GOAT 的训练场景交集；MP3D 使用 R2R 训练场景，短完整官方指令保留原始目标。
@@ -209,7 +227,7 @@ nav03 的 `safe_waypoint` 变体从真实受阻切点开始，公开最后一次
 | 07 | 仅一个已索引节点见过，其他节点及当前视图明确未见；返回目标接近区域 |
 | 09 | 目标在起点节点中见过、已有至少两段房间路线；到达目标，不限制唯一参考路线 |
 | 10 | 全部起点前缀明确未见目标、目标房间未访问；真实探索并到达 |
-| 12 | 可公开核对的单字段错误副本；修正对应节点且到达目标 |
+| 12 | 可公开核对的单字段错误副本；在节点附近取得新全景，再提交对应字段修正并到达目标 |
 | 16 / 18 | 短官方训练任务、真实原子执行和提交，依项目官方目标评分 |
 
 实例目标使用物体足迹周围同房间、同楼层的可达接近区域；参考路线只选其中一点。

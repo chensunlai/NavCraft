@@ -76,7 +76,7 @@ def test_identity_needs_nonoccluded_shared_and_distinguishable_negative(tmp_path
     after["verified"] = False
     c = Context(bundle, bundle["states"][0], tmp_path, {})
     _views(c)
-    assert not c.options["cross_view_identity"]
+    assert [case[2] for case in c.options["cross_view_identity"]] == [[False]]
 
 
 def test_empty_history_does_not_invent_crossings(tmp_path):
@@ -282,3 +282,214 @@ def test_arrival_branch_is_reachable(tmp_path, monkeypatch):
     c=Context(b,b["states"][0],tmp_path,{})
     _targets(c)
     assert c.options["target_arrival"][0][2]==[True]
+
+
+def test_camera_distance_variant_has_public_floor_calibration(tmp_path,monkeypatch):
+    import numpy as np
+    from src.dataset.tasks_subset.judgment.construction import _visual
+    b=_bundle(tmp_path);b["scene"]["levels"]=[{"floor_height":0}]
+    f=b["frames"]["current"]
+    f.update(depth="depth.png",camera={"K":[[70,0,80],[0,70,50],[0,0,1]],"width":160,"height":100},
+             world_from_optical=[[1,0,0,.25],[0,-1,0,1],[0,0,-1,0],[0,0,0,1]])
+    b["sightings"]=[{"id":"p","kind":"point","frame":"current","pixel":[80,85],
+                     "world":[.25,0,-2],"verified":True,"method":"fixture"}]
+    monkeypatch.setattr("src.dataset.tasks_subset.sampling.geometry.read_depth",lambda *_:np.ones((100,160)))
+    monkeypatch.setattr("src.dataset.tasks_subset.sampling.geometry.floor_patch_fraction",lambda *_:1.)
+    c=Context(b,b["states"][0],tmp_path,{})
+    _visual(c)
+    row=c.options["distance_estimation"][0]
+    assert row[-1]["variant"]=="camera_distance_calibrated_floor"
+    assert "height_m" in row[0] and row[2]==[2.]
+    assert not score_answer(0,{"answer_schema":row[1],"accepted":row[2]})["success"]
+
+
+def test_receipt_has_three_distinct_outcomes(tmp_path,monkeypatch):
+    from src.dataset.tasks_subset.judgment import construction as module
+    b=_bundle(tmp_path)
+    c=Context(b,b["states"][0],tmp_path,{})
+    event={"before_frame":"before","after_frame":"current","receipt":{"action":"move_forward","collision":True,"blocked":True}}
+    monkeypatch.setattr(module,"_motion_events",lambda _:iter([event]))
+    module._outcomes(c)
+    case=c.options["blocked_receipt"][0]
+    assert case[2]==["collision_with_motion"]
+    assert "camera moved" not in case[0].lower()
+    assert not score_answer("collision_no_motion",{"answer_schema":case[1],"accepted":case[2]})["success"]
+    b["frames"]["current"]["pose"]["position"]=[0,0,0]
+    b["frames"]["current"]["public_pose"]["pos"]=[0,.5]
+    c=Context(b,b["states"][0],tmp_path,{})
+    module._outcomes(c)
+    assert c.options["blocked_receipt"][0][2]==["collision_no_motion"]
+    event["receipt"]["collision"]=False
+    c=Context(b,b["states"][0],tmp_path,{})
+    module._outcomes(c)
+    assert c.options["blocked_receipt"][0][2]==["no_collision"]
+
+
+def test_size_endpoint_geometry_binds_real_rgb_and_both_views(tmp_path):
+    import numpy as np
+    from src.dataset.tasks_subset.judgment.size import MEASUREMENT,validate_endpoint_selection
+    Image.new("RGB",(140,140),"gray").save(tmp_path/"frame.jpg")
+    Image.fromarray(np.full((140,140),2000,dtype=np.uint16)).save(tmp_path/"depth.png")
+    camera={"K":[[100,0,60],[0,100,50],[0,0,1]],"width":140,"height":140,
+            "depth_scale":.001,"depth_invalid_value":0,"depth_min":.01,"depth_max":10}
+    frames={}
+    for key,x in (("a",0),("b",.6)):
+        frames[key]={"rgb":"frame.jpg","depth":"depth.png","camera":camera,"public_pose":{"pos":[x/2,0],"heading":0},
+                     "world_from_optical":[[1,0,0,x],[0,-1,0,1],[0,0,-1,0],[0,0,0,1]]}
+    b={"frames":frames,"scene":{"levels":[{"floor_height":0}],"objects":[{"id":"chair","semantic_ids":[7]}]},
+       "states":[{"frame_keys":["a","b"],"transform":{"origin":[0,0],"size_m":2}}]}
+    from hashlib import sha256
+    np.save(tmp_path/"mask.npy",np.full((140,140),7,dtype=np.int32))
+    b["instance_evidence"]={}
+    for key,frame in frames.items():
+        b["instance_evidence"][key]={"valid":True,"pose":frame.get("pose"),"camera":camera,
+            "source_rgb_sha256":sha256((tmp_path/"frame.jpg").read_bytes()).hexdigest(),
+            "mask":"mask.npy","mask_sha256":sha256((tmp_path/"mask.npy").read_bytes()).hexdigest(),
+            "objects":{"chair":{"mapping_valid":True,"mapped_ids":[7]}}}
+    proposed={"object":"chair","name":"Chair","frames":["a","b"],"measurement":MEASUREMENT}
+    selected={"measurement":MEASUREMENT,"pixels":[[40,100],[80,100]],"axis":"width","axis_description":"outside-to-outside front feet"}
+    span=validate_endpoint_selection(b,tmp_path,proposed,selected)
+    assert span["length_m"]==pytest.approx(.8)
+    assert len(span["source"])==2 and span["source"][1]["pixels"]==[[10,100],[50,100]]
+    with pytest.raises(ValueError,match="horizontal plane"):
+        validate_endpoint_selection(b,tmp_path,proposed,{**selected,"pixels":[[40,80],[80,100]]})
+
+
+def test_reviewed_nonpassable_type_is_not_passability(tmp_path):
+    from src.dataset.tasks_subset.judgment.construction import _rooms
+    b=_bundle(tmp_path)
+    b["scene"]["objects"]=[{"id":"shared","name":"Wall mirror"}]
+    b["sightings"][1].update(kind="object",method="foreground_in_schematic_bounds",verified=False)
+    candidates=list(review_candidates(b,tmp_path))
+    c=next(c for c in candidates if c["kind"]=="judgment_opening_surface_type")
+    record={"candidate_id":c["candidate_id"],"kind":c["kind"],"source":c["source"],
+            "reviewer":"first","decision":"accept","reason":"Mirror frame and reflected room are clear",
+            "checks":{"surface_bound":True,"type_supported":True},
+            "values":{"surface_type":"mirror","door_state":"not_applicable"}}
+    reviewed=apply_reviews(b,tmp_path,[record,{**record,"reviewer":"second"}])
+    c=Context(reviewed,reviewed["states"][0],tmp_path,{})
+    _rooms(c)
+    generated=c.options["opening_type"]
+    assert generated and generated[0][2]==[{"type":"mirror"}]
+    assert not c.options["opening_passability"]
+    assert not score_answer({"type":"window"},{"answer_schema":generated[0][1],"accepted":generated[0][2]})["success"]
+    different={**record,"reviewer":"second","values":{"surface_type":"glass","door_state":"not_applicable"}}
+    reviewed=apply_reviews(b,tmp_path,[record,different])
+    assert not reviewed.get("judgment_evidence",{}).get("opening_types")
+
+
+def test_action_choices_require_same_real_pair_and_bound_start(tmp_path,monkeypatch):
+    from src.dataset.tasks_subset.bundle import snapshot_digest
+    from src.dataset.tasks_subset.judgment.construction import _point_choices
+    monkeypatch.setattr("src.dataset.tasks_subset.judgment.construction.floor_support",lambda *_:{"height_m":1})
+    b=_bundle(tmp_path);s=b["states"][0];point=b["sightings"][1]
+    for name,position in (("end-near",point["world"]),("end-far",[0,0,0])):
+        b["frames"][name]={**b["frames"]["future"],"pose":{"position":position}}
+    binding=snapshot_digest(tmp_path/s["snapshot"])
+    b["trials"]=[]
+    for name in ("near","far"):
+        b["trials"].append({"id":name,"start_state":"cut","target":point["id"],"pair_id":"pair",
+                           "start_snapshot_sha256":binding,"replay":{"passed":True},
+                           "motions":[{"collision":False,"blocked":False}],
+                           "calls":[{"name":"move","arguments":{"actions":["move_forward"]}}],
+                           "end_frame":"end-"+name,"goal_positions":[point["world"]]})
+    c=Context(b,s,tmp_path,{})
+    assert len(list(_point_choices(c)))==1
+    b["trials"][1]["pair_id"]="unrelated"
+    assert not list(_point_choices(c))
+    b["trials"][1]["pair_id"]="pair"
+    b["trials"][0]["start_snapshot_sha256"]="stale"
+    assert not list(_point_choices(c))
+
+
+def test_model_review_accepts_explicit_none_markers(tmp_path,monkeypatch):
+    from src.dataset.tasks_subset.review.evidence import model_review
+    b=_bundle(tmp_path)
+    candidate={"candidate_id":"nav","kind":"navigation_correction","source":{"frames":[{"frame":"before"}]},
+               "frames":["before"],"markers":None,"prompt":"Review the unmarked room panorama.",
+               "check_keys":["answerable"]}
+    captured=[]
+    def fake_model(*args):
+        captured.extend(args[4])
+        return {"answer":'{"decision":"uncertain","answerable":false,"reason":"Ambiguous room."}'}
+    monkeypatch.setattr("src.dataset.tasks_subset.review.model.run_fixed_evidence",fake_model)
+    record=model_review(tmp_path,{},tmp_path/"review",tmp_path,b,candidate,"fixture")
+    assert record["decision"]=="uncertain" and len(captured)==1
+    with pytest.raises(ValueError):
+        model_review(tmp_path,{},tmp_path/"invalid",tmp_path,b,{**candidate,"markers":[]}, "fixture")
+
+
+def test_endpoint_stage_exports_bound_candidates_without_model_calls(tmp_path):
+    from src.dataset.tasks_subset.judgment.size import run_endpoints
+    b=_bundle(tmp_path)
+    b["scene"]["objects"]=[{"id":"shared","name":"Chair"}]
+    b["frames"]["current"]["pose"]["position"]=[.75,0,0]
+    for sight in b["sightings"][:2]:
+        sight.update(kind="object",method="foreground_in_schematic_bounds")
+    source=tmp_path/"private/raw.json";source.parent.mkdir(exist_ok=True);source.write_text(json.dumps(b))
+    result=run_endpoints(b,tmp_path,source,{})
+    export=json.loads((tmp_path/"private/size_candidates.json").read_text())
+    assert len(export["candidates"])==1
+    candidate=export["candidates"][0]
+    assert candidate["binding"]["annotation_sha256"]
+    assert all(row["sha256"] for row in candidate["binding"]["frames"])
+    assert not result.get("size_endpoint_selections")
+    assert (tmp_path/"private/size_bundle.json").is_file()
+    assert not (tmp_path/"private/size_attempts").exists()
+
+
+def test_review_derivations_rebuild_through_three_stages(tmp_path,monkeypatch):
+    from src.dataset.tasks_subset.review import evidence
+    b=_bundle(tmp_path)
+    candidates=[
+        {"candidate_id":"seed","kind":"stage","source":{"hash":"seed"},"check_keys":["supported"],
+         "fact":{"section":"navigation_evidence","key":"seed","value":{"value":1}}},
+        {"candidate_id":"middle","kind":"stage","source":{"hash":"middle"},"check_keys":["supported"],
+         "fact":{"section":"judgment_evidence","key":"middle","value":{"value":2}}},
+        {"candidate_id":"current","kind":"stage","source":{"hash":"current"},"check_keys":["supported"],
+         "fact":{"section":"judgment_evidence","key":"current","value":{"value":3}}}]
+    def produce(bundle,root):
+        yield candidates[0]
+        if bundle.get("navigation_evidence",{}).get("seed"):
+            yield candidates[1]
+        if bundle.get("judgment_evidence",{}).get("middle"):
+            yield candidates[2]
+    monkeypatch.setattr(evidence,"review_candidates",produce)
+    records=[{"candidate_id":c["candidate_id"],"kind":"stage","source":c["source"],"reviewer":reviewer,
+              "decision":"accept","checks":{"supported":True},"reason":"Bound evidence checked"}
+             for c in candidates for reviewer in ("first","second")]
+    result=evidence.apply_reviews(b,tmp_path,records)
+    assert len(result["judgment_evidence"]["current"])==1
+    assert result==evidence.apply_reviews(result,tmp_path,records)
+    assert not evidence.apply_reviews(result,tmp_path,[]).get("judgment_evidence")
+
+
+def test_budget_attempt_is_not_semantic_uncertainty_and_models_are_independent(tmp_path):
+    b=_bundle(tmp_path)
+    b["scene"]["objects"]=[{"id":"shared","category":"chair"}]
+    b["sightings"][0].update(kind="object",verified=False,method="foreground_in_schematic_bounds")
+    c=next(c for c in review_candidates(b,tmp_path) if c["kind"]=="object")
+    first={"candidate_id":c["candidate_id"],"kind":"object","source":c["source"],
+           "reviewer":"sol/high","model":"Sol","execution_status":"completed",
+           "decision":"accept","checks":{"visible":True,"name_type_match":True},"reason":"Visible chair"}
+    second={**first,"reviewer":"root-visual","model":None}
+    budget={**first,"reviewer":"qwen","model":"Qwen","execution_status":"budget_exhausted",
+            "decision":"uncertain","checks":{},"response_reason":"output_limit"}
+    result=apply_reviews(b,tmp_path,[first,second,budget])
+    assert result["sightings"][0]["semantic_verified"]
+    assert result["review_attempt_counts"]=={"completed":2,"budget_exhausted":1}
+    with pytest.raises(ValueError,match="distinct actual models"):
+        apply_reviews(b,tmp_path,[first,{**second,"model":"Sol"}])
+
+
+def test_model_review_records_execution_failure_separately(tmp_path,monkeypatch):
+    from src.dataset.tasks_subset.review.evidence import model_review
+    b=_bundle(tmp_path)
+    candidate={"candidate_id":"budget","kind":"audit","source":{"frames":[{"frame":"before"}]},
+               "frames":["before"],"markers":None,"prompt":"Review this picture.","check_keys":["answerable"]}
+    monkeypatch.setattr("src.dataset.tasks_subset.review.model.run_fixed_evidence",
+                        lambda *args:{"reason":"output_limit","answer":"","last":{"model":"Actual-Qwen"}})
+    record=model_review(tmp_path,{"model":"alias","reasoning_effort":"medium"},
+                        tmp_path/"budget",tmp_path,b,candidate,"tag")
+    assert record["execution_status"]=="budget_exhausted"
+    assert record["response_reason"]=="output_limit" and record["model"]=="Actual-Qwen"

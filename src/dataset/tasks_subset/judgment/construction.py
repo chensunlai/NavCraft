@@ -13,6 +13,8 @@ from PIL import Image, ImageDraw
 from ..bundle import freeze_case, reject, require_trial_snapshot
 from ..catalog import JUDGMENT_KINDS
 
+ATOMIC_CONDITION = (" Translations are nominally 0.25 m and turns 30 degrees. Attempt the listed actions "
+                    "in order, stopping if blocked; contact may shorten or slide the motion.")
 BOOL = {"type": "boolean"}
 SIDES = ("forward", "right", "behind", "left")
 
@@ -94,7 +96,7 @@ class Context:
         self.openings = {x["id"]: x for x in bundle["scene"].get("openings", [])}
         self.objects = {x["id"]: x for x in bundle["scene"].get("objects", [])}
         self.sights = defaultdict(list)
-        for item in bundle.get("sightings", []):
+        for item in bundle.get("sightings", [])+bundle.get("derived_sightings",[]):
             if (item["frame"] in self.keys and item.get("verified") is True and item.get("method")
                     and item.get("pixel") is not None and item.get("world") is not None):
                 self.sights[item["frame"]].append(item)
@@ -196,6 +198,26 @@ def _layout(c, items, base, pictures, kind, memory=False):
 
 def _visual(c):
     for key in [c.current, *c.current_panorama]:
+        for point in c.sights[key]:
+            calibration=floor_support(c,point)
+            second=shared_pair(c,point) if calibration is None else None
+            if calibration is None and second is None:
+                continue
+            answer=dist(xyz(point["world"]),c.position(key))
+            if answer<.5:
+                continue
+            pictures=[row(key,"Marked point",[mark(point,"P")])]
+            prompt="Estimate the horizontal distance from the camera's floor projection to P, in metres."
+            variant="camera_distance_calibrated_floor"
+            if calibration:
+                prompt+=describe(calibration)
+            else:
+                pictures=[row(key,"First measurement "+public_camera(c,key),[mark(point,"P")]),
+                          row(second["frame"],"Second measurement "+public_camera(c,second["frame"]),[mark(second,"P")])]
+                variant="camera_distance_calibrated_multiview"
+            c.put("distance_estimation",prompt,num("m",max(.18,.08*answer)),[answer],pictures,
+                  private={"variant":variant,"measurements":[point]+([second] if second else []),
+                           "rule":"horizontal camera-floor projection to measured surface point"})
         for a, b in combinations(c.sights[key][:12], 2):
             if a["id"] == b["id"] or dist(a["pixel"], b["pixel"]) < 24:
                 continue
@@ -257,6 +279,8 @@ MOTION = obj(right=num("m", .16), forward=num("m", .16), yaw=num("signed_degrees
 
 
 def _views(c):
+    from .targets import build_instance_correspondence
+    build_instance_correspondence(c)
     historical = [k for k in c.state["frame_keys"] if c.frames[k].get("stream") ==
                   c.frames[c.current].get("stream")][-48:]
     for a, b in combinations(historical, 2):
@@ -295,22 +319,6 @@ def _views(c):
             c.put("relative_camera_pose","The camera only rotated in place. Estimate its clockwise signed turn in degrees.",
                   num("signed_degrees",8),[motion["yaw"]],pictures,
                   private={"measurements":[p,q],"baseline_m":displacement,"variant":"rotation_only"})
-        for p, q in shared:
-            if not (_identity_verified(p) and _identity_verified(q)):
-                continue
-            def add(other, answer):
-                c.put("cross_view_identity", "Do the marked instances A and B denote the same physical entity?",
-                      BOOL, [answer], [row(a, "First view", [mark(p, "A")]),
-                                      row(b, "Second view", [mark(other, "B")])])
-            add(q, True)
-            for other in c.sights[b]:
-                if (_identity_verified(other) and other["kind"] == p["kind"] and other["id"] != p["id"]
-                        and dist(q["pixel"], other["pixel"]) >= 36
-                        and any(pair.get("review_candidate") and pair.get("same_category") is True
-                                and pair["observed_object"] == other["id"] and pair["requested_object"] == p["id"]
-                                and pair["current_frame"] == b and pair["reference_frames"] == [a]
-                                for pair in c.bundle.get("navigation_evidence", {}).get("distinct_instances", []))):
-                    add(other, False)
 
 
 def _identity_verified(s):
@@ -321,7 +329,15 @@ def _memory(c):
     if not c.prefix():
         return
     current = [row(c.current, "Current observation")]
-    sightings = _distinct(c, [k for keys in c.nodes.values() for k in keys], {"object", "opening"})
+    node_keys=[k for keys in c.nodes.values() for k in keys]
+    sightings=_distinct(c,node_keys,{"object","opening"})
+    supported={}
+    for key in node_keys:
+        for sight in c.sights[key]:
+            identity=(sight["kind"],sight["id"])
+            if sight["kind"] in {"object","opening"} and identity not in supported and shared_pair(c,sight):
+                supported[identity]=sight
+    sightings=[supported.get((s["kind"],s["id"]),s) for s in sightings]
     if len(c.nodes) >= 2 and len({s["frame"] for s in sightings}) >= 2:
         _layout(c, sightings, c.current, current, "memory_topdown_layout", memory=True)
     anchors = _anchors(c, _node_snapshot(c)["nodes"])
@@ -412,6 +428,12 @@ def _rooms(c):
     review = next((x for x in c.bundle.get("judgment_evidence", {}).get("rooms", [])
                    if x["state"] == c.state["id"] and x.get("review_candidate")), {})
     choices = review.get("rooms", [])
+    if not review:
+        associated=next((r for r in c.bundle.get("judgment_evidence",{}).get("current_corrections",[])
+                         if r.get("review_candidate") and r["state"]==c.state["id"]
+                         and r.get("current_room")==aliases(here)),None)
+        if associated:
+            choices=sorted({associated["original"]["correct"],associated["original"]["wrong"]})
     if len(choices) >= 2 and aliases(here) in choices:
         c.put("current_room", "Which previously labelled room does the current observation show?",
               enum(*choices), [aliases(here)], current, memory=True)
@@ -429,6 +451,19 @@ def _rooms(c):
             c.put("opening_type", "What is marked at A: door, opening, window, mirror, or glass?",
                   enum("door", "opening", "window", "mirror", "glass"), [kind],
                   [row(s["frame"], "Opening candidate", [mark(s, "A")])])
+    for fact in c.bundle.get("judgment_evidence",{}).get("opening_types",[]):
+        if not fact.get("review_candidate") or fact["frame"] not in panorama:
+            continue
+        fields={"type":enum("door","opening","window","mirror","glass")}
+        answer={"type":fact["surface_type"]}
+        if fact["surface_type"]=="door" and fact["door_state"] in ("open","closed"):
+            fields["state"]=enum("open","closed")
+            answer["state"]=fact["door_state"]
+        c.put("opening_type","Classify the marked physical surface." +
+              (" For this door, also report whether it is open or closed." if "state" in fields else ""),
+              obj(**fields),[answer],[row(fact["frame"],"Marked surface and surroundings",
+                  [("S",fact.get("polygon") or fact["pixel"])])],
+              private={"variant":"reviewed_surface_type","type_fact":fact})
     if marked and c.current_panorama:
         c.put("room_exit_directions", "Report each marked visible exit's direction relative to the body.",
               obj(**{k: enum(*SIDES) for k in directions}), [directions], current + marked)
@@ -522,7 +557,7 @@ def _point_choices(c):
               and _bound_trial(c, t) and t.get("replay", {}).get("passed") is True and t.get("motions")
               and t["end_frame"] not in c.keys and 0 < len(_actions(t)) <= 12]
     for point in c.sights[c.current]:
-        if point["kind"] != "point" or not any(t.get("target") == point["id"] for t in trials):
+        if point["kind"] != "point" or floor_support(c,point) is None or not any(t.get("target") == point["id"] for t in trials):
             continue
         near, far = [], []
         for t in trials:
@@ -531,9 +566,13 @@ def _point_choices(c):
                 near.append(t)
             elif distance >= .55:
                 far.append(t)
-        if near and far:
-            pair = sorted([near[0], far[0]], key=lambda t: t["id"])
-            yield point, pair, "AB"[pair.index(near[0])]
+        match=next(((n,f) for n in near for f in far if n.get("pair_id") and
+                    n["pair_id"]==f.get("pair_id") and n.get("target")==f.get("target")==point["id"]
+                    and n.get("goal_positions") and f.get("goal_positions")==n["goal_positions"]
+                    and min(dist(point["world"],goal) for goal in n["goal_positions"])<=.03),None)
+        if match:
+            pair = sorted(match, key=lambda t: t["id"])
+            yield point, pair, "AB"[pair.index(match[0])]
 
 
 def judgment_review_proposals(bundle, root):
@@ -545,7 +584,7 @@ def judgment_review_proposals(bundle, root):
                       if node.get("room") and node["id"] in c.nodes}
         rooms = sorted(set(node_rooms.values()))
         if (prefix and len(rooms) >= 2 and state.get("room_aliases", {}).get(state.get("room")) in rooms and
-                c.current not in {key for key, _, _ in prefix} and not c.current_panorama):
+                c.current not in {key for key, _, _ in prefix}):
             references = [key for key, _, _ in prefix]
             grouping = [node_rooms.get(node, "unlabelled") for node in c.nodes for _ in c.nodes[node]]
             yield {"kind": "judgment_room_identity", "name": "Current room",
@@ -560,8 +599,12 @@ def judgment_review_proposals(bundle, root):
                    "frames": [c.current], "markers": [point["pixel"]],
                    "prompt": "Can the marked point and its approach be judged from the starting view well "
                              f"enough to distinguish these two action sequences: {[ _actions(t) for t in pair ]}? "
-                             "Reject if either route's outcome depends on an occluded obstacle.",
+                             "Translations are nominally 0.25 m and turns 30 degrees; motion may be shortened or slide on contact. "
+                             "This checks evidence sufficiency, including distinguishable failure; not a success vote. "
+                             "Reject if either route's outcome depends on an occluded obstacle." + ATOMIC_CONDITION + describe(floor_support(c,point)),
                    "check_keys": ["answerable"],
+                   "annotations":[{"trial":t["id"],"start_snapshot_sha256":t.get("start_snapshot_sha256"),
+                                   "calls":t["calls"]} for t in pair],
                    "fact": {"section": "judgment_evidence", "key": "point_choices", "value": {
                        "state": state["id"], "point": point["id"], "trials": [t["id"] for t in pair]}}}
         for trial in bundle.get("trials", []):
@@ -569,7 +612,7 @@ def judgment_review_proposals(bundle, root):
                     or trial.get("end_frame") in c.keys or not trial.get("motions")):
                 continue
             actions = _actions(trial)
-            if not actions or len(actions) > 12:
+            if not actions or len(actions) > (40 if trial["kind"]=="direct" or trial.get("opening") else 12):
                 continue
             frames = c.current_panorama or [c.current]
             purposes = [
@@ -581,12 +624,16 @@ def judgment_review_proposals(bundle, root):
                           if s["kind"] == "opening" and s["id"] == opening), None)
             if sight:
                 purposes.append(("opening", "whether the actions would cross the cyan-marked opening"))
+            target_point=next((s for k in frames for s in c.sights[k]
+                               if s["kind"]=="point" and s["id"]==trial.get("target") and floor_support(c,s)),None)
+            if target_point:
+                purposes.append(("region","whether the supplied route can reach the marked floor region without any contact"))
             target_node = trial.get("target_node")
             if target_node in c.nodes:
-                purposes.append(("direct", "whether a direct route to the node shown in the last view is traversable"))
+                purposes.append(("direct", f"whether the specified direct route to node {target_node}'s fixed anchor is traversable"))
             for purpose, question in purposes:
                 if purpose == "forward_range" and (set(actions) != {"move_forward"} or
-                        not trial["motions"][-1]["blocked"]):
+                        not trial["motions"][-1]["blocked"] or not any(floor_support(c,s) for k in frames for s in c.sights[k])):
                     continue
                 if purpose == "collision" and not (len(trial["motions"]) == len(actions) or any(
                         m["collision"] for m in trial["motions"])):
@@ -595,15 +642,40 @@ def judgment_review_proposals(bundle, root):
                 markers = [None] * len(frames)
                 if purpose == "opening":
                     markers[frames.index(sight["frame"])] = sight["pixel"]
+                if purpose == "region":
+                    markers[frames.index(target_point["frame"])]=target_point["pixel"]
                 if purpose == "direct":
-                    view_keys.append(c.nodes[target_node][0])
-                    markers.append(None)
+                    extra=[key for key,_,_ in c.prefix() if key not in view_keys]
+                    view_keys.extend(extra)
+                    markers.extend([None]*len(extra))
+                calibration_note=""
+                if purpose=="forward_range":
+                    support=next(floor_support(c,s) for k in frames for s in c.sights[k] if floor_support(c,s))
+                    calibration_note=describe(support)
+                if purpose=="direct":
+                    calibration_note=" Public node panorama poses: "+json.dumps({
+                        node:c.frames[keys[0]]["public_pose"] for node,keys in c.nodes.items()})
+                    calibration_note+=". Target node is "+target_node+", panorama image numbers "+json.dumps([
+                        view_keys.index(k)+1 for k in c.nodes[target_node] if k in view_keys])
+                    calibration_note+=". Its fixed public map anchor is "+json.dumps(
+                        _anchors(c,_node_snapshot(c)["nodes"]).get(target_node))
+                    calibration_note+=". Current body pose: "+json.dumps(c.frames[c.current]["public_pose"])
+                    calibration_note+=". One public map unit is "+str(c.state["transform"]["size_m"])+" m."
                 yield {"kind": f"judgment_trial_{purpose}", "name": purpose, "frames": view_keys,
                        "markers": markers,
+                       "captions":[("Current view" if k in frames else "Historical node view")+"; "+json.dumps({
+                           "node_ids":[node for node,keys in c.nodes.items() if k in keys],
+                           "yaw":c.frames[k].get("yaw"),"pose":c.frames[k]["public_pose"]})
+                           if purpose=="direct" else "Starting view" for k in view_keys],
                        "prompt": f"From the starting images, is there visible evidence to determine {question} "
-                                 f"when attempting {json.dumps(actions)}? The first view is forward. "
-                                 "Consider occlusions, hidden floor obstacles and scale. Reject if uncertain.",
+                                 f"when attempting {json.dumps(actions)}? The first view is forward. " + ATOMIC_CONDITION +
+                                 "This is an evidence-quality audit: accept when the outcome is inferable, including a clear "
+                                 "collision, block or failed route. A visible obstacle that clearly predicts failure "
+                                 "is sufficient evidence, not a reason to reject. Do not vote whether the route succeeds. "
+                                 "Reject only insufficient cues or hidden obstacles; use uncertain if needed." + calibration_note,
                        "check_keys": ["answerable"],
+                       "annotations":[{"trial":trial["id"],"start_snapshot_sha256":trial.get("start_snapshot_sha256"),
+                                       "calls":trial["calls"]}],
                        "fact": {"section": "judgment_evidence", "key": "trials", "value": {
                            "trial": trial["id"], "frames": view_keys, "purpose": purpose}}}
 
@@ -614,12 +686,26 @@ def _trials(c):
         trial_ids = [t["id"] for t in pair]
         if any(r.get("review_candidate") and r["state"] == c.state["id"] and r["point"] == point["id"]
                and r["trials"] == trial_ids for r in choices):
+            correct_id=pair["AB".index(answer)]["id"]
+            pair=list(pair)
+            rng=random.Random(f"{c.bundle.get('seed',0)}:{c.state['id']}:motion_to_point:{point['id']}")
+            rng.shuffle(pair)
+            answer="AB"[next(i for i,t in enumerate(pair) if t["id"]==correct_id)]
             options = "; ".join(f"{name}: {json.dumps(_actions(t))}" for name, t in zip("AB", pair))
+            budget=max(len(_actions(t)) for t in pair)
             c.put("motion_to_point", "Which attempted atomic sequence ends within 0.35 m horizontally "
-                  f"of the marked point? {options}", enum("A", "B"), [answer],
+                  f"of the marked point? Each sequence is attempted once with at most {budget} atomic actions; "
+                  f"motion may stop early if blocked. Translations are nominally 0.25 m, turns 30 degrees; "
+                  f"contact may shorten or slide the motion. Original action names are literal. {options}" + describe(floor_support(c,point)), enum("A", "B"), [answer],
                   [row(c.current, "Visible waypoint", [mark(point, "P")])],
                   private={"trial": trial_ids[0], "trials": trial_ids,
-                           "future_frames": [t["end_frame"] for t in pair]})
+                           "future_frames": [t["end_frame"] for t in pair],"pair_id":pair[0]["pair_id"],
+                           "rule":"near<=.25m, far>=.55m; displayed acceptance threshold .35m",
+                           "variant":"paired_real_action_choices",
+                           "choice_trials":{letter:{"trial":t["id"],"requested_actions":_actions(t),
+                               "start_snapshot_sha256":t["start_snapshot_sha256"],"end_frame":t["end_frame"],
+                               "horizontal_distance_m":dist(c.position(t["end_frame"]),xyz(point["world"]))}
+                                            for letter,t in zip("AB",pair)}})
 
     for trial in c.bundle.get("trials", []):
         if (trial["start_state"] != c.state["id"] or not _bound_trial(c, trial) or trial.get("replay", {}).get("passed") is not True
@@ -635,18 +721,24 @@ def _trials(c):
         if not actions:
             continue
         evidence = [row(k, "Before the proposed movement") for k in review["frames"]]
-        private = {"trial": trial["id"], "future_frame": trial["end_frame"]}
+        private = {"trial": trial["id"], "future_frame": trial["end_frame"],
+                   "calls":trial["calls"],"motion_measurements":trial["motions"],
+                   "trial_start_snapshot_sha256":trial["start_snapshot_sha256"]}
         ref = trial["reference"]
         motions = trial["motions"]
         if "collision" in reviews and (any(m["collision"] for m in motions) or len(motions) == len(actions)):
-            c.put("action_collision", f"Would any action collide if you attempted {json.dumps(actions)} from here?",
-                  BOOL, [any(m["collision"] for m in motions)], evidence, private=private)
+            c.put("action_collision", f"Would any action collide if you attempted {json.dumps(actions)} from here?" + ATOMIC_CONDITION,
+                  BOOL, [any(m["collision"] for m in motions)], evidence,
+                  private={**private,"variant":"replayed_atomic_collision","rule":"any real micro-motion collision"})
         start = c.position(c.current)
         end = c.position(trial["end_frame"])
-        if "forward_range" in reviews and all(a == "move_forward" for a in actions) and motions[-1]["blocked"]:
+        support=next((floor_support(c,s) for k in review.get("frames",[]) for s in c.sights[k]
+                      if floor_support(c,s)),None)
+        if "forward_range" in reviews and support and all(a == "move_forward" for a in actions) and motions[-1]["blocked"]:
             c.put("traversable_space", "Repeatedly attempt forward steps until blocked. Estimate horizontal "
-                  "displacement from the starting position in metres.", num("m", .3), [dist(start, end)],
-                  evidence, private=private)
+                  "displacement from the starting position in metres." + ATOMIC_CONDITION + describe(support), num("m", .3), [dist(start, end)],
+                  evidence, private={**private,"variant":"replayed_forward_range",
+                                              "rule":"horizontal displacement at blocked endpoint"})
         opening = trial.get("opening")
         seen = next((s for k in reviews.get("opening", {}).get("frames", []) for s in c.sights[k]
                      if s["kind"] == "opening" and s["id"] == opening), None)
@@ -662,13 +754,30 @@ def _trials(c):
             crossed = end_room != start_room and end_room in door["connects"] and doorway_crossed(
                 positions, c.bundle["scene"], door, start_room, end_room)
             c.put("opening_passability", f"Would the proposed actions {json.dumps(actions)} take you through "
-                  "the marked opening?", BOOL, [crossed], evidence +
+                  "the marked opening?" + ATOMIC_CONDITION, BOOL, [crossed], evidence +
                   [row(seen["frame"], "Opening", [mark(seen, "A")])], private=private)
+        point=next((s for key in reviews.get("region",{}).get("frames",[]) for s in c.sights[key]
+                    if s["kind"]=="point" and s["id"]==trial.get("target") and floor_support(c,s)),None)
+        if point and (len(motions)==len(actions) or any(m["blocked"] for m in motions)):
+            distance=dist(c.position(trial["end_frame"]),xyz(point["world"]))
+            if abs(distance-.35)>.15:
+                passable=distance<.35 and not any(m["collision"] for m in motions)
+                c.put("traversable_space","Would this exact attempted route reach the marked floor region "
+                      "within 0.35 m without any collision? This asks about the supplied route, not every possible "
+                      f"route into the region. Atomic actions: {json.dumps(actions)}. "
+                      f"Attempt at most {len(actions)} actions and stop on blocked." + ATOMIC_CONDITION + describe(floor_support(c,point)),
+                      BOOL,[passable],[row(point["frame"],"Candidate floor region",[mark(point,"P")])],
+                      private={**private,"variant":"tested_floor_region_route","motions":motions,
+                               "endpoint_distance_m":distance,"measurements":[point],"rule":"arrival<.35m and no collision"})
         target_node = trial.get("target_node")
-        if ("direct" in reviews and target_node in c.nodes and type(ref.get("reached")) is bool):
+        has_contact=any(m["collision"] for m in motions)
+        if ("direct" in reviews and target_node in c.nodes and type(ref.get("reached")) is bool
+                and (ref["reached"] or has_contact)):
             c.put("direct_node_passability",
-                  f"Can you travel directly from the current place to node {target_node} with the shown approach?",
-                  BOOL, [ref["reached"]], [row(k, "Route evidence") for k in reviews["direct"]["frames"]],
+                  f"Can this straight approach reach node {target_node} without any collision? "
+                  f"Attempt these exact atomic actions once (maximum {len(actions)}): {json.dumps(actions)}. "
+                  "A collision disproves this route; this does not ask whether another path exists." + ATOMIC_CONDITION,
+                  BOOL, [ref["reached"] and not has_contact], [row(k, "Route evidence") for k in reviews["direct"]["frames"]],
                   private=private, memory=True)
 
 
@@ -700,14 +809,60 @@ def _outcomes(c):
             c.put("observed_action_outcome", "Estimate the camera's clockwise signed turn in degrees.",
                   num("signed_degrees", 10), [motion["yaw"]], pictures)
         receipt = event.get("receipt", {})
-        if receipt.get("blocked") is True and type(receipt.get("collision")) is bool:
-            displacement = hypot(motion["right"], motion["forward"])
-            if abs(displacement - .05) >= .02:
-                c.put("blocked_receipt",
-                      f"The movement reported blocked=true, collision={str(receipt['collision']).lower()}. "
-                      f"The camera moved {displacement:.3f} m horizontally. Did it collide? Did it move at least 0.05 m?",
-                      obj(collided=BOOL, moved=BOOL),
-                      [{"collided": receipt["collision"], "moved": displacement >= .05}], pictures)
+        displacement = hypot(motion["right"],motion["forward"])
+        if type(receipt.get("collision")) is bool and abs(displacement-.05)>.02:
+            # Positions below are existing rounded public feedback, not hidden XYZ.
+            public={"before_pose":c.frames[a]["public_pose"],"after_pose":c.frames[b]["public_pose"],
+                    "action":receipt.get("action"),"collision":receipt["collision"],
+                    "blocked":receipt.get("blocked"),"map_unit_m":c.state["transform"]["size_m"]}
+            answer=("no_collision" if not receipt["collision"] else
+                    "collision_no_motion" if displacement<.05 else "collision_with_motion")
+            c.put("blocked_receipt","Classify this real movement using its raw public feedback. "
+                  "Treat less than 0.05 m horizontal displacement as no motion. "
+                  "collision_with_motion includes sliding. Feedback: "+json.dumps(public),
+                  enum("no_collision","collision_no_motion","collision_with_motion"),[answer],pictures,
+                  private={"variant":"receipt_motion_classification","before_frame":a,"after_frame":b,
+                           "motion":receipt,"displacement_m":displacement})
+        if (receipt.get("action") in {"move_forward","move_backward","move_left","move_right"}
+                and abs(displacement-.05)>.02):
+            poses={"before":c.frames[a]["public_pose"],"after":c.frames[b]["public_pose"],
+                   "map_unit_m":c.state["transform"]["size_m"]}
+            c.put("observed_action_outcome","An atomic "+receipt["action"]+" translation was attempted "
+                  "(nominally 0.25 m). Did it become ineffective, producing less than 0.05 m horizontal "
+                  "displacement? Use the before/after observations and original public pose feedback: "+json.dumps(poses),
+                  BOOL,[displacement<.05],pictures,
+                  private={"variant":"observed_ineffective_translation","before_frame":a,"after_frame":b,
+                           "motion":receipt,"displacement_m":displacement,"rule":"actual horizontal displacement<.05m"})
+        # Calibrated shared floor correspondences make displacement recoverable without map poses.
+        shared=[(p,q) for p in c.sights[a] for q in c.sights[b] if p["id"]==q["id"]
+                and floor_support(c,p) and floor_support(c,q)]
+        for pair in combinations(shared,2):
+            if (floor_support(c,pair[0][0])!=floor_support(c,pair[1][0]) or
+                    floor_support(c,pair[0][1])!=floor_support(c,pair[1][1]) or
+                    dist(pair[0][0]["world"],pair[1][0]["world"])<.5):
+                continue
+            measured=measured_floor_motion(c,pair)
+            if measured is None or displacement<.2 or any(abs(measured[k]-motion[k])>.08 for k in ("right","forward")):
+                continue
+            images=[row(k,caption,[mark(points[index],name) for name,points in zip("AB",pair)])
+                    for index,(k,caption) in enumerate(((a,"Before"),(b,"After")))]
+            c.put("observed_action_outcome","Estimate right/forward displacement in metres and clockwise yaw."
+                  +describe({"first":floor_support(c,pair[0][0]),"second":floor_support(c,pair[0][1])}),
+                  MOTION,[motion],images,private={"variant":"observed_calibrated_displacement",
+                                                 "measurements":[s for item in pair for s in item],"motion":receipt})
+            break
+        for event in c.state.get("traversals",[]):
+            if event.get("before_frame")==a and event.get("after_frame")==b:
+                opening=c.openings.get(event["opening"])
+                if opening:
+                    from ..navigation.scoring import doorway_crossed
+                    points=[c.frames[a]["pose"]["position"]]+[x["position"] for x in receipt.get("samples",[])]
+                    crossed=doorway_crossed(points,c.bundle["scene"],opening,event["from_room"],event["to_room"])
+                    sight=next((x for k in (a,b) for x in c.sights[k] if x["id"]==opening["id"] and x["kind"]=="opening"),None)
+                    if sight:
+                        c.put("observed_action_outcome","Did the movement cross the marked opening?",
+                              BOOL,[crossed],pictures+[row(sight["frame"],"Opening under consideration",[mark(sight,"D")])],
+                              private={"variant":"observed_opening_crossing","motion":receipt,"opening":opening["id"]})
 
 
 def _targets(c):
@@ -772,22 +927,8 @@ def _node_snapshot(c):
 
 
 def _contradictions(c):
-    from ..navigation.construction import _altered_cut
-
-    records = {x["id"]: x for x in _node_snapshot(c)["nodes"]}
-    current = c.current_panorama or [c.current]
-    for fact in c.bundle.get("navigation_evidence", {}).get("corrections", []):
-        node = fact.get("node")
-        if (fact.get("state") != c.state["id"] or not fact.get("review_candidate")
-                or fact.get("evidence_frame") not in current or fact["field"] != "room"
-                or records.get(node, {}).get("room") != fact["correct"]):
-            continue
-        # The erroneous record is saved in a separate snapshot; the original remains immutable.
-        altered = _altered_cut(c.bundle, c.root, c.state, fact)
-        c.put("memory_contradiction", "Which node's recorded room conflicts with the current observation?",
-              enum(*records), [node], [row(fact["evidence_frame"], "Current observation")], memory=True,
-              private={"altered_state": altered, "correction": fact})
-        break
+    from .corrections import build_current_contradiction
+    build_current_contradiction(c)
 
 
 def _anchors(c, nodes):
@@ -892,7 +1033,13 @@ def _render(c, pictures, memory, directory, crop_key=None, include_trajectory=Fa
             with Image.open(source) as raw:
                 image = raw.convert("RGB")
             draw = ImageDraw.Draw(image)
-            for text, (x, y) in markers:
+            for text, marker in markers:
+                if marker and isinstance(marker[0],list):
+                    if not all(0<=x<image.width and 0<=y<image.height for x,y in marker):
+                        raise ValueError("Surface outline outside the source RGB")
+                    draw.polygon([tuple(p) for p in marker],outline="cyan",width=3)
+                    continue
+                x,y=marker
                 if not (0 <= x < image.width and 0 <= y < image.height):
                     raise ValueError(f"Verified marker outside source RGB: {key}")
                 draw.ellipse((x-7, y-7, x+7, y+7), outline="#00ffff", width=3)
@@ -901,7 +1048,8 @@ def _render(c, pictures, memory, directory, crop_key=None, include_trajectory=Fa
             image.save(source, quality=92)
         images.append({"path": source.resolve(), "caption": "; ".join(captions)})
         image_sources.append({"purpose": "target_reference" if "Target reference" in captions else "prefix", "frames": [key],
-                              "markers": [{"text":name,"pixel":pixel} for name,pixel in markers]})
+                              "markers": [{"text":name,("polygon" if pixel and isinstance(pixel[0],list) else "pixel"):pixel}
+                                          for name,pixel in markers]})
     if crop:
         key, (x, y) = crop
         path = directory / "landmark.jpg"
@@ -925,7 +1073,9 @@ def build_judgments(bundle, root, config):
     from .targets import register_instance_targets
 
     root = Path(root)
-    register_instance_targets(bundle)
+    register_instance_targets(bundle,root)
+    from ..sampling.semantics import derive_instance_sightings
+    bundle["derived_sightings"]=derive_instance_sightings(bundle,root)
     result = []
     limit = config.get("judgments_per_kind_per_state", 2)
     selected = config.get("judgment_kinds", list(JUDGMENT_KINDS))
@@ -935,8 +1085,34 @@ def build_judgments(bundle, root, config):
         if state.get("altered_memory"):
             continue
         c = Context(bundle, state, root, config)
-        for builder in (_visual, _views, _memory, _rooms, _trials, _outcomes, _targets, _contradictions):
-            builder(c)
+        wanted=set(selected)
+        if "compare_distance_size" in wanted:
+            from .size import build_size_comparisons
+            build_size_comparisons(c)
+        if wanted & {"object_relative_position","change_reference_frame","distance_estimation",
+                     "compare_distance_size","egocentric_layout","visible_topdown_layout","panorama_view_relation"}:
+            _visual(c)
+        if wanted & {"relative_camera_pose","camera_motion"}:
+            _views(c)
+        elif "cross_view_identity" in wanted:
+            from .targets import build_instance_correspondence
+            build_instance_correspondence(c)
+        if wanted & {"nearest_node","visited_place","image_to_node_map","memory_topdown_layout",
+                     "memory_object_relation","nearest_landmark"}:
+            _memory(c)
+        if wanted & {"opening_type","current_room","room_exit_directions","room_exit_destination",
+                     "room_adjacency","room_route","rooms_with_untraversed_exits","destination_exit",
+                     "node_opening_route","exploration_frontier"}:
+            _rooms(c)
+        if wanted & {"traversable_space","opening_passability","direct_node_passability",
+                     "motion_to_point","action_collision"}:
+            _trials(c)
+        if wanted & {"observed_action_outcome","blocked_receipt"}:
+            _outcomes(c)
+        if wanted & {"target_identity","target_seen_nodes","target_arrival"}:
+            _targets(c)
+        if "memory_contradiction" in wanted:
+            _contradictions(c)
         for kind in selected:
             description = JUDGMENT_KINDS[kind]
             choices = c.options[kind]
@@ -950,14 +1126,18 @@ def build_judgments(bundle, root, config):
                 if opposite:
                     choices.insert(1, choices.pop(opposite))
             rng = random.Random(hashlib.sha256(f"{bundle.get('seed',0)}:{state['id']}:{kind}".encode()).hexdigest())
-            buckets = defaultdict(list)
+            variants = defaultdict(lambda:defaultdict(list))
             for candidate in choices:
-                buckets[json.dumps(candidate[2],sort_keys=True)].append(candidate)
-            groups = list(buckets.values())
-            rng.shuffle(groups)
-            for group in groups:
-                rng.shuffle(group)
-            choices = [group[i] for i in range(max(map(len,groups))) for group in groups if i<len(group)]
+                variants[candidate[-1].get("variant","default")][json.dumps(candidate[2],sort_keys=True)].append(candidate)
+            by_variant=[]
+            for buckets in variants.values():
+                groups=list(buckets.values())
+                rng.shuffle(groups)
+                for group in groups:
+                    rng.shuffle(group)
+                by_variant.append([group[i] for i in range(max(map(len,groups))) for group in groups if i<len(group)])
+            rng.shuffle(by_variant)
+            choices=[group[i] for i in range(max(map(len,by_variant))) for group in by_variant if i<len(group)]
             produced = 0
             for i, (prompt, schema, accepted, pictures, memory, private) in enumerate(choices):
                 if produced >= limit:
